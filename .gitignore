@@ -1,0 +1,36 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+*.tsbuildinfo
+out/
+dist/
+coverage/
+
+# Local storage payloads are intentionally not versioned.
+storage/raw/*
+storage/exports/*
+storage/derivatives/*
+storage/thumbs/*
+storage/display/*
+storage/transcripts/*
+!storage/**/.gitkeep
+
+# Database/runtime
+*.sqlite
+*.db
+postgres-data/

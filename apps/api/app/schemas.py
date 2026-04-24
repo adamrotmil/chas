@@ -1,0 +1,154 @@
+from typing import Any, Dict, List, Optional
+
+from sqlmodel import SQLModel
+
+
+class AssetCreate(SQLModel):
+    human_id: str
+    asset_type: str
+    title: Optional[str] = None
+    original_filename: Optional[str] = None
+    mime_type: Optional[str] = None
+    source_system: Optional[str] = None
+    import_status: str = "seeded"
+    processing_status: str = "ready"
+    maturity_level: str = "L1_mirrored"
+
+
+class AssetUpdate(SQLModel):
+    title: Optional[str] = None
+    asset_type: Optional[str] = None
+    original_filename: Optional[str] = None
+    mime_type: Optional[str] = None
+    source_system: Optional[str] = None
+    import_status: Optional[str] = None
+    processing_status: Optional[str] = None
+    maturity_level: Optional[str] = None
+
+
+class TaskSubmit(SQLModel):
+    annotation_type: Optional[str] = None
+    decisions: Dict[str, Any] = {}
+    notes: Optional[str] = None
+
+
+class TaskStatusUpdate(SQLModel):
+    reason: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AnnotationCreate(SQLModel):
+    task_id: Optional[str] = None
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    annotation_type: str
+    decisions: Dict[str, Any] = {}
+    notes: Optional[str] = None
+    creates_or_updates: Dict[str, Any] = {}
+
+
+class BoundaryCreate(SQLModel):
+    target_type: str
+    target_id: str
+    privacy_level: str = "unreviewed"
+    searchable: bool = False
+    retrievable_in_chat: bool = False
+    quotable: bool = False
+    summarizable: bool = True
+    usable_for_voice_context: bool = False
+    usable_for_sft: bool = False
+    usable_for_dpo: bool = False
+    usable_for_eval: bool = False
+    usable_for_gallery_public: bool = False
+    usable_for_gallery_family: bool = False
+    usable_for_simulation: bool = False
+    contains_living_person_sensitive_material: bool = False
+    redaction_required: bool = False
+    notes: Optional[str] = None
+    reviewed_by: Optional[str] = None
+
+
+class BoundaryUpdate(SQLModel):
+    privacy_level: Optional[str] = None
+    searchable: Optional[bool] = None
+    retrievable_in_chat: Optional[bool] = None
+    quotable: Optional[bool] = None
+    summarizable: Optional[bool] = None
+    usable_for_voice_context: Optional[bool] = None
+    usable_for_sft: Optional[bool] = None
+    usable_for_dpo: Optional[bool] = None
+    usable_for_eval: Optional[bool] = None
+    usable_for_gallery_public: Optional[bool] = None
+    usable_for_gallery_family: Optional[bool] = None
+    usable_for_simulation: Optional[bool] = None
+    contains_living_person_sensitive_material: Optional[bool] = None
+    redaction_required: Optional[bool] = None
+    notes: Optional[str] = None
+    reviewed_by: Optional[str] = None
+
+
+class MemoryCreate(SQLModel):
+    human_id: str
+    title: str
+    summary: str
+    truth_status: str = "interpretive_synthesis"
+    reliability: str = "medium"
+    emotional_tone: List[str] = []
+    themes: List[str] = []
+    open_questions: List[str] = []
+    maturity_level: str = "L3_reviewed"
+
+
+class MemoryUpdate(SQLModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    truth_status: Optional[str] = None
+    reliability: Optional[str] = None
+    emotional_tone: Optional[List[str]] = None
+    themes: Optional[List[str]] = None
+    open_questions: Optional[List[str]] = None
+    maturity_level: Optional[str] = None
+
+
+class PromptSpecCreate(SQLModel):
+    human_id: str
+    prompt_type: str
+    voice_mode: Optional[str] = None
+    truth_mode: Optional[str] = None
+    prompt_text: str
+    success_criteria: Dict[str, Any] = {}
+    metadata_json: Dict[str, Any] = {}
+
+
+class GenerationCreate(SQLModel):
+    prompt_spec_id: Optional[str] = None
+    context_pack_id: Optional[str] = None
+    model_name: str = "manual_draft"
+    model_parameters: Dict[str, Any] = {}
+    output_text: str
+
+
+class GenerationReviewCreate(SQLModel):
+    ratings: Dict[str, Any] = {}
+    failure_modes: List[str] = []
+    notes: Optional[str] = None
+    reviewer_id: Optional[str] = None
+
+
+class GoldVoiceExampleCreate(SQLModel):
+    human_id: str
+    generation_id: Optional[str] = None
+    prompt_spec_id: Optional[str] = None
+    context_pack_id: Optional[str] = None
+    voice_mode: str
+    adam_gold_edit: str
+    ratings: Dict[str, Any] = {}
+    failure_modes: List[str] = []
+    downstream_use: Dict[str, Any] = {}
+    approved_by: Optional[str] = "adam"
+
+
+class DatasetBuildRequest(SQLModel):
+    export_type: str
+    version: str = "v0"
+    split: str = "train"
