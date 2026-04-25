@@ -73,13 +73,39 @@ curl "http://localhost:8000/api/dataset-exports/jsonl?export_type=sft"
 curl "http://localhost:8000/api/dataset-exports/jsonl?export_type=dpo"
 ```
 
-## GitHub Sync
+## Google Drive Setup
 
-This folder is intentionally ready to become a Git repository. A good project repo name would be `adamrotmil/charlesops` or `adamrotmil/chas`. The special `adamrotmil.github.io` repo is usually reserved for GitHub Pages, so use it only if you specifically want this project to become that Pages site.
+The local Google Cloud project currently used for development is:
+
+```text
+gen-lang-client-0798252524
+```
+
+Required APIs:
+
+- Google Drive API
+- Google Picker API
+
+Local browser origins for credentials:
+
+- `http://localhost:3000`
+- `http://localhost:3003`
+
+The local env variables are:
 
 ```bash
-git init
-git add .
-git commit -m "Scaffold CharlesOps phase 0 and 1"
-gh repo create adamrotmil/charlesops --private --source=. --remote=origin --push
+GOOGLE_CLOUD_PROJECT_ID=gen-lang-client-0798252524
+NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=...
+NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID=...
+```
+
+The real local credential values belong in `.env`, which is ignored by git. Docker Compose passes the `NEXT_PUBLIC_GOOGLE_*` values through to `apps/web`.
+
+## GitHub Sync
+
+This project is synced to the private GitHub repository `adamrotmil/chas`.
+
+```bash
+git remote -v
+git push origin main
 ```
