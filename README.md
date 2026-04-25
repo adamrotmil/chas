@@ -21,9 +21,15 @@ The canonical product and architecture spec is in [`docs/charlesops_v1_master_ar
 docker compose up --build
 ```
 
+If port `3000` is already in use, run:
+
+```bash
+WEB_PORT=3003 docker compose up --build
+```
+
 The API container runs migrations and seed data before starting FastAPI.
 
-- Web: http://localhost:3000
+- Web: http://localhost:3000, or the `WEB_PORT` value you chose
 - API health: http://localhost:8000/api/health
 - API docs: http://localhost:8000/docs
 
