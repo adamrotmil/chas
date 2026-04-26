@@ -13,7 +13,7 @@ import {
   Sparkles,
   TextCursorInput
 } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { getAssetTextChunks } from "@/lib/api";
 import type { Segment, Task } from "@/lib/types";
 
@@ -24,6 +24,22 @@ type ChunkSelection = {
   active_chunk_id?: string;
   selected_chunk_count: number;
 };
+
+function sameChunkSelection(left: ChunkSelection, right: ChunkSelection): boolean {
+  return (
+    left.chunk_scope === right.chunk_scope &&
+    left.active_chunk_id === right.active_chunk_id &&
+    left.selected_chunk_count === right.selected_chunk_count &&
+    left.selected_chunk_ids.length === right.selected_chunk_ids.length &&
+    left.selected_chunk_ids.every((id, index) => id === right.selected_chunk_ids[index])
+  );
+}
+
+function sameDecisionRecord(left: Decisions, right: Decisions): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(left[key], right[key]));
+}
 
 interface TaskWorkbenchProps {
   task: Task;
@@ -43,6 +59,24 @@ const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
 
 function payloadString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function labelFromKey(value: string): string {
+  return value
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function taskDisplayTitle(task: Task): string {
+  const payload = task.input_payload;
+  for (const key of ["source_filename", "asset_title", "title", "segment_title", "prompt"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return task.human_id;
 }
 
 function payloadNumber(value: unknown, fallback = 3): number {
@@ -142,12 +176,53 @@ function SourcePreview({ task }: { task: Task }) {
   );
 }
 
+function EditableExtraction({
+  task,
+  activeChunk,
+  onChange
+}: {
+  task: Task;
+  activeChunk?: Segment;
+  onChange: (value: Decisions) => void;
+}) {
+  const previewText = payloadString(task.input_payload.preview_text) || payloadString(task.input_payload.text);
+  const activeChunkId = activeChunk?.id ?? "";
+  const [cleanedText, setCleanedText] = useState(activeChunk?.text_content || previewText);
+
+  useEffect(() => {
+    setCleanedText(activeChunk?.text_content || previewText);
+  }, [activeChunkId, activeChunk?.text_content, previewText, task.id]);
+
+  useEffect(() => {
+    onChange({
+      cleaned_text: cleanedText,
+      cleaned_text_scope: activeChunk ? "active_chunk" : "preview",
+      cleaned_text_chunk_id: activeChunk?.id ?? null,
+      extraction_edit_notes: cleanedText === (activeChunk?.text_content || previewText) ? "unchanged" : "edited"
+    });
+  }, [activeChunk, cleanedText, onChange, previewText]);
+
+  if (!previewText && !activeChunk) {
+    return null;
+  }
+
+  return (
+    <section className="editable-extraction">
+      <div>
+        <span>Cleaned text</span>
+        <strong>{activeChunk ? "Editing active chunk" : "Editing preview"}</strong>
+      </div>
+      <TextArea value={cleanedText} onChange={setCleanedText} rows={8} />
+    </section>
+  );
+}
+
 function ChunkBrowser({
   task,
   onChange
 }: {
   task: Task;
-  onChange: (selection: ChunkSelection) => void;
+  onChange: (selection: ChunkSelection, activeChunk?: Segment) => void;
 }) {
   const assetId = payloadString(task.input_payload.asset_id);
   const [chunks, setChunks] = useState<Segment[]>([]);
@@ -191,8 +266,8 @@ function ChunkBrowser({
       selected_chunk_ids: selectedIds,
       active_chunk_id: activeChunk?.id,
       selected_chunk_count: selectedIds.length
-    });
-  }, [activeChunk?.id, onChange, selectedIds]);
+    }, activeChunk);
+  }, [activeChunk, onChange, selectedIds]);
 
   if (!assetId || (chunks.length === 0 && !error)) {
     return null;
@@ -855,6 +930,8 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
     selected_chunk_ids: [],
     selected_chunk_count: 0
   });
+  const [activeChunk, setActiveChunk] = useState<Segment | undefined>();
+  const [textEdits, setTextEdits] = useState<Decisions>({});
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const descriptor = taskLabels[task.task_type] ?? { label: task.task_type, icon: <Gauge size={18} /> };
@@ -863,17 +940,28 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
     setDecisions({});
     setNotes("");
     setChunkSelection({ chunk_scope: "preview_only", selected_chunk_ids: [], selected_chunk_count: 0 });
+    setActiveChunk(undefined);
+    setTextEdits({});
   }, [task.id]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      await onSubmit({ ...decisions, ...chunkSelection }, notes);
+      await onSubmit({ ...decisions, ...chunkSelection, ...textEdits }, notes);
     } finally {
       setBusy(false);
     }
   }
+
+  const handleChunkChange = useCallback((selection: ChunkSelection, chunk?: Segment) => {
+    setChunkSelection((current) => (sameChunkSelection(current, selection) ? current : selection));
+    setActiveChunk((current) => (current?.id === chunk?.id ? current : chunk));
+  }, []);
+
+  const handleTextEditChange = useCallback((value: Decisions) => {
+    setTextEdits((current) => (sameDecisionRecord(current, value) ? current : value));
+  }, []);
 
   const form = (() => {
     switch (task.task_type) {
@@ -916,10 +1004,10 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
             {descriptor.icon}
             <span>{descriptor.label}</span>
           </div>
-          <h2>{payloadString(task.input_payload.title) || payloadString(task.input_payload.segment_title) || task.human_id}</h2>
+          <h2>{taskDisplayTitle(task)}</h2>
         </div>
         <div className="task-meta">
-          <span>{task.queue}</span>
+          <span>{labelFromKey(task.queue)}</span>
           <strong>{task.priority}</strong>
         </div>
       </header>
@@ -937,12 +1025,13 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
         </div>
         <div>
           <span>Required</span>
-          <p>{task.required_decisions.join(", ")}</p>
+          <p>{task.required_decisions.map(labelFromKey).join(", ")}</p>
         </div>
       </section>
 
       <SourcePreview task={task} />
-      <ChunkBrowser task={task} onChange={setChunkSelection} />
+      <ChunkBrowser task={task} onChange={handleChunkChange} />
+      <EditableExtraction task={task} activeChunk={activeChunk} onChange={handleTextEditChange} />
 
       <section className="decision-surface">{form}</section>
 

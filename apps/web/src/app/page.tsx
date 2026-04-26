@@ -14,6 +14,35 @@ function queueLabel(queue: string): string {
     .join(" ");
 }
 
+function taskTypeLabel(taskType: string): string {
+  return taskType
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function taskTitle(task: Task): string {
+  const payload = task.input_payload;
+  for (const key of ["source_filename", "asset_title", "title", "segment_title", "prompt"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return task.human_id;
+}
+
+function taskSubtitle(task: Task): string {
+  const payload = task.input_payload;
+  const parts = [
+    typeof payload.source_type === "string" ? payload.source_type : null,
+    typeof payload.extraction_parser === "string" ? payload.extraction_parser : null,
+    typeof payload.chunk_count === "number" ? `${payload.chunk_count} chunks` : null,
+    task.created_by && task.created_by !== "seed" ? task.created_by : null
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" / ") : task.queue;
+}
+
 function metric(label: string, value: number, detail: string, icon: React.ReactNode) {
   return (
     <div className="metric">
@@ -191,8 +220,9 @@ export default function Home() {
                 className={selectedTask?.id === task.id ? "task-row active" : "task-row"}
                 onClick={() => setSelectedTaskId(task.id)}
               >
-                <span>{task.task_type}</span>
-                <strong>{task.human_id}</strong>
+                <span>{taskTypeLabel(task.task_type)}</span>
+                <strong>{taskTitle(task)}</strong>
+                <em>{taskSubtitle(task)}</em>
                 <small>{task.priority}</small>
               </button>
             ))}

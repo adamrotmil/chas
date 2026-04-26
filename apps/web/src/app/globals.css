@@ -19,8 +19,9 @@
 
 html,
 body {
-  min-height: 100%;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -50,14 +51,17 @@ button:disabled {
 .app-shell {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  min-height: 0;
   padding: 24px;
+  overflow: auto;
   border-right: 1px solid var(--line);
   background: #fbfcfa;
 }
@@ -135,8 +139,13 @@ button:disabled {
 }
 
 .main-column {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
   min-width: 0;
+  min-height: 0;
   padding: 24px;
+  overflow: hidden;
 }
 
 .topbar {
@@ -410,6 +419,8 @@ h2 {
   grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .task-list,
@@ -426,7 +437,10 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 100%;
+  min-height: 0;
   padding: 12px;
+  overflow: auto;
 }
 
 .section-heading {
@@ -441,21 +455,38 @@ h2 {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 4px 10px;
-  min-height: 68px;
+  flex: 0 0 auto;
+  min-height: 78px;
   padding: 11px;
   text-align: left;
 }
 
 .task-row span {
   color: var(--accent-strong);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 800;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .task-row strong {
   grid-column: 1;
+  display: -webkit-box;
+  overflow: hidden;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 0.98rem;
+  line-height: 1.22;
+}
+
+.task-row em {
+  grid-column: 1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-row small {
@@ -470,6 +501,11 @@ h2 {
   display: grid;
   gap: 18px;
   padding: 18px;
+}
+
+.workbench-column {
+  min-height: 0;
+  overflow: auto;
 }
 
 .workbench-header,
@@ -674,6 +710,39 @@ h2 {
   white-space: pre-wrap;
 }
 
+.editable-extraction {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #cfd8d0;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.editable-extraction > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editable-extraction span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.editable-extraction strong {
+  color: var(--accent-strong);
+  font-size: 0.86rem;
+}
+
+.editable-extraction textarea {
+  min-height: 190px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92rem;
+}
+
 .decision-surface {
   min-width: 0;
 }
@@ -850,17 +919,16 @@ button:focus-visible {
 
 @media (max-width: 1100px) {
   .app-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(220px, 0.36fr) minmax(0, 1fr);
   }
 
   .sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
   }
 
   .queue-nav {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
   }
 
   .dashboard {
@@ -884,6 +952,35 @@ button:focus-visible {
 }
 
 @media (max-width: 720px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .main-column {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .sidebar {
+    max-height: 32dvh;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .workspace-grid {
+    min-height: 0;
+  }
+
+  .task-list {
+    max-height: 44dvh;
+  }
+
+  .workbench-column {
+    overflow: auto;
+  }
+
   .main-column,
   .sidebar {
     padding: 16px;
