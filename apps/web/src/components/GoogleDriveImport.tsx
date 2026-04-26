@@ -1,6 +1,6 @@
 "use client";
 
-import { Cloud, Download, FolderOpen, Loader2, Search, ShieldCheck } from "lucide-react";
+import { Cloud, Download, FolderOpen, Link2, Loader2, Search, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { importDriveFiles, uploadAssetMirror } from "@/lib/api";
 import type { AssetMirrorResponse, DriveFileImport, DriveImportItemResult, DriveImportResponse, JsonRecord } from "@/lib/types";
@@ -188,6 +188,26 @@ function clampScanLimit(value: number): number {
     return DEFAULT_SCAN_LIMIT;
   }
   return Math.min(Math.max(Math.round(value), 50), MAX_SCAN_LIMIT);
+}
+
+function extractDriveFolderId(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (/^[A-Za-z0-9_-]{10,}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const folderMatch = url.pathname.match(/\/folders\/([^/?#]+)/);
+    const id = folderMatch?.[1] ?? url.searchParams.get("id");
+    return id && /^[A-Za-z0-9_-]{10,}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 function classifyDriveFile(metadata: DriveMetadata): CandidateKind {
@@ -390,6 +410,7 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
   const [state, setState] = useState<ImportState>("idle");
   const [message, setMessage] = useState("Drive intake is ready.");
   const [result, setResult] = useState<DriveImportResponse | null>(null);
+  const [folderInput, setFolderInput] = useState("");
   const [scanLimit, setScanLimit] = useState(DEFAULT_SCAN_LIMIT);
   const [mirrorSizeLimitMb, setMirrorSizeLimitMb] = useState(DEFAULT_MIRROR_SIZE_LIMIT_MB);
   const [scanFilters, setScanFilters] = useState<ScanFilters>({
@@ -551,13 +572,7 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     await onImported();
   }
 
-  async function scanPickedFolder(accessToken: string, doc: PickerDocument) {
-    const picker = window.google?.picker;
-    const folderId = picker ? asString(doc[picker.Document.ID]) : undefined;
-    if (!folderId) {
-      throw new Error("The selected Drive folder did not include a folder ID.");
-    }
-
+  async function scanDriveFolder(accessToken: string, folderId: string) {
     const rootMetadata = await fetchDriveMetadata(accessToken, folderId);
     const rootName = rootMetadata.name ?? "Selected folder";
     const maxFiles = clampScanLimit(scanLimit);
@@ -644,6 +659,16 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     setState("done");
     setMessage(`Imported ${response.imported.length} Drive metadata records from ${rootName}.`);
     await onImported();
+  }
+
+  async function scanPickedFolder(accessToken: string, doc: PickerDocument) {
+    const picker = window.google?.picker;
+    const folderId = picker ? asString(doc[picker.Document.ID]) : undefined;
+    if (!folderId) {
+      throw new Error("The selected Drive folder did not include a folder ID.");
+    }
+
+    await scanDriveFolder(accessToken, folderId);
   }
 
   async function mirrorImportedCandidatesWithToken(accessToken: string) {
@@ -804,6 +829,40 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     }
   }
 
+  function scanFolderInput() {
+    if (!driveActionsReady || busy) {
+      return;
+    }
+
+    const folderId = extractDriveFolderId(folderInput);
+    if (!folderId) {
+      setState("error");
+      setError("Enter a valid Google Drive folder URL or folder ID.");
+      setMessage("Drive import failed.");
+      return;
+    }
+
+    setError(null);
+    setResult(null);
+    setScanSummary(null);
+    setMirrorSummary(null);
+    setLastImported([]);
+
+    try {
+      void requestAccessToken()
+        .then((accessToken) => scanDriveFolder(accessToken, folderId))
+        .catch((caught) => {
+          setState("error");
+          setError(caught instanceof Error ? caught.message : "Drive folder scan failed.");
+          setMessage("Drive import failed.");
+        });
+    } catch (caught) {
+      setState("error");
+      setError(caught instanceof Error ? caught.message : "Drive folder scan failed.");
+      setMessage("Drive import failed.");
+    }
+  }
+
   return (
     <section className="drive-import" aria-label="Google Drive import">
       <div className="drive-import-copy">
@@ -864,6 +923,20 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
             onChange={(event) => setMirrorSizeLimitMb(clampMirrorSizeLimitMb(Number.parseInt(event.target.value, 10)))}
           />
         </label>
+        <label className="drive-folder-field">
+          <span>Folder URL or ID</span>
+          <input
+            type="text"
+            value={folderInput}
+            placeholder="drive.google.com/drive/folders/..."
+            onChange={(event) => setFolderInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                scanFolderInput();
+              }
+            }}
+          />
+        </label>
         <div className="drive-filter-grid" aria-label="Drive scan filters">
           <label>
             <input checked={scanFilters.photos} onChange={(event) => updateFilter("photos", event.target.checked)} type="checkbox" />
@@ -908,6 +981,10 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
         >
           {state === "mirroring" ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
           Mirror imported
+        </button>
+        <button className="secondary-action" disabled={!driveActionsReady || busy || !folderInput.trim()} onClick={() => void scanFolderInput()}>
+          {busy || googleLibrariesLoading ? <Loader2 size={18} className="spin" /> : <Link2 size={18} />}
+          Scan link
         </button>
         <button className="secondary-action" disabled={!driveActionsReady || busy} onClick={() => void openPicker("folder")}>
           {busy || googleLibrariesLoading ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
