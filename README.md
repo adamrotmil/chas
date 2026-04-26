@@ -104,8 +104,8 @@ GOOGLE_CLOUD_PROJECT_ID=gen-lang-client-0798252524
 NEXT_PUBLIC_GOOGLE_CLOUD_PROJECT_NUMBER=1030126815863
 NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=...
 NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID=...
-OBJECT_STORAGE_PROVIDER=local
-GCS_BUCKET=
+OBJECT_STORAGE_PROVIDER=gcs
+GCS_BUCKET=charlesops-vault-1030126815863
 GCS_PREFIX=charlesops
 ```
 
@@ -117,13 +117,15 @@ For large vault folders, use **Scan folder** instead of manually selecting files
 
 After a metadata import, **Mirror imported** copies the selected Drive bytes into CharlesOps-controlled object storage. Blob files are downloaded with Drive `files.get?alt=media`; native Google Docs/Sheets/Slides are exported to Office/PDF snapshots. The API records a `source_mirror` asset snapshot and points downstream processing at the copy while preserving the Drive external reference for provenance.
 
-Local storage is the default fallback. To use Google Cloud Storage as the canonical mirror store, create a private bucket, then set:
+Google Cloud Storage is the intended canonical mirror store for this project:
 
 ```bash
 OBJECT_STORAGE_PROVIDER=gcs
-GCS_BUCKET=your-private-bucket-name
+GCS_BUCKET=charlesops-vault-1030126815863
 GCS_PREFIX=charlesops
 ```
+
+The bucket is private, uses Standard storage in the US multi-region, enforces public access prevention, and uses uniform bucket-level access. Local storage remains available as a fallback by setting `OBJECT_STORAGE_PROVIDER=local`.
 
 When GCS mode is enabled, the web app requests a temporary Google Cloud Storage OAuth scope during **Mirror imported** and passes that access token to the local API for the upload only; the token is not stored in the database.
 

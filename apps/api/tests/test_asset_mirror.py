@@ -1,3 +1,5 @@
+import asyncio
+from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -8,6 +10,8 @@ from app.config import settings
 from app.db.session import get_session
 from app.main import app
 from app.models import Annotation, Asset, AssetSnapshot, ObjectFile
+from app.services import asset_mirror
+from app.services.asset_mirror import mirror_upload_for_asset
 
 
 def build_client(tmp_path: Path):
@@ -122,3 +126,55 @@ def test_asset_mirror_upload_is_idempotent_for_same_source_snapshot(tmp_path):
         ).all()
         assert len(local_objects) == 1
         assert len(mirror_snapshots) == 1
+
+
+def test_asset_mirror_service_can_record_gcs_object_without_local_final_copy(tmp_path, monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    uploads = []
+
+    def fake_upload_to_gcs(**kwargs):
+        uploads.append(kwargs)
+        return {"name": kwargs["object_key"], "bucket": kwargs["bucket"]}
+
+    monkeypatch.setattr(asset_mirror, "_upload_to_gcs", fake_upload_to_gcs)
+
+    async def run():
+        with Session(engine) as session:
+            asset = Asset(
+                human_id="DRV_GCS_SMOKE",
+                asset_type="text",
+                title="smoke.txt",
+                original_filename="smoke.txt",
+                mime_type="text/plain",
+                source_system="google_drive",
+                import_status="drive_metadata_imported",
+                maturity_level="L0_source_seen",
+            )
+            session.add(asset)
+            session.flush()
+            upload = UploadFile(file=BytesIO(b"hello gcs"), filename="smoke.txt")
+            return await mirror_upload_for_asset(
+                session,
+                asset,
+                upload,
+                storage_root=tmp_path / "storage",
+                storage_provider="gcs",
+                gcs_bucket="charlesops-vault-1030126815863",
+                gcs_prefix="charlesops",
+                storage_access_token="fake-token",
+                source_system="google_drive",
+                drive_file_id="drive-gcs-smoke",
+                drive_mime_type="text/plain",
+            )
+
+    result = asyncio.run(run())
+
+    assert result.created is True
+    assert result.uri.startswith("gs://charlesops-vault-1030126815863/charlesops/source_mirror/")
+    assert uploads[0]["bucket"] == "charlesops-vault-1030126815863"
+    assert uploads[0]["object_key"] == result.object_key
