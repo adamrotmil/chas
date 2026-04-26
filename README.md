@@ -113,7 +113,13 @@ The real local credential values belong in `.env`, which is ignored by git. Dock
 
 The Drive import flow stores selected Drive metadata and provenance first. It creates CharlesOps asset, external reference, object file, snapshot, boundary, annotation, and triage task records without mutating Drive originals.
 
-For large vault folders, use **Scan folder** instead of manually selecting files. The scanner walks Drive folders with a configurable file cap, imports metadata in batches of 50, defaults to photos/writing/email candidates, leaves audio/video off for now, and skips backup-looking folders unless you turn that off.
+For large vault folders, use **Scan folder** instead of manually selecting files. The scanner walks Drive folders with a configurable file cap, imports metadata in batches of 50, defaults to a 100-file dry run, includes photos/writing/email candidates, leaves audio/video off for now, and skips backup-looking folders unless you turn that off.
+
+After a dry run, inspect the latest metadata records with:
+
+```bash
+curl http://localhost:8000/api/imports/drive/recent?limit=100
+```
 
 After a metadata import, **Mirror imported** copies the selected Drive bytes into CharlesOps-controlled object storage. Blob files are downloaded with Drive `files.get?alt=media`; native Google Docs/Sheets/Slides are exported to Office/PDF snapshots. The API records a `source_mirror` asset snapshot and points downstream processing at the copy while preserving the Drive external reference for provenance.
 

@@ -199,6 +199,29 @@ class DriveImportResponse(SQLModel):
     existing_count: int
 
 
+class DriveImportRecord(SQLModel):
+    asset_id: str
+    human_id: str
+    title: Optional[str] = None
+    asset_type: str
+    mime_type: Optional[str] = None
+    import_status: str
+    processing_status: str
+    maturity_level: str
+    drive_file_id: str
+    drive_name: Optional[str] = None
+    drive_mime_type: Optional[str] = None
+    drive_path: Optional[str] = None
+    drive_candidate_kind: Optional[str] = None
+    drive_size: Optional[int] = None
+    drive_created_time: Optional[str] = None
+    drive_modified_time: Optional[str] = None
+    drive_web_view_link: Optional[str] = None
+    mirror_status: Optional[str] = None
+    latest_mirror_uri: Optional[str] = None
+    parent_ref: Optional[str] = None
+
+
 class AssetMirrorResponse(SQLModel):
     asset_id: str
     created: bool

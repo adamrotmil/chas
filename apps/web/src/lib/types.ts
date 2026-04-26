@@ -53,6 +53,29 @@ export interface DriveImportResponse {
   existing_count: number;
 }
 
+export interface DriveImportRecord {
+  asset_id: string;
+  human_id: string;
+  title?: string | null;
+  asset_type: string;
+  mime_type?: string | null;
+  import_status: string;
+  processing_status: string;
+  maturity_level: string;
+  drive_file_id: string;
+  drive_name?: string | null;
+  drive_mime_type?: string | null;
+  drive_path?: string | null;
+  drive_candidate_kind?: string | null;
+  drive_size?: number | null;
+  drive_created_time?: string | null;
+  drive_modified_time?: string | null;
+  drive_web_view_link?: string | null;
+  mirror_status?: string | null;
+  latest_mirror_uri?: string | null;
+  parent_ref?: string | null;
+}
+
 export interface AssetMirrorResponse {
   asset_id: string;
   created: boolean;

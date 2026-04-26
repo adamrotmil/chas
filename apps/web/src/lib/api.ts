@@ -3,6 +3,7 @@ import type {
   Asset,
   AssetMirrorResponse,
   DriveFileImport,
+  DriveImportRecord,
   DriveImportResponse,
   GoldVoiceExample,
   Memory,
@@ -75,6 +76,10 @@ export function importDriveFiles(files: DriveFileImport[]): Promise<DriveImportR
     method: "POST",
     body: JSON.stringify({ files, imported_by: "adam", create_triage_tasks: true })
   });
+}
+
+export function getRecentDriveImports(limit = 100): Promise<DriveImportRecord[]> {
+  return request<DriveImportRecord[]>(`/imports/drive/recent?limit=${limit}`);
 }
 
 export interface UploadAssetMirrorMetadata {

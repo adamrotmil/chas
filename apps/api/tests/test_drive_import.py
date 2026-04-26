@@ -40,7 +40,11 @@ def drive_payload(name: str = "Maine porch photo.jpg") -> dict:
                 "modified_time": "2026-04-02T10:00:00Z",
                 "parents": ["parent-folder"],
                 "picker_document": {"id": "drive-file-123"},
-                "drive_metadata": {"version": "7"},
+                "drive_metadata": {
+                    "version": "7",
+                    "charlesOpsPath": "Vault/Maine porch photo.jpg",
+                    "charlesOpsCandidateKind": "photos",
+                },
             }
         ],
         "imported_by": "adam",
@@ -119,3 +123,22 @@ def test_drive_import_is_idempotent_for_existing_drive_file():
         assert len(session.exec(select(AssetSnapshot)).all()) == 1
         asset = session.exec(select(Asset)).one()
         assert asset.title == "Renamed porch photo.jpg"
+
+
+def test_recent_drive_imports_returns_reviewable_metadata_records():
+    client, _engine = build_client()
+    response = client.post("/api/imports/drive", json=drive_payload())
+    assert response.status_code == 200
+
+    recent = client.get("/api/imports/drive/recent?limit=10")
+
+    assert recent.status_code == 200
+    body = recent.json()
+    assert len(body) == 1
+    record = body[0]
+    assert record["drive_file_id"] == "drive-file-123"
+    assert record["drive_name"] == "Maine porch photo.jpg"
+    assert record["drive_path"] == "Vault/Maine porch photo.jpg"
+    assert record["drive_candidate_kind"] == "photos"
+    assert record["mirror_status"] == "metadata_only"
+    assert record["asset_type"] == "photo"
