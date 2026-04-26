@@ -2,6 +2,7 @@ import asyncio
 from io import BytesIO
 from pathlib import Path
 
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -22,6 +23,9 @@ def build_client(tmp_path: Path):
     )
     SQLModel.metadata.create_all(engine)
     settings.storage_root = str(tmp_path / "storage")
+    settings.object_storage_provider = "local"
+    settings.gcs_bucket = ""
+    settings.gcs_prefix = "charlesops"
     app.dependency_overrides.clear()
 
     def override_session():
