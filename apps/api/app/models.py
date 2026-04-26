@@ -269,6 +269,8 @@ class MetadataProfile(IdMixin, TimestampMixin, table=True):
     adam_context_note: Optional[str] = Field(default=None, sa_column=text_column())
     source_genre: Optional[str] = Field(default=None, index=True)
     authorship: Optional[str] = Field(default=None, index=True)
+    authorship_note: Optional[str] = Field(default=None, sa_column=text_column())
+    creator_entity_ids: List[str] = Field(default_factory=list, sa_column=json_column())
     fictionality_status: Optional[str] = Field(default=None, index=True)
     voice_presence: Optional[str] = Field(default=None, index=True)
     voice_role: Optional[str] = Field(default=None, index=True)
@@ -276,6 +278,7 @@ class MetadataProfile(IdMixin, TimestampMixin, table=True):
     date_label: Optional[str] = None
     date_confidence: Optional[str] = None
     people: List[str] = Field(default_factory=list, sa_column=json_column())
+    mentioned_entity_ids: List[str] = Field(default_factory=list, sa_column=json_column())
     places: List[str] = Field(default_factory=list, sa_column=json_column())
     themes: List[str] = Field(default_factory=list, sa_column=json_column())
     motifs: List[str] = Field(default_factory=list, sa_column=json_column())

@@ -291,6 +291,8 @@ def _required_decisions_for_source(source_type: str) -> List[str]:
     return [
         "source_genre",
         "authorship",
+        "creator_entity_ids",
+        "authorship_note",
         "fictionality_status",
         "truth_status",
         "voice_presence",

@@ -784,6 +784,9 @@ h2 {
 .field:has(textarea),
 .field:last-child,
 .form-hint,
+.entity-context,
+.person-create-panel,
+.inline-actions,
 .toggle-grid,
 .rating-panel {
   grid-column: 1 / -1;
@@ -815,6 +818,48 @@ h2 {
   color: var(--muted);
   font-size: 0.74rem;
   line-height: 1.28;
+}
+
+.entity-context,
+.person-create-panel {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #d8e1d9;
+  border-radius: 5px;
+  background: #fbfcfa;
+}
+
+.entity-context strong {
+  color: var(--accent-strong);
+}
+
+.entity-context span,
+.entity-context p,
+.inline-actions span {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.person-create-panel {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-color: var(--accent);
+  background: #eef5f0;
+  color: var(--accent-strong);
+  font-weight: 800;
 }
 
 input,
@@ -1036,6 +1081,7 @@ button:focus-visible {
   .drive-import-controls,
   .form-grid,
   .gold-grid,
+  .person-create-panel,
   .toggle-grid,
   .rating-panel,
   .drive-filter-grid,

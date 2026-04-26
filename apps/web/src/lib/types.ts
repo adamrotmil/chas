@@ -135,6 +135,29 @@ export interface Memory {
   maturity_level: string;
 }
 
+export interface Entity {
+  id: string;
+  human_id: string;
+  entity_type: string;
+  canonical_name: string;
+  description?: string | null;
+  relationship_to_charles?: string | null;
+  relationship_to_adam?: string | null;
+  confidence: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntityCreate {
+  human_id?: string | null;
+  entity_type?: string;
+  canonical_name: string;
+  description?: string | null;
+  relationship_to_charles?: string | null;
+  relationship_to_adam?: string | null;
+  confidence?: string;
+}
+
 export interface Annotation {
   id: string;
   task_id?: string | null;

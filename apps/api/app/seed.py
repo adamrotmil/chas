@@ -505,6 +505,8 @@ def seed_tasks(session: Session, assets: Dict[str, Asset], graph: Dict[str, Any]
                 "segment_title",
                 "source_genre",
                 "authorship",
+                "creator_entity_ids",
+                "authorship_note",
                 "fictionality_status",
                 "truth_status",
                 "voice_presence",

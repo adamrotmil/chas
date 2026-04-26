@@ -76,6 +76,8 @@ def _upsert_metadata_profile(
     profile.adam_context_note = _string(decisions.get("adam_context_note")) or _string(decisions.get("why_it_matters"))
     profile.source_genre = _string(decisions.get("source_genre"), profile_type)
     profile.authorship = _string(decisions.get("authorship"), "unknown")
+    profile.authorship_note = _string(decisions.get("authorship_note"))
+    profile.creator_entity_ids = _string_list(decisions.get("creator_entity_ids"))
     profile.fictionality_status = _string(decisions.get("fictionality_status"), "unknown")
     profile.voice_presence = _string(decisions.get("charles_voice_presence")) or _string(decisions.get("voice_presence"))
     profile.voice_role = _string(decisions.get("voice_training_role")) or _string(decisions.get("voice_role")) or _string(
@@ -85,6 +87,7 @@ def _upsert_metadata_profile(
     profile.date_label = _string(decisions.get("date_or_range"), "unknown")
     profile.date_confidence = _string(decisions.get("date_confidence"), "unknown")
     profile.people = _string_list(decisions.get("people"))
+    profile.mentioned_entity_ids = _string_list(decisions.get("mentioned_entity_ids"))
     profile.places = _string_list(decisions.get("places"))
     profile.themes = _string_list(decisions.get("themes"))
     profile.motifs = _string_list(decisions.get("motifs"))
@@ -206,6 +209,9 @@ def _create_prompt_pair_candidate_task(
             "selected_chunk_ids": selected_chunk_ids,
             "source_genre": decisions.get("source_genre"),
             "authorship": decisions.get("authorship"),
+            "creator_entity_ids": decisions.get("creator_entity_ids", []),
+            "creator_name": decisions.get("creator_name"),
+            "authorship_note": decisions.get("authorship_note"),
             "fictionality_status": decisions.get("fictionality_status"),
             "voice_presence": decisions.get("voice_presence") or decisions.get("charles_voice_presence"),
             "voice_training_role": decisions.get("voice_training_role") or decisions.get("voice_role"),
@@ -248,6 +254,9 @@ def upsert_source_review_artifacts(
         "review_type": task.task_type,
         "source_genre": decisions.get("source_genre"),
         "authorship": decisions.get("authorship"),
+        "creator_entity_ids": decisions.get("creator_entity_ids", []),
+        "creator_name": decisions.get("creator_name"),
+        "authorship_note": decisions.get("authorship_note"),
         "fictionality_status": decisions.get("fictionality_status"),
         "voice_presence": decisions.get("voice_presence") or decisions.get("charles_voice_presence"),
         "voice_training_role": decisions.get("voice_training_role") or decisions.get("voice_role"),

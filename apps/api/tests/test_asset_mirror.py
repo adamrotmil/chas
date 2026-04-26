@@ -196,6 +196,7 @@ def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):
         assert task.input_payload["source_type"] == "document"
         assert "Dear Adam" in task.input_payload["preview_text"]
         assert "source_genre" in task.required_decisions
+        assert "creator_entity_ids" in task.required_decisions
         assert "fictionality_status" in task.required_decisions
         assert "voice_presence" in task.required_decisions
 

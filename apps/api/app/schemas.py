@@ -111,6 +111,25 @@ class MemoryUpdate(SQLModel):
     maturity_level: Optional[str] = None
 
 
+class EntityCreate(SQLModel):
+    human_id: Optional[str] = None
+    entity_type: str = "person"
+    canonical_name: str
+    description: Optional[str] = None
+    relationship_to_charles: Optional[str] = None
+    relationship_to_adam: Optional[str] = None
+    confidence: str = "medium"
+
+
+class EntityUpdate(SQLModel):
+    entity_type: Optional[str] = None
+    canonical_name: Optional[str] = None
+    description: Optional[str] = None
+    relationship_to_charles: Optional[str] = None
+    relationship_to_adam: Optional[str] = None
+    confidence: Optional[str] = None
+
+
 class MetadataProfileCreate(SQLModel):
     target_type: str
     target_id: str
@@ -122,6 +141,8 @@ class MetadataProfileCreate(SQLModel):
     adam_context_note: Optional[str] = None
     source_genre: Optional[str] = None
     authorship: Optional[str] = None
+    authorship_note: Optional[str] = None
+    creator_entity_ids: List[str] = Field(default_factory=list)
     fictionality_status: Optional[str] = None
     voice_presence: Optional[str] = None
     voice_role: Optional[str] = None
@@ -129,6 +150,7 @@ class MetadataProfileCreate(SQLModel):
     date_label: Optional[str] = None
     date_confidence: Optional[str] = None
     people: List[str] = Field(default_factory=list)
+    mentioned_entity_ids: List[str] = Field(default_factory=list)
     places: List[str] = Field(default_factory=list)
     themes: List[str] = Field(default_factory=list)
     motifs: List[str] = Field(default_factory=list)
@@ -154,6 +176,8 @@ class MetadataProfileUpdate(SQLModel):
     adam_context_note: Optional[str] = None
     source_genre: Optional[str] = None
     authorship: Optional[str] = None
+    authorship_note: Optional[str] = None
+    creator_entity_ids: Optional[List[str]] = None
     fictionality_status: Optional[str] = None
     voice_presence: Optional[str] = None
     voice_role: Optional[str] = None
@@ -161,6 +185,7 @@ class MetadataProfileUpdate(SQLModel):
     date_label: Optional[str] = None
     date_confidence: Optional[str] = None
     people: Optional[List[str]] = None
+    mentioned_entity_ids: Optional[List[str]] = None
     places: Optional[List[str]] = None
     themes: Optional[List[str]] = None
     motifs: Optional[List[str]] = None

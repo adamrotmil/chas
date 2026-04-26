@@ -10,6 +10,7 @@ from app.models import (
     Boundary,
     ContextPack,
     DPOPair,
+    Entity,
     Generation,
     GoldVoiceExample,
     MetadataProfile,
@@ -141,6 +142,15 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
             mime_type="text/plain",
         )
         session.add(asset)
+        creator = Entity(
+            human_id="CR_ENTITY_CATHRYN_TEST",
+            entity_type="person",
+            canonical_name="Cathryn",
+            relationship_to_charles="family",
+            relationship_to_adam="family",
+            confidence="medium",
+        )
+        session.add(creator)
         session.flush()
         preview = Segment(
             human_id="SEG_PREVIEW_REVIEW",
@@ -174,6 +184,7 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
         task_id = task.id
         chunk_id = chunk.id
         preview_id = preview.id
+        creator_id = creator.id
 
     response = client.post(
         f"/api/tasks/{task_id}/submit",
@@ -181,11 +192,14 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
             "decisions": {
                 "segment_boundary_good": "yes",
                 "source_genre": "novel_draft",
-                "authorship": "charles",
+                "authorship": "third_party",
+                "creator_entity_ids": [creator_id],
+                "creator_name": "Cathryn",
+                "authorship_note": "Cathryn wrote this piece; Charles kept it as source context, but it is not Charles voice.",
                 "fictionality_status": "fiction",
                 "truth_status": "archival_source",
-                "voice_presence": "primary",
-                "adam_context_note": "Long-form Charles-authored draft with useful voice and source context.",
+                "voice_presence": "context_only",
+                "adam_context_note": "Third-party source Charles kept; useful as context but not as Charles voice.",
                 "prompt_pair_potential": "high",
                 "usable_for_voice_context": "yes",
                 "usable_for_grounded_generation": "yes",
@@ -223,10 +237,12 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
         assert profile is not None
         assert profile.profile_type == "novel_draft"
         assert profile.metadata_status == "adam_reviewed"
-        assert profile.authorship == "charles"
+        assert profile.authorship == "third_party"
+        assert profile.creator_entity_ids == [creator_id]
+        assert profile.authorship_note == "Cathryn wrote this piece; Charles kept it as source context, but it is not Charles voice."
         assert profile.fictionality_status == "fiction"
-        assert profile.voice_presence == "primary"
-        assert profile.adam_context_note == "Long-form Charles-authored draft with useful voice and source context."
+        assert profile.voice_presence == "context_only"
+        assert profile.adam_context_note == "Third-party source Charles kept; useful as context but not as Charles voice."
         assert profile.themes == []
         assert profile.embedding_hints["selected_chunk_ids"] == [chunk_id]
         assert profile.raw_profile["cleaned_text"] == "[stored on annotation only]"

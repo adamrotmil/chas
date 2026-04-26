@@ -14,8 +14,8 @@ import {
   TextCursorInput
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { getAssetTextChunks } from "@/lib/api";
-import type { Segment, Task } from "@/lib/types";
+import { createEntity, getAssetTextChunks, getEntities } from "@/lib/api";
+import type { Entity, Segment, Task } from "@/lib/types";
 
 type Decisions = Record<string, unknown>;
 type ChunkSelection = {
@@ -57,9 +57,13 @@ const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
   gold_voice_edit: { label: "Gold Voice Edit", icon: <Sparkles size={18} /> }
 };
 
+const NEW_PERSON_VALUE = "__new_person__";
+
 const decisionPromptLabels: Record<string, string> = {
   source_genre: "What kind of document it is",
   authorship: "Who made it",
+  creator_entity_ids: "Which person record made it",
+  authorship_note: "How the creator relates to Charles or this source",
   fictionality_status: "Whether it is factual, fictional, mixed, memory, inference, or generated",
   truth_status: "Where its truth comes from",
   voice_presence: "Whether Charles's voice is present",
@@ -125,6 +129,11 @@ function parseList(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function entityOptionLabel(entity: Entity): string {
+  const relationships = [entity.relationship_to_charles, entity.relationship_to_adam].filter(Boolean).join(" / ");
+  return relationships ? `${entity.canonical_name} (${relationships})` : entity.canonical_name;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -544,7 +553,17 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   const [boundaryGood, setBoundaryGood] = useState("yes");
   const [title, setTitle] = useState(payloadString(payload.segment_title, ""));
   const [sourceGenre, setSourceGenre] = useState("document");
-  const [authorship, setAuthorship] = useState("charles");
+  const [authorship, setAuthorship] = useState("unknown");
+  const [entities, setEntities] = useState<Entity[]>([]);
+  const [creatorSelection, setCreatorSelection] = useState("");
+  const [newPersonName, setNewPersonName] = useState("");
+  const [newPersonRelationshipToCharles, setNewPersonRelationshipToCharles] = useState("");
+  const [newPersonRelationshipToAdam, setNewPersonRelationshipToAdam] = useState("");
+  const [newPersonDescription, setNewPersonDescription] = useState("");
+  const [newPersonConfidence, setNewPersonConfidence] = useState("medium");
+  const [entityError, setEntityError] = useState("");
+  const [entityBusy, setEntityBusy] = useState(false);
+  const [authorshipNote, setAuthorshipNote] = useState("");
   const [fictionalityStatus, setFictionalityStatus] = useState("unknown");
   const [truthStatus, setTruthStatus] = useState("archival_source");
   const [voicePresence, setVoicePresence] = useState("unknown");
@@ -558,6 +577,32 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   const [sft, setSft] = useState(false);
   const [dpo, setDpo] = useState(false);
   const [boundaryRationale, setBoundaryRationale] = useState("");
+  const selectedCreator = entities.find((entity) => entity.id === creatorSelection);
+  const creatingPerson = creatorSelection === NEW_PERSON_VALUE;
+  const creatorName = selectedCreator?.canonical_name || (creatingPerson ? newPersonName.trim() : "");
+  const creatorRelationshipToCharles =
+    selectedCreator?.relationship_to_charles || (creatingPerson ? newPersonRelationshipToCharles.trim() : "");
+  const creatorRelationshipToAdam =
+    selectedCreator?.relationship_to_adam || (creatingPerson ? newPersonRelationshipToAdam.trim() : "");
+
+  useEffect(() => {
+    let cancelled = false;
+    getEntities("person")
+      .then((nextEntities) => {
+        if (!cancelled) {
+          setEntities(nextEntities);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setEntityError(caught instanceof Error ? caught.message : "Unable to load people.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [task.id]);
 
   useEffect(() => {
     onChange({
@@ -565,6 +610,11 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       segment_title: title,
       source_genre: sourceGenre,
       authorship,
+      creator_entity_ids: selectedCreator ? [selectedCreator.id] : [],
+      creator_name: creatorName,
+      creator_relationship_to_charles: creatorRelationshipToCharles,
+      creator_relationship_to_adam: creatorRelationshipToAdam,
+      authorship_note: authorshipNote,
       fictionality_status: fictionalityStatus,
       people: parseList(people),
       places: parseList(places),
@@ -582,8 +632,13 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   }, [
     adamContextNote,
     authorship,
+    authorshipNote,
     boundaryGood,
     boundaryRationale,
+    creatorName,
+    creatorSelection,
+    creatorRelationshipToAdam,
+    creatorRelationshipToCharles,
     dateRange,
     dpo,
     fictionalityStatus,
@@ -599,6 +654,32 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
     voiceContext,
     voicePresence
   ]);
+
+  async function handleCreatePerson() {
+    const canonicalName = newPersonName.trim();
+    if (!canonicalName) {
+      setEntityError("Add a name before creating a person.");
+      return;
+    }
+    setEntityBusy(true);
+    setEntityError("");
+    try {
+      const entity = await createEntity({
+        entity_type: "person",
+        canonical_name: canonicalName,
+        description: newPersonDescription.trim() || null,
+        relationship_to_charles: newPersonRelationshipToCharles.trim() || null,
+        relationship_to_adam: newPersonRelationshipToAdam.trim() || null,
+        confidence: newPersonConfidence
+      });
+      setEntities((current) => [...current, entity].sort((left, right) => left.canonical_name.localeCompare(right.canonical_name)));
+      setCreatorSelection(entity.id);
+    } catch (caught) {
+      setEntityError(caught instanceof Error ? caught.message : "Unable to create person.");
+    } finally {
+      setEntityBusy(false);
+    }
+  }
 
   return (
     <div className="form-grid">
@@ -628,8 +709,65 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
           ]}
         />
       </Field>
-      <Field label="Who made it?" hint="Mark Charles, Adam, mixed authorship, third party, or unknown.">
+      <Field label="Who made it?" hint="Select a person record, or add one when the creator is not in the list yet.">
+        <select value={creatorSelection} onChange={(event) => setCreatorSelection(event.target.value)}>
+          <option value="">Unknown or not yet defined</option>
+          {entities.map((entity) => (
+            <option key={entity.id} value={entity.id}>
+              {entityOptionLabel(entity)}
+            </option>
+          ))}
+          <option value={NEW_PERSON_VALUE}>Add a person...</option>
+        </select>
+      </Field>
+      <Field label="How should authorship be categorized?" hint="This coarse value helps filtering; the person record keeps the actual name and relationship.">
         <Select value={authorship} onChange={setAuthorship} options={["charles", "adam", "third_party", "mixed", "unknown"]} />
+      </Field>
+      {selectedCreator ? (
+        <div className="entity-context">
+          <strong>{selectedCreator.canonical_name}</strong>
+          <span>
+            Charles: {selectedCreator.relationship_to_charles || "unknown"} / Adam:{" "}
+            {selectedCreator.relationship_to_adam || "unknown"}
+          </span>
+          {selectedCreator.description ? <p>{selectedCreator.description}</p> : null}
+        </div>
+      ) : null}
+      {creatingPerson ? (
+        <div className="person-create-panel">
+          <Field label="Person name">
+            <input value={newPersonName} onChange={(event) => setNewPersonName(event.target.value)} />
+          </Field>
+          <Field label="Relationship to Charles">
+            <input
+              value={newPersonRelationshipToCharles}
+              onChange={(event) => setNewPersonRelationshipToCharles(event.target.value)}
+            />
+          </Field>
+          <Field label="Relationship to Adam">
+            <input
+              value={newPersonRelationshipToAdam}
+              onChange={(event) => setNewPersonRelationshipToAdam(event.target.value)}
+            />
+          </Field>
+          <Field label="Confidence">
+            <Select value={newPersonConfidence} onChange={setNewPersonConfidence} options={["high", "medium", "low"]} />
+          </Field>
+          <Field label="Who are they?">
+            <TextArea rows={3} value={newPersonDescription} onChange={setNewPersonDescription} />
+          </Field>
+          <div className="inline-actions">
+            <button type="button" onClick={handleCreatePerson} disabled={entityBusy}>
+              {entityBusy ? "Adding" : "Add person"}
+            </button>
+            {entityError ? <span>{entityError}</span> : null}
+          </div>
+        </div>
+      ) : entityError ? (
+        <p className="quiet entity-error">{entityError}</p>
+      ) : null}
+      <Field label="What should we remember about authorship?" hint="For example: Cathryn wrote this poem; Charles read it, saved it, or responded to it.">
+        <TextArea rows={3} value={authorshipNote} onChange={setAuthorshipNote} />
       </Field>
       <Field label="Is it factual, fictional, or mixed?" hint="This separates a novel draft from a letter, memory, or factual source.">
         <Select

@@ -5,6 +5,8 @@ import type {
   DriveFileImport,
   DriveImportRecord,
   DriveImportResponse,
+  Entity,
+  EntityCreate,
   GoldVoiceExample,
   Memory,
   Segment,
@@ -45,6 +47,17 @@ export function getAssetTextChunks(assetId: string): Promise<Segment[]> {
 
 export function getMemories(): Promise<Memory[]> {
   return request<Memory[]>("/memories");
+}
+
+export function getEntities(entityType = "person"): Promise<Entity[]> {
+  return request<Entity[]>(`/entities?entity_type=${encodeURIComponent(entityType)}`);
+}
+
+export function createEntity(payload: EntityCreate): Promise<Entity> {
+  return request<Entity>("/entities", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function getGoldVoiceExamples(): Promise<GoldVoiceExample[]> {
