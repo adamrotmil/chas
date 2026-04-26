@@ -252,6 +252,30 @@ def _source_type_for_extraction(filename: str, content_type: Optional[str]) -> s
     return "unknown"
 
 
+def _required_decisions_for_source(source_type: str) -> List[str]:
+    if source_type == "email":
+        return [
+            "charles_voice_presence",
+            "charles_email_role",
+            "other_voice_roles",
+            "context_use",
+            "boundary_notes",
+            "usable_for_voice_context",
+            "usable_for_sft",
+            "usable_for_dpo",
+        ]
+    return [
+        "source_genre",
+        "authorship",
+        "voice_role",
+        "truth_status",
+        "themes",
+        "boundary_notes",
+        "usable_for_voice_context",
+        "usable_for_grounded_generation",
+    ]
+
+
 def persist_text_extraction(
     session: Session,
     *,
@@ -351,19 +375,14 @@ def persist_text_extraction(
                 "source_type": source_type,
                 "source_mime_type": content_type,
                 "source_filename": filename,
+                "email_headers": extraction.metadata.get("email_headers") if source_type == "email" else None,
                 "chunk_count": len(chunks),
                 "total_chars": extraction.total_chars,
                 "truncated": extraction.truncated,
                 "chunking_truncated": chunking_truncated,
                 "extraction_parser": extraction.parser,
             },
-            required_decisions=[
-                "source_type",
-                "themes",
-                "truth_status",
-                "boundary_notes",
-                "usable_for_voice_context",
-            ],
+            required_decisions=_required_decisions_for_source(source_type),
             created_by="text_extraction",
         )
         session.add(task)

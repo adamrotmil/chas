@@ -99,6 +99,10 @@ function SourcePreview({ task }: { task: Task }) {
   if (!previewText) {
     return null;
   }
+  const emailHeaders =
+    task.input_payload.email_headers && typeof task.input_payload.email_headers === "object"
+      ? (task.input_payload.email_headers as Record<string, unknown>)
+      : null;
 
   return (
     <section className="source-text">
@@ -106,6 +110,14 @@ function SourcePreview({ task }: { task: Task }) {
         <span>Text preview</span>
         <strong>{payloadString(task.input_payload.source_filename) || payloadString(task.input_payload.asset_title)}</strong>
       </div>
+      {emailHeaders ? (
+        <div className="source-text-email">
+          {payloadString(emailHeaders.subject) ? <span>Subject: {payloadString(emailHeaders.subject)}</span> : null}
+          {payloadString(emailHeaders.from) ? <span>From: {payloadString(emailHeaders.from)}</span> : null}
+          {payloadString(emailHeaders.to) ? <span>To: {payloadString(emailHeaders.to)}</span> : null}
+          {payloadString(emailHeaders.date) ? <span>Date: {payloadString(emailHeaders.date)}</span> : null}
+        </div>
+      ) : null}
       <pre>{previewText}</pre>
       {typeof task.input_payload.chunk_count === "number" || typeof task.input_payload.total_chars === "number" ? (
         <div className="source-text-meta">
@@ -297,6 +309,10 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   const payload = task.input_payload;
   const [boundaryGood, setBoundaryGood] = useState("yes");
   const [title, setTitle] = useState(payloadString(payload.segment_title, ""));
+  const [sourceGenre, setSourceGenre] = useState("document");
+  const [authorship, setAuthorship] = useState("charles");
+  const [voiceRole, setVoiceRole] = useState("primary_charles_voice");
+  const [truthMode, setTruthMode] = useState("nonfiction_or_unknown");
   const [people, setPeople] = useState("Charles, Adam");
   const [places, setPlaces] = useState("");
   const [dateRange, setDateRange] = useState("unknown");
@@ -304,12 +320,21 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   const [tone, setTone] = useState("tender, restrained");
   const [reliability, setReliability] = useState("high");
   const [truthStatus, setTruthStatus] = useState("archival_source");
+  const [promptPairPotential, setPromptPairPotential] = useState("medium");
+  const [voiceContext, setVoiceContext] = useState(true);
+  const [groundedGeneration, setGroundedGeneration] = useState(true);
+  const [sft, setSft] = useState(false);
+  const [dpo, setDpo] = useState(false);
   const [boundaryNotes, setBoundaryNotes] = useState("");
 
   useEffect(() => {
     onChange({
       segment_boundary_good: boundaryGood,
       segment_title: title,
+      source_genre: sourceGenre,
+      authorship,
+      voice_role: voiceRole,
+      truth_mode: truthMode,
       people: parseList(people),
       places: parseList(places),
       date_or_range: dateRange,
@@ -317,9 +342,35 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       emotional_tone: parseList(tone),
       source_reliability: reliability,
       truth_status: truthStatus,
+      prompt_pair_potential: promptPairPotential,
+      usable_for_voice_context: voiceContext ? "yes" : "no",
+      usable_for_grounded_generation: groundedGeneration ? "yes" : "no",
+      usable_for_sft: sft ? "yes" : "no",
+      usable_for_dpo: dpo ? "yes" : "no",
       boundary_notes: boundaryNotes
     });
-  }, [boundaryGood, boundaryNotes, dateRange, onChange, people, places, reliability, themes, title, tone, truthStatus]);
+  }, [
+    authorship,
+    boundaryGood,
+    boundaryNotes,
+    dateRange,
+    dpo,
+    groundedGeneration,
+    onChange,
+    people,
+    places,
+    promptPairPotential,
+    reliability,
+    sft,
+    sourceGenre,
+    themes,
+    title,
+    tone,
+    truthMode,
+    truthStatus,
+    voiceContext,
+    voiceRole
+  ]);
 
   return (
     <div className="form-grid">
@@ -328,6 +379,36 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       </Field>
       <Field label="Segment title">
         <input value={title} onChange={(event) => setTitle(event.target.value)} />
+      </Field>
+      <Field label="Source genre">
+        <Select
+          value={sourceGenre}
+          onChange={setSourceGenre}
+          options={[
+            "document",
+            "letter",
+            "novel_draft",
+            "essay",
+            "memoir_fragment",
+            "notes",
+            "article_clipping",
+            "legal_or_financial",
+            "unknown"
+          ]}
+        />
+      </Field>
+      <Field label="Authorship">
+        <Select value={authorship} onChange={setAuthorship} options={["charles", "adam", "third_party", "mixed", "unknown"]} />
+      </Field>
+      <Field label="Voice role">
+        <Select
+          value={voiceRole}
+          onChange={setVoiceRole}
+          options={["primary_charles_voice", "charles_context", "third_party_context", "mixed_voices", "not_voice_material"]}
+        />
+      </Field>
+      <Field label="Truth mode">
+        <Select value={truthMode} onChange={setTruthMode} options={["nonfiction_or_unknown", "fiction", "mixed", "source_quote"]} />
       </Field>
       <Field label="People">
         <input value={people} onChange={(event) => setPeople(event.target.value)} />
@@ -354,6 +435,15 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
           options={["archival_source", "adam_memory", "adam_inference", "system_inference", "model_generated"]}
         />
       </Field>
+      <Field label="Prompt pair potential">
+        <Select value={promptPairPotential} onChange={setPromptPairPotential} options={["high", "medium", "low", "none"]} />
+      </Field>
+      <div className="toggle-grid">
+        <Toggle label="usable_for_voice_context" checked={voiceContext} onChange={setVoiceContext} />
+        <Toggle label="usable_for_grounded_generation" checked={groundedGeneration} onChange={setGroundedGeneration} />
+        <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
+        <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
+      </div>
       <Field label="Boundary notes">
         <TextArea value={boundaryNotes} onChange={setBoundaryNotes} />
       </Field>
@@ -410,8 +500,17 @@ function BoundaryReviewForm({ onChange }: { onChange: (value: Decisions) => void
   );
 }
 
-function EmailVoiceSampleForm({ onChange }: { onChange: (value: Decisions) => void }) {
+function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value: Decisions) => void }) {
+  const headers =
+    task.input_payload.email_headers && typeof task.input_payload.email_headers === "object"
+      ? (task.input_payload.email_headers as Record<string, unknown>)
+      : {};
   const [voiceMode, setVoiceMode] = useState("father_to_adam");
+  const [charlesVoicePresence, setCharlesVoicePresence] = useState("unknown");
+  const [charlesRole, setCharlesRole] = useState("unknown");
+  const [otherVoices, setOtherVoices] = useState("Adam, other correspondents");
+  const [contextUse, setContextUse] = useState("conversation_context");
+  const [quotedMaterial, setQuotedMaterial] = useState(true);
   const [authenticity, setAuthenticity] = useState(4);
   const [density, setDensity] = useState(4);
   const [tone, setTone] = useState("tender, dry");
@@ -424,6 +523,15 @@ function EmailVoiceSampleForm({ onChange }: { onChange: (value: Decisions) => vo
   useEffect(() => {
     onChange({
       voice_mode: voiceMode,
+      charles_voice_presence: charlesVoicePresence,
+      charles_email_role: charlesRole,
+      other_voice_roles: parseList(otherVoices),
+      context_use: contextUse,
+      quoted_or_forwarded_material_present: quotedMaterial ? "yes" : "no",
+      email_subject: payloadString(headers.subject),
+      email_from: payloadString(headers.from),
+      email_to: payloadString(headers.to),
+      email_date: payloadString(headers.date),
       authenticity_value: authenticity,
       voice_density: density,
       emotional_tone: parseList(tone),
@@ -433,7 +541,27 @@ function EmailVoiceSampleForm({ onChange }: { onChange: (value: Decisions) => vo
       usable_for_dpo: dpo ? "yes" : "no",
       why_it_matters: why
     });
-  }, [authenticity, density, dpo, onChange, phrases, sft, tone, voiceContext, voiceMode, why]);
+  }, [
+    authenticity,
+    charlesRole,
+    charlesVoicePresence,
+    contextUse,
+    density,
+    dpo,
+    headers.date,
+    headers.from,
+    headers.subject,
+    headers.to,
+    onChange,
+    otherVoices,
+    phrases,
+    quotedMaterial,
+    sft,
+    tone,
+    voiceContext,
+    voiceMode,
+    why
+  ]);
 
   return (
     <div className="form-grid">
@@ -442,6 +570,30 @@ function EmailVoiceSampleForm({ onChange }: { onChange: (value: Decisions) => vo
           value={voiceMode}
           onChange={setVoiceMode}
           options={["casual_email", "father_to_adam", "argument", "comic", "grief", "logistics", "other"]}
+        />
+      </Field>
+      <Field label="Charles voice">
+        <Select
+          value={charlesVoicePresence}
+          onChange={setCharlesVoicePresence}
+          options={["primary", "partial", "context_only", "absent", "unknown"]}
+        />
+      </Field>
+      <Field label="Charles role">
+        <Select
+          value={charlesRole}
+          onChange={setCharlesRole}
+          options={["sender", "recipient", "quoted_author", "mentioned", "mixed", "unknown"]}
+        />
+      </Field>
+      <Field label="Other voices">
+        <input value={otherVoices} onChange={(event) => setOtherVoices(event.target.value)} />
+      </Field>
+      <Field label="Context use">
+        <Select
+          value={contextUse}
+          onChange={setContextUse}
+          options={["charles_voice_sample", "conversation_context", "factual_context", "prompt_response_context", "exclude"]}
         />
       </Field>
       <Rating label="Authenticity" value={authenticity} onChange={setAuthenticity} />
@@ -453,6 +605,7 @@ function EmailVoiceSampleForm({ onChange }: { onChange: (value: Decisions) => vo
         <input value={phrases} onChange={(event) => setPhrases(event.target.value)} />
       </Field>
       <div className="toggle-grid">
+        <Toggle label="quoted_or_forwarded_material" checked={quotedMaterial} onChange={setQuotedMaterial} />
         <Toggle label="usable_for_voice_context" checked={voiceContext} onChange={setVoiceContext} />
         <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
         <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
@@ -592,7 +745,7 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
       case "boundary_review":
         return <BoundaryReviewForm onChange={setDecisions} />;
       case "email_voice_sample":
-        return <EmailVoiceSampleForm onChange={setDecisions} />;
+        return <EmailVoiceSampleForm task={task} onChange={setDecisions} />;
       case "gold_voice_edit":
         return <GoldVoiceEditForm task={task} onChange={setDecisions} />;
       default:

@@ -76,6 +76,29 @@ def text_drive_payload() -> dict:
     }
 
 
+def email_drive_payload() -> dict:
+    return {
+        "files": [
+            {
+                "drive_file_id": "drive-email-123",
+                "name": "thread.eml",
+                "mime_type": "message/rfc822",
+                "web_view_link": "https://drive.google.com/file/d/drive-email-123/view",
+                "size_bytes": 2048,
+                "created_time": "2026-04-01T10:00:00Z",
+                "modified_time": "2026-04-02T10:00:00Z",
+                "parents": ["parent-folder"],
+                "picker_document": {"id": "drive-email-123"},
+                "drive_metadata": {
+                    "charlesOpsPath": "Vault/Email/thread.eml",
+                    "charlesOpsCandidateKind": "email",
+                },
+            }
+        ],
+        "imported_by": "adam",
+    }
+
+
 def test_asset_mirror_upload_creates_local_object_snapshot_and_annotation(tmp_path):
     client, engine = build_client(tmp_path)
     imported = client.post("/api/imports/drive", json=drive_payload()).json()["imported"][0]
@@ -164,9 +187,48 @@ def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):
         assert task.created_by == "text_extraction"
         assert task.input_payload["source_type"] == "document"
         assert "Dear Adam" in task.input_payload["preview_text"]
+        assert "source_genre" in task.required_decisions
+        assert "voice_role" in task.required_decisions
 
         annotations = session.exec(select(Annotation).where(Annotation.target_id == asset.id)).all()
         assert any(annotation.annotation_type == "text_extraction" for annotation in annotations)
+
+
+def test_email_mirror_upload_creates_multi_voice_review_task(tmp_path):
+    client, engine = build_client(tmp_path)
+    imported = client.post("/api/imports/drive", json=email_drive_payload()).json()["imported"][0]
+    source_email = (
+        b"From: Charles <charles@example.com>\n"
+        b"To: Adam <adam@example.com>\n"
+        b"Subject: Re: visit\n"
+        b"Date: Thu, 2 Apr 2026 10:00:00 -0400\n"
+        b"Content-Type: text/plain; charset=utf-8\n"
+        b"\n"
+        b"Adam,\n\nThe house is too quiet now.\n\n> On Wednesday, Adam wrote: I made it home.\n"
+    )
+
+    response = client.post(
+        f"/api/assets/{imported['asset_id']}/mirror/upload",
+        data={
+            "source_system": "google_drive",
+            "source_uri": "https://drive.google.com/file/d/drive-email-123/view",
+            "drive_file_id": "drive-email-123",
+            "drive_mime_type": "message/rfc822",
+            "source_modified_time": "2026-04-02T10:00:00Z",
+        },
+        files={"file": ("thread.eml", source_email, "message/rfc822")},
+    )
+
+    assert response.status_code == 200
+
+    with Session(engine) as session:
+        task = session.exec(select(Task).where(Task.task_type == "email_voice_sample")).first()
+        assert task is not None
+        assert task.created_by == "text_extraction"
+        assert task.input_payload["source_type"] == "email"
+        assert task.input_payload["email_headers"]["subject"] == "Re: visit"
+        assert "charles_voice_presence" in task.required_decisions
+        assert "context_use" in task.required_decisions
 
 
 def test_asset_mirror_upload_is_idempotent_for_same_source_snapshot(tmp_path):

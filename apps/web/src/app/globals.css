@@ -570,6 +570,21 @@ h2 {
   white-space: pre-wrap;
 }
 
+.source-text-email {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7faf6;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.source-text-email span {
+  overflow-wrap: anywhere;
+}
+
 .source-text-meta {
   justify-content: flex-start;
   flex-wrap: wrap;
