@@ -21,6 +21,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://charlesops:charlesops@db:5432/charlesops}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3003,http://127.0.0.1:3003}
+      STORAGE_ROOT: ${STORAGE_ROOT:-/app/storage}
+      OBJECT_STORAGE_PROVIDER: ${OBJECT_STORAGE_PROVIDER:-local}
+      GCS_BUCKET: ${GCS_BUCKET:-}
+      GCS_PREFIX: ${GCS_PREFIX:-charlesops}
     ports:
       - "8000:8000"
     volumes:

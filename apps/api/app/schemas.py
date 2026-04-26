@@ -197,3 +197,17 @@ class DriveImportResponse(SQLModel):
     imported: List[DriveImportItemResult]
     created_count: int
     existing_count: int
+
+
+class AssetMirrorResponse(SQLModel):
+    asset_id: str
+    created: bool
+    object_file_id: str
+    asset_snapshot_id: str
+    annotation_id: Optional[str] = None
+    object_key: str
+    uri: str
+    filename: str
+    content_type: Optional[str] = None
+    byte_size: int
+    checksum_sha256: str

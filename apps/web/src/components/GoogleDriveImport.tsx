@@ -1,17 +1,22 @@
 "use client";
 
-import { Cloud, FolderOpen, Loader2, Search, ShieldCheck } from "lucide-react";
+import { Cloud, Download, FolderOpen, Loader2, Search, ShieldCheck } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import { importDriveFiles } from "@/lib/api";
-import type { DriveFileImport, DriveImportResponse, JsonRecord } from "@/lib/types";
+import { importDriveFiles, uploadAssetMirror } from "@/lib/api";
+import type { AssetMirrorResponse, DriveFileImport, DriveImportItemResult, DriveImportResponse, JsonRecord } from "@/lib/types";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const GCS_SCOPE = "https://www.googleapis.com/auth/devstorage.read_write";
+const DRIVE_AND_STORAGE_SCOPE = `${DRIVE_SCOPE} ${GCS_SCOPE}`;
 const GAPI_SCRIPT_ID = "google-api-loader";
 const GIS_SCRIPT_ID = "google-identity-services";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const IMPORT_BATCH_SIZE = 50;
 const DEFAULT_SCAN_LIMIT = 1000;
 const MAX_SCAN_LIMIT = 10000;
+const DEFAULT_MIRROR_SIZE_LIMIT_MB = 50;
+const MAX_MIRROR_SIZE_LIMIT_MB = 500;
+const BYTES_PER_MB = 1024 * 1024;
 const DRIVE_FILE_FIELDS = [
   "id",
   "name",
@@ -28,7 +33,8 @@ const DRIVE_FILE_FIELDS = [
   "iconLink",
   "thumbnailLink",
   "parents",
-  "fileExtension"
+  "fileExtension",
+  "capabilities/canDownload"
 ].join(",");
 const DRIVE_LIST_FIELDS = `nextPageToken,incompleteSearch,files(${DRIVE_FILE_FIELDS})`;
 const BULK_BACKUP_FOLDER_PATTERN =
@@ -36,7 +42,7 @@ const BULK_BACKUP_FOLDER_PATTERN =
 
 let googleLibrariesPromise: Promise<void> | null = null;
 
-type ImportState = "idle" | "loading" | "consent" | "picking" | "scanning" | "importing" | "done" | "error";
+type ImportState = "idle" | "loading" | "consent" | "picking" | "scanning" | "importing" | "mirroring" | "done" | "error";
 type PickerMode = "files" | "folder";
 type CandidateKind = "photos" | "writing" | "audioVideo" | "email" | "archives" | "other";
 type PickerDocument = JsonRecord;
@@ -51,11 +57,16 @@ interface DriveMetadata extends JsonRecord {
   md5Checksum?: string;
   sha1Checksum?: string;
   sha256Checksum?: string;
+  originalFilename?: string;
+  webContentLink?: string;
   webViewLink?: string;
   iconLink?: string;
   thumbnailLink?: string;
   parents?: string[];
   fileExtension?: string;
+  capabilities?: {
+    canDownload?: boolean;
+  };
 }
 
 interface DriveListResponse extends JsonRecord {
@@ -84,6 +95,30 @@ interface ScanFolder {
   id: string;
   name: string;
   path: string;
+}
+
+interface MirrorCandidate {
+  file: DriveFileImport;
+  imported: DriveImportItemResult;
+}
+
+interface MirrorSummary {
+  mirrored: number;
+  existing: number;
+  skipped: number;
+  failed: number;
+}
+
+interface DriveDownload {
+  blob: Blob;
+  filename: string;
+  contentType: string;
+  exportMimeType?: string;
+}
+
+interface WorkspaceExportFormat {
+  mimeType: string;
+  extension: string;
 }
 
 interface GoogleDriveImportProps {
@@ -194,6 +229,73 @@ function shouldImportCandidate(metadata: DriveMetadata, filters: ScanFilters): b
   return filters[classifyDriveFile(metadata)];
 }
 
+function clampMirrorSizeLimitMb(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_MIRROR_SIZE_LIMIT_MB;
+  }
+  return Math.min(Math.max(Math.round(value), 1), MAX_MIRROR_SIZE_LIMIT_MB);
+}
+
+function workspaceExportFormat(mimeType?: string | null): WorkspaceExportFormat | null {
+  switch (mimeType) {
+    case "application/vnd.google-apps.document":
+      return {
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        extension: "docx"
+      };
+    case "application/vnd.google-apps.spreadsheet":
+      return {
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extension: "xlsx"
+      };
+    case "application/vnd.google-apps.presentation":
+      return {
+        mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        extension: "pptx"
+      };
+    case "application/vnd.google-apps.drawing":
+      return { mimeType: "application/pdf", extension: "pdf" };
+    default:
+      return null;
+  }
+}
+
+function mirrorFilename(file: DriveFileImport, exportFormat: WorkspaceExportFormat | null): string {
+  const metadata = file.drive_metadata as DriveMetadata;
+  const name = metadata.originalFilename ?? file.name ?? "source_file";
+  if (!exportFormat) {
+    return name;
+  }
+  const suffix = `.${exportFormat.extension}`;
+  return name.toLowerCase().endsWith(suffix) ? name : `${name}${suffix}`;
+}
+
+async function downloadDriveCopy(accessToken: string, file: DriveFileImport): Promise<DriveDownload> {
+  const exportFormat = workspaceExportFormat(file.mime_type);
+  const fileId = encodeURIComponent(file.drive_file_id);
+  const url = exportFormat
+    ? `https://www.googleapis.com/drive/v3/files/${fileId}/export?${new URLSearchParams({ mimeType: exportFormat.mimeType }).toString()}`
+    : `https://www.googleapis.com/drive/v3/files/${fileId}?${new URLSearchParams({ alt: "media", supportsAllDrives: "true" }).toString()}`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Drive download failed: ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  return {
+    blob,
+    filename: mirrorFilename(file, exportFormat),
+    contentType: exportFormat?.mimeType ?? blob.type ?? file.mime_type ?? "application/octet-stream",
+    exportMimeType: exportFormat?.mimeType
+  };
+}
+
 async function fetchDriveMetadata(accessToken: string, fileId: string): Promise<DriveMetadata> {
   const params = new URLSearchParams({
     fields: DRIVE_FILE_FIELDS,
@@ -289,18 +391,22 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
   const [message, setMessage] = useState("Drive intake is ready.");
   const [result, setResult] = useState<DriveImportResponse | null>(null);
   const [scanLimit, setScanLimit] = useState(DEFAULT_SCAN_LIMIT);
+  const [mirrorSizeLimitMb, setMirrorSizeLimitMb] = useState(DEFAULT_MIRROR_SIZE_LIMIT_MB);
   const [scanFilters, setScanFilters] = useState<ScanFilters>({
     photos: true,
     writing: true,
-    audioVideo: true,
+    audioVideo: false,
     email: true,
     archives: false,
     other: false
   });
   const [skipBackupFolders, setSkipBackupFolders] = useState(true);
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
+  const [mirrorSummary, setMirrorSummary] = useState<MirrorSummary | null>(null);
+  const [lastImported, setLastImported] = useState<MirrorCandidate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const accessTokenRef = useRef<string | null>(null);
+  const accessTokenScopeRef = useRef<string>("");
 
   const config = useMemo(() => {
     const oauthClientId = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID ?? "";
@@ -315,31 +421,57 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     };
   }, []);
 
-  const busy = state === "loading" || state === "consent" || state === "picking" || state === "scanning" || state === "importing";
+  const busy =
+    state === "loading" ||
+    state === "consent" ||
+    state === "picking" ||
+    state === "scanning" ||
+    state === "importing" ||
+    state === "mirroring";
+  const mirrorableImportedCount = lastImported.filter((candidate) => candidate.file.mime_type !== FOLDER_MIME_TYPE).length;
 
   function updateFilter(key: CandidateKind, checked: boolean) {
     setScanFilters((current) => ({ ...current, [key]: checked }));
   }
 
-  async function requestAccessToken(): Promise<string> {
+  function rememberImported(files: DriveFileImport[], response: DriveImportResponse) {
+    setLastImported(
+      response.imported.map((imported, index) => ({
+        imported,
+        file: files[index]
+      })).filter((candidate): candidate is MirrorCandidate => Boolean(candidate.file))
+    );
+  }
+
+  function hasGrantedScopes(granted: string, requested: string): boolean {
+    const grantedScopes = new Set(granted.split(/\s+/).filter(Boolean));
+    return requested.split(/\s+/).filter(Boolean).every((scope) => grantedScopes.has(scope));
+  }
+
+  async function requestAccessToken(scope: string = DRIVE_SCOPE): Promise<string> {
     const google = window.google;
     if (!google?.accounts?.oauth2) {
       throw new Error("Google Identity Services did not load.");
     }
 
+    if (accessTokenRef.current && hasGrantedScopes(accessTokenScopeRef.current, scope)) {
+      return accessTokenRef.current;
+    }
+
     setState("consent");
-    setMessage("Waiting for Google Drive authorization.");
+    setMessage("Waiting for Google authorization.");
 
     return new Promise((resolve, reject) => {
       const tokenClient = google.accounts!.oauth2!.initTokenClient({
         client_id: config.oauthClientId,
-        scope: DRIVE_SCOPE,
+        scope,
         callback: (response) => {
           if (response.error || !response.access_token) {
             reject(new Error(response.error || "Google authorization did not return an access token."));
             return;
           }
           accessTokenRef.current = response.access_token;
+          accessTokenScopeRef.current = scope;
           resolve(response.access_token);
         }
       });
@@ -374,6 +506,7 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
 
     const response = await importFilesInBatches(files);
     setResult(response);
+    rememberImported(files, response);
     setState("done");
     setMessage(`Imported ${response.imported.length} Drive ${response.imported.length === 1 ? "item" : "items"}.`);
     await onImported();
@@ -458,6 +591,7 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
 
     if (candidates.length === 0) {
       setResult({ imported: [], created_count: 0, existing_count: 0 });
+      setLastImported([]);
       setState("done");
       setMessage(`Scanned ${filesScanned} files; no matching candidates imported.`);
       return;
@@ -467,9 +601,82 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     setMessage(`Importing ${candidates.length} matching Drive metadata records.`);
     const response = await importFilesInBatches(candidates);
     setResult(response);
+    rememberImported(candidates, response);
     setState("done");
     setMessage(`Imported ${response.imported.length} Drive metadata records from ${rootName}.`);
     await onImported();
+  }
+
+  async function mirrorImportedCandidates() {
+    if (!config.ready || busy || lastImported.length === 0) {
+      return;
+    }
+
+    setError(null);
+    const maxBytes = mirrorSizeLimitMb * BYTES_PER_MB;
+    const summary: MirrorSummary = { mirrored: 0, existing: 0, skipped: 0, failed: 0 };
+    let lastFailure: string | null = null;
+
+    try {
+      await loadGoogleLibraries();
+      const accessToken = await requestAccessToken(DRIVE_AND_STORAGE_SCOPE);
+      setState("mirroring");
+      setMessage(`Mirroring ${mirrorableImportedCount} imported Drive ${mirrorableImportedCount === 1 ? "item" : "items"}.`);
+      setMirrorSummary(summary);
+
+      for (const candidate of lastImported) {
+        const { file, imported } = candidate;
+        const metadata = file.drive_metadata as DriveMetadata;
+        const canDownload = metadata.capabilities?.canDownload;
+
+        if (file.mime_type === FOLDER_MIME_TYPE || canDownload === false || (file.size_bytes && file.size_bytes > maxBytes)) {
+          summary.skipped += 1;
+          setMirrorSummary({ ...summary });
+          continue;
+        }
+
+        try {
+          const download = await downloadDriveCopy(accessToken, file);
+          if (download.blob.size > maxBytes) {
+            summary.skipped += 1;
+            setMirrorSummary({ ...summary });
+            continue;
+          }
+
+          const mirror: AssetMirrorResponse = await uploadAssetMirror(imported.asset_id, download.blob, {
+            source_system: "google_drive",
+            source_uri: file.web_view_link ?? `gdrive://files/${file.drive_file_id}`,
+            drive_file_id: file.drive_file_id,
+            drive_mime_type: file.mime_type,
+            export_mime_type: download.exportMimeType ?? null,
+            source_modified_time: file.modified_time,
+            storage_access_token: accessToken,
+            filename: download.filename
+          });
+
+          if (mirror.created) {
+            summary.mirrored += 1;
+          } else {
+            summary.existing += 1;
+          }
+        } catch (caught) {
+          summary.failed += 1;
+          lastFailure = caught instanceof Error ? caught.message : "Mirror failed.";
+        }
+
+        setMirrorSummary({ ...summary });
+        setMessage(`Mirrored ${summary.mirrored} files, skipped ${summary.skipped}.`);
+      }
+
+      setState("done");
+      setError(lastFailure);
+      setMessage(`Mirror pass complete: ${summary.mirrored} copied, ${summary.existing} already present, ${summary.skipped} skipped.`);
+      await onImported();
+    } catch (caught) {
+      setState("error");
+      setError(caught instanceof Error ? caught.message : "Drive mirror failed.");
+      setMessage("Drive mirror failed.");
+    }
   }
 
   async function openPicker(mode: PickerMode) {
@@ -480,6 +687,8 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     setError(null);
     setResult(null);
     setScanSummary(null);
+    setMirrorSummary(null);
+    setLastImported([]);
 
     try {
       setState("loading");
@@ -566,6 +775,14 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
               <span>{result.imported.filter((item) => item.task_id).length} triage tasks</span>
             </div>
           ) : null}
+          {mirrorSummary ? (
+            <div className="drive-import-result">
+              <span>{mirrorSummary.mirrored} copied</span>
+              <span>{mirrorSummary.existing} present</span>
+              <span>{mirrorSummary.skipped} skipped</span>
+              <span>{mirrorSummary.failed} failed</span>
+            </div>
+          ) : null}
           {error ? <p className="inline-error">{error}</p> : null}
         </div>
       </div>
@@ -580,6 +797,17 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
             type="number"
             value={scanLimit}
             onChange={(event) => setScanLimit(clampScanLimit(Number.parseInt(event.target.value, 10)))}
+          />
+        </label>
+        <label className="drive-limit-field">
+          <span>Mirror MB cap</span>
+          <input
+            max={MAX_MIRROR_SIZE_LIMIT_MB}
+            min={1}
+            step={5}
+            type="number"
+            value={mirrorSizeLimitMb}
+            onChange={(event) => setMirrorSizeLimitMb(clampMirrorSizeLimitMb(Number.parseInt(event.target.value, 10)))}
           />
         </label>
         <div className="drive-filter-grid" aria-label="Drive scan filters">
@@ -617,8 +845,16 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
       <div className="drive-import-actions">
         <span className="drive-safety">
           <ShieldCheck size={16} />
-          Metadata first
+          Vault untouched
         </span>
+        <button
+          className="secondary-action"
+          disabled={!config.ready || busy || mirrorableImportedCount === 0}
+          onClick={() => void mirrorImportedCandidates()}
+        >
+          {state === "mirroring" ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
+          Mirror imported
+        </button>
         <button className="secondary-action" disabled={!config.ready || busy} onClick={() => void openPicker("folder")}>
           {busy ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
           Scan folder

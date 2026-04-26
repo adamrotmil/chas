@@ -53,6 +53,20 @@ export interface DriveImportResponse {
   existing_count: number;
 }
 
+export interface AssetMirrorResponse {
+  asset_id: string;
+  created: boolean;
+  object_file_id: string;
+  asset_snapshot_id: string;
+  annotation_id?: string | null;
+  object_key: string;
+  uri: string;
+  filename: string;
+  content_type?: string | null;
+  byte_size: number;
+  checksum_sha256: string;
+}
+
 export interface Task {
   id: string;
   human_id: string;

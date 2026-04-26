@@ -104,13 +104,28 @@ GOOGLE_CLOUD_PROJECT_ID=gen-lang-client-0798252524
 NEXT_PUBLIC_GOOGLE_CLOUD_PROJECT_NUMBER=1030126815863
 NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=...
 NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID=...
+OBJECT_STORAGE_PROVIDER=local
+GCS_BUCKET=
+GCS_PREFIX=charlesops
 ```
 
 The real local credential values belong in `.env`, which is ignored by git. Docker Compose passes the `NEXT_PUBLIC_GOOGLE_*` values through to `apps/web`.
 
-The current Drive import MVP stores selected Drive file metadata and provenance first. It creates CharlesOps asset, external reference, object file, snapshot, boundary, annotation, and triage task records; binary mirroring/export is intentionally deferred to the next asset pipeline step.
+The Drive import flow stores selected Drive metadata and provenance first. It creates CharlesOps asset, external reference, object file, snapshot, boundary, annotation, and triage task records without mutating Drive originals.
 
-For large vault folders, use **Scan folder** instead of manually selecting files. The scanner walks Drive folders with a configurable file cap, imports metadata in batches of 50, defaults to photos/writing/audio/video/email candidates, and skips backup-looking folders unless you turn that off.
+For large vault folders, use **Scan folder** instead of manually selecting files. The scanner walks Drive folders with a configurable file cap, imports metadata in batches of 50, defaults to photos/writing/email candidates, leaves audio/video off for now, and skips backup-looking folders unless you turn that off.
+
+After a metadata import, **Mirror imported** copies the selected Drive bytes into CharlesOps-controlled object storage. Blob files are downloaded with Drive `files.get?alt=media`; native Google Docs/Sheets/Slides are exported to Office/PDF snapshots. The API records a `source_mirror` asset snapshot and points downstream processing at the copy while preserving the Drive external reference for provenance.
+
+Local storage is the default fallback. To use Google Cloud Storage as the canonical mirror store, create a private bucket, then set:
+
+```bash
+OBJECT_STORAGE_PROVIDER=gcs
+GCS_BUCKET=your-private-bucket-name
+GCS_PREFIX=charlesops
+```
+
+When GCS mode is enabled, the web app requests a temporary Google Cloud Storage OAuth scope during **Mirror imported** and passes that access token to the local API for the upload only; the token is not stored in the database.
 
 ## GitHub Sync
 

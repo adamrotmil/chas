@@ -28,6 +28,7 @@ storage/derivatives/*
 storage/thumbs/*
 storage/display/*
 storage/transcripts/*
+storage/source_mirror/*
 !storage/**/.gitkeep
 
 # Database/runtime

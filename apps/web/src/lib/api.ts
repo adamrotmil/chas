@@ -1,4 +1,13 @@
-import type { Annotation, Asset, DriveFileImport, DriveImportResponse, GoldVoiceExample, Memory, Task } from "./types";
+import type {
+  Annotation,
+  Asset,
+  AssetMirrorResponse,
+  DriveFileImport,
+  DriveImportResponse,
+  GoldVoiceExample,
+  Memory,
+  Task
+} from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
 
@@ -66,4 +75,56 @@ export function importDriveFiles(files: DriveFileImport[]): Promise<DriveImportR
     method: "POST",
     body: JSON.stringify({ files, imported_by: "adam", create_triage_tasks: true })
   });
+}
+
+export interface UploadAssetMirrorMetadata {
+  source_system?: string;
+  source_uri?: string | null;
+  drive_file_id?: string | null;
+  drive_mime_type?: string | null;
+  export_mime_type?: string | null;
+  source_modified_time?: string | null;
+  storage_access_token?: string | null;
+  filename?: string;
+}
+
+export async function uploadAssetMirror(
+  assetId: string,
+  blob: Blob,
+  metadata: UploadAssetMirrorMetadata
+): Promise<AssetMirrorResponse> {
+  const formData = new FormData();
+  formData.set("file", blob, metadata.filename ?? "source_file");
+  formData.set("source_system", metadata.source_system ?? "google_drive");
+  if (metadata.source_uri) {
+    formData.set("source_uri", metadata.source_uri);
+  }
+  if (metadata.drive_file_id) {
+    formData.set("drive_file_id", metadata.drive_file_id);
+  }
+  if (metadata.drive_mime_type) {
+    formData.set("drive_mime_type", metadata.drive_mime_type);
+  }
+  if (metadata.export_mime_type) {
+    formData.set("export_mime_type", metadata.export_mime_type);
+  }
+  if (metadata.source_modified_time) {
+    formData.set("source_modified_time", metadata.source_modified_time);
+  }
+  if (metadata.storage_access_token) {
+    formData.set("storage_access_token", metadata.storage_access_token);
+  }
+
+  const response = await fetch(`${API_BASE}/assets/${assetId}/mirror/upload`, {
+    method: "POST",
+    body: formData,
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Request failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<AssetMirrorResponse>;
 }
