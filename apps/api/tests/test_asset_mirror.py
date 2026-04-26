@@ -196,7 +196,8 @@ def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):
         assert task.input_payload["source_type"] == "document"
         assert "Dear Adam" in task.input_payload["preview_text"]
         assert "source_genre" in task.required_decisions
-        assert "voice_role" in task.required_decisions
+        assert "fictionality_status" in task.required_decisions
+        assert "voice_presence" in task.required_decisions
 
         annotations = session.exec(select(Annotation).where(Annotation.target_id == asset.id)).all()
         assert any(annotation.annotation_type == "text_extraction" for annotation in annotations)
@@ -237,6 +238,7 @@ def test_email_mirror_upload_creates_multi_voice_review_task(tmp_path):
         assert task.input_payload["email_headers"]["subject"] == "Re: visit"
         assert "charles_voice_presence" in task.required_decisions
         assert "context_use" in task.required_decisions
+        assert "boundary_rationale" in task.required_decisions
 
 
 def test_html_email_text_extraction_preserves_inline_spacing(tmp_path):

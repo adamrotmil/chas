@@ -25,6 +25,14 @@ def _string_list(value: Any) -> List[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def _meaningful(value: Any) -> bool:
+    return value is not None and value != "" and value != []
+
+
+def _clean_dict(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: item for key, item in value.items() if _meaningful(item)}
+
+
 def _safe_decision_profile(decisions: Dict[str, Any]) -> Dict[str, Any]:
     profile = dict(decisions)
     if "cleaned_text" in profile:
@@ -65,11 +73,14 @@ def _upsert_metadata_profile(
     profile.metadata_status = "adam_reviewed"
     profile.title = _string(decisions.get("segment_title"), segment.title or task.human_id)
     profile.summary = _string(decisions.get("summary"))
-    profile.adam_context_note = _string(decisions.get("why_it_matters")) or _string(decisions.get("boundary_notes"))
+    profile.adam_context_note = _string(decisions.get("adam_context_note")) or _string(decisions.get("why_it_matters"))
     profile.source_genre = _string(decisions.get("source_genre"), profile_type)
     profile.authorship = _string(decisions.get("authorship"), "unknown")
-    profile.voice_presence = _string(decisions.get("charles_voice_presence")) or _string(decisions.get("voice_role"))
-    profile.voice_role = _string(decisions.get("voice_role")) or _string(decisions.get("context_use"))
+    profile.fictionality_status = _string(decisions.get("fictionality_status"), "unknown")
+    profile.voice_presence = _string(decisions.get("charles_voice_presence")) or _string(decisions.get("voice_presence"))
+    profile.voice_role = _string(decisions.get("voice_training_role")) or _string(decisions.get("voice_role")) or _string(
+        decisions.get("context_use")
+    )
     profile.truth_status = _string(decisions.get("truth_status"), segment.source_truth_status)
     profile.date_label = _string(decisions.get("date_or_range"), "unknown")
     profile.date_confidence = _string(decisions.get("date_confidence"), "unknown")
@@ -82,27 +93,31 @@ def _upsert_metadata_profile(
     profile.open_questions = _string_list(decisions.get("open_questions"))
     profile.retrieval_notes = _string(decisions.get("retrieval_notes")) or _string(decisions.get("why_it_matters"))
     profile.training_notes = _string(decisions.get("training_notes"))
-    profile.quality_signals = {
-        "source_reliability": decisions.get("source_reliability"),
-        "segment_boundary_good": decisions.get("segment_boundary_good"),
-        "prompt_pair_potential": decisions.get("prompt_pair_potential"),
-        "context_use": decisions.get("context_use"),
-        "authenticity_value": decisions.get("authenticity_value"),
-        "voice_density": decisions.get("voice_density"),
-        "usable_for_voice_context": decisions.get("usable_for_voice_context"),
-        "usable_for_grounded_generation": decisions.get("usable_for_grounded_generation"),
-        "usable_for_sft": decisions.get("usable_for_sft"),
-        "usable_for_dpo": decisions.get("usable_for_dpo"),
-        "extraction_edit_notes": decisions.get("extraction_edit_notes"),
-    }
-    profile.embedding_hints = {
-        "recommended_embedding_targets": ["source_text", "profile_summary", "adam_context_note"],
-        "selected_chunk_ids": selected_chunk_ids,
-        "chunk_scope": chunk_scope,
-        "cleaned_text_scope": decisions.get("cleaned_text_scope"),
-        "cleaned_text_chunk_id": decisions.get("cleaned_text_chunk_id"),
-        "profile_use": ["retrieval", "rag_context", "source_prioritization"],
-    }
+    profile.quality_signals = _clean_dict(
+        {
+            "factual_reliability": decisions.get("factual_reliability") or decisions.get("source_reliability"),
+            "segment_boundary_good": decisions.get("segment_boundary_good"),
+            "prompt_pair_potential": decisions.get("prompt_pair_potential"),
+            "context_use": decisions.get("context_use"),
+            "authenticity_value": decisions.get("authenticity_value"),
+            "voice_density": decisions.get("voice_density"),
+            "usable_for_voice_context": decisions.get("usable_for_voice_context"),
+            "usable_for_grounded_generation": decisions.get("usable_for_grounded_generation"),
+            "usable_for_sft": decisions.get("usable_for_sft"),
+            "usable_for_dpo": decisions.get("usable_for_dpo"),
+            "extraction_edit_notes": decisions.get("extraction_edit_notes"),
+        }
+    )
+    profile.embedding_hints = _clean_dict(
+        {
+            "recommended_embedding_targets": ["source_text", "profile_summary", "adam_context_note"],
+            "selected_chunk_ids": selected_chunk_ids,
+            "chunk_scope": chunk_scope,
+            "cleaned_text_scope": decisions.get("cleaned_text_scope"),
+            "cleaned_text_chunk_id": decisions.get("cleaned_text_chunk_id"),
+            "profile_use": ["retrieval", "rag_context", "source_prioritization"],
+        }
+    )
     profile.raw_profile = _safe_decision_profile(decisions)
     profile.source_annotation_id = annotation_id
     profile.created_by = "source_review"
@@ -133,7 +148,7 @@ def _find_or_create_segment_boundary(session: Session, segment: Segment, decisio
     boundary.usable_for_dpo = _truthy(decisions.get("usable_for_dpo"))
     boundary.usable_for_eval = _truthy(decisions.get("usable_for_grounded_generation"))
     boundary.redaction_required = _truthy(decisions.get("redaction_required"))
-    boundary.notes = _string(decisions.get("boundary_notes"))
+    boundary.notes = _string(decisions.get("boundary_rationale")) or _string(decisions.get("boundary_notes"))
     boundary.reviewed_by = "adam"
     boundary.reviewed_at = utcnow()
     session.add(boundary)
@@ -191,9 +206,10 @@ def _create_prompt_pair_candidate_task(
             "selected_chunk_ids": selected_chunk_ids,
             "source_genre": decisions.get("source_genre"),
             "authorship": decisions.get("authorship"),
-            "voice_role": decisions.get("voice_role"),
+            "fictionality_status": decisions.get("fictionality_status"),
+            "voice_presence": decisions.get("voice_presence") or decisions.get("charles_voice_presence"),
+            "voice_training_role": decisions.get("voice_training_role") or decisions.get("voice_role"),
             "context_use": decisions.get("context_use"),
-            "themes": decisions.get("themes", []),
             "truth_status": decisions.get("truth_status", segment.source_truth_status),
         },
         required_decisions=[
@@ -232,7 +248,9 @@ def upsert_source_review_artifacts(
         "review_type": task.task_type,
         "source_genre": decisions.get("source_genre"),
         "authorship": decisions.get("authorship"),
-        "voice_role": decisions.get("voice_role"),
+        "fictionality_status": decisions.get("fictionality_status"),
+        "voice_presence": decisions.get("voice_presence") or decisions.get("charles_voice_presence"),
+        "voice_training_role": decisions.get("voice_training_role") or decisions.get("voice_role"),
         "charles_voice_presence": decisions.get("charles_voice_presence"),
         "context_use": decisions.get("context_use"),
         "prompt_pair_potential": decisions.get("prompt_pair_potential"),

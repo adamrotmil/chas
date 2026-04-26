@@ -269,6 +269,7 @@ class MetadataProfile(IdMixin, TimestampMixin, table=True):
     adam_context_note: Optional[str] = Field(default=None, sa_column=text_column())
     source_genre: Optional[str] = Field(default=None, index=True)
     authorship: Optional[str] = Field(default=None, index=True)
+    fictionality_status: Optional[str] = Field(default=None, index=True)
     voice_presence: Optional[str] = Field(default=None, index=True)
     voice_role: Optional[str] = Field(default=None, index=True)
     truth_status: Optional[str] = Field(default=None, index=True)

@@ -122,6 +122,7 @@ class MetadataProfileCreate(SQLModel):
     adam_context_note: Optional[str] = None
     source_genre: Optional[str] = None
     authorship: Optional[str] = None
+    fictionality_status: Optional[str] = None
     voice_presence: Optional[str] = None
     voice_role: Optional[str] = None
     truth_status: Optional[str] = None
@@ -153,6 +154,7 @@ class MetadataProfileUpdate(SQLModel):
     adam_context_note: Optional[str] = None
     source_genre: Optional[str] = None
     authorship: Optional[str] = None
+    fictionality_status: Optional[str] = None
     voice_presence: Optional[str] = None
     voice_role: Optional[str] = None
     truth_status: Optional[str] = None

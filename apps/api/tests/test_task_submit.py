@@ -182,9 +182,10 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
                 "segment_boundary_good": "yes",
                 "source_genre": "novel_draft",
                 "authorship": "charles",
-                "voice_role": "primary_charles_voice",
+                "fictionality_status": "fiction",
                 "truth_status": "archival_source",
-                "themes": ["fiction", "family"],
+                "voice_presence": "primary",
+                "adam_context_note": "Long-form Charles-authored draft with useful voice and source context.",
                 "prompt_pair_potential": "high",
                 "usable_for_voice_context": "yes",
                 "usable_for_grounded_generation": "yes",
@@ -193,7 +194,7 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
                 "cleaned_text": "Reviewed cleaned text for annotation storage.",
                 "cleaned_text_scope": "active_chunk",
                 "cleaned_text_chunk_id": chunk_id,
-                "boundary_notes": "Safe for local source review.",
+                "boundary_rationale": "Safe for local source review.",
             },
             "notes": "Good source candidate.",
         },
@@ -223,9 +224,13 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
         assert profile.profile_type == "novel_draft"
         assert profile.metadata_status == "adam_reviewed"
         assert profile.authorship == "charles"
-        assert profile.themes == ["fiction", "family"]
+        assert profile.fictionality_status == "fiction"
+        assert profile.voice_presence == "primary"
+        assert profile.adam_context_note == "Long-form Charles-authored draft with useful voice and source context."
+        assert profile.themes == []
         assert profile.embedding_hints["selected_chunk_ids"] == [chunk_id]
         assert profile.raw_profile["cleaned_text"] == "[stored on annotation only]"
+        assert boundary.notes == "Safe for local source review."
 
 
 def test_metadata_profile_endpoint_crud():

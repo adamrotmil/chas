@@ -133,7 +133,7 @@ function Select({
     <select value={value} onChange={(event) => onChange(event.target.value)}>
       {options.map((option) => (
         <option key={option} value={option}>
-          {option}
+          {labelFromKey(option)}
         </option>
       ))}
     </select>
@@ -347,7 +347,7 @@ function Toggle({
   return (
     <label className="toggle">
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
-      <span>{label}</span>
+      <span>{labelFromKey(label)}</span>
     </label>
   );
 }
@@ -429,8 +429,6 @@ function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: De
   const [event, setEvent] = useState("unknown");
   const [description, setDescription] = useState("");
   const [invisibleContext, setInvisibleContext] = useState("");
-  const [tone, setTone] = useState("tender, comic");
-  const [themes, setThemes] = useState("fatherhood, memory");
   const [memoryPotential, setMemoryPotential] = useState(4);
   const [privacySensitivity, setPrivacySensitivity] = useState(2);
   const [galleryEligibility, setGalleryEligibility] = useState("family_private");
@@ -445,8 +443,6 @@ function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: De
       event,
       visual_description_correction: description,
       invisible_context_note: invisibleContext,
-      emotional_tone: parseList(tone),
-      themes: parseList(themes),
       memory_potential: memoryPotential,
       privacy_sensitivity: privacySensitivity,
       gallery_eligibility: galleryEligibility,
@@ -464,8 +460,6 @@ function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: De
     onChange,
     place,
     privacySensitivity,
-    themes,
-    tone,
     visiblePeople
   ]);
 
@@ -495,12 +489,6 @@ function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: De
       <Field label="Invisible context">
         <TextArea rows={5} value={invisibleContext} onChange={setInvisibleContext} />
       </Field>
-      <Field label="Emotional tone">
-        <input value={tone} onChange={(event) => setTone(event.target.value)} />
-      </Field>
-      <Field label="Themes">
-        <input value={themes} onChange={(event) => setThemes(event.target.value)} />
-      </Field>
       <Rating label="Memory potential" value={memoryPotential} onChange={setMemoryPotential} />
       <Rating label="Privacy sensitivity" value={privacySensitivity} onChange={setPrivacySensitivity} />
       <Field label="Gallery eligibility">
@@ -516,21 +504,19 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   const [title, setTitle] = useState(payloadString(payload.segment_title, ""));
   const [sourceGenre, setSourceGenre] = useState("document");
   const [authorship, setAuthorship] = useState("charles");
-  const [voiceRole, setVoiceRole] = useState("primary_charles_voice");
-  const [truthMode, setTruthMode] = useState("nonfiction_or_unknown");
-  const [people, setPeople] = useState("Charles, Adam");
+  const [fictionalityStatus, setFictionalityStatus] = useState("unknown");
+  const [truthStatus, setTruthStatus] = useState("archival_source");
+  const [voicePresence, setVoicePresence] = useState("unknown");
+  const [people, setPeople] = useState("");
   const [places, setPlaces] = useState("");
   const [dateRange, setDateRange] = useState("unknown");
-  const [themes, setThemes] = useState("fatherhood, logistics");
-  const [tone, setTone] = useState("tender, restrained");
-  const [reliability, setReliability] = useState("high");
-  const [truthStatus, setTruthStatus] = useState("archival_source");
+  const [adamContextNote, setAdamContextNote] = useState("");
   const [promptPairPotential, setPromptPairPotential] = useState("medium");
   const [voiceContext, setVoiceContext] = useState(true);
   const [groundedGeneration, setGroundedGeneration] = useState(true);
   const [sft, setSft] = useState(false);
   const [dpo, setDpo] = useState(false);
-  const [boundaryNotes, setBoundaryNotes] = useState("");
+  const [boundaryRationale, setBoundaryRationale] = useState("");
 
   useEffect(() => {
     onChange({
@@ -538,43 +524,39 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       segment_title: title,
       source_genre: sourceGenre,
       authorship,
-      voice_role: voiceRole,
-      truth_mode: truthMode,
+      fictionality_status: fictionalityStatus,
       people: parseList(people),
       places: parseList(places),
       date_or_range: dateRange,
-      themes: parseList(themes),
-      emotional_tone: parseList(tone),
-      source_reliability: reliability,
       truth_status: truthStatus,
+      voice_presence: voicePresence,
+      adam_context_note: adamContextNote,
       prompt_pair_potential: promptPairPotential,
       usable_for_voice_context: voiceContext ? "yes" : "no",
       usable_for_grounded_generation: groundedGeneration ? "yes" : "no",
       usable_for_sft: sft ? "yes" : "no",
       usable_for_dpo: dpo ? "yes" : "no",
-      boundary_notes: boundaryNotes
+      boundary_rationale: boundaryRationale
     });
   }, [
+    adamContextNote,
     authorship,
     boundaryGood,
-    boundaryNotes,
+    boundaryRationale,
     dateRange,
     dpo,
+    fictionalityStatus,
     groundedGeneration,
     onChange,
     people,
     places,
     promptPairPotential,
-    reliability,
     sft,
     sourceGenre,
-    themes,
     title,
-    tone,
-    truthMode,
     truthStatus,
     voiceContext,
-    voiceRole
+    voicePresence
   ]);
 
   return (
@@ -605,15 +587,35 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       <Field label="Authorship">
         <Select value={authorship} onChange={setAuthorship} options={["charles", "adam", "third_party", "mixed", "unknown"]} />
       </Field>
-      <Field label="Voice role">
+      <Field label="Fictionality">
         <Select
-          value={voiceRole}
-          onChange={setVoiceRole}
-          options={["primary_charles_voice", "charles_context", "third_party_context", "mixed_voices", "not_voice_material"]}
+          value={fictionalityStatus}
+          onChange={setFictionalityStatus}
+          options={["factual", "fiction", "fictionalized_from_life", "mixed", "unknown"]}
         />
       </Field>
-      <Field label="Truth mode">
-        <Select value={truthMode} onChange={setTruthMode} options={["nonfiction_or_unknown", "fiction", "mixed", "source_quote"]} />
+      <Field label="Truth status">
+        <Select
+          value={truthStatus}
+          onChange={setTruthStatus}
+          options={[
+            "archival_source",
+            "spoken_source",
+            "adam_memory",
+            "adam_inference",
+            "system_inference",
+            "model_generated",
+            "adam_expert_reconstruction",
+            "interpretive_synthesis"
+          ]}
+        />
+      </Field>
+      <Field label="Voice presence">
+        <Select
+          value={voicePresence}
+          onChange={setVoicePresence}
+          options={["primary", "partial", "context_only", "absent", "unknown"]}
+        />
       </Field>
       <Field label="People">
         <input value={people} onChange={(event) => setPeople(event.target.value)} />
@@ -624,21 +626,8 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       <Field label="Date or range">
         <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
       </Field>
-      <Field label="Themes">
-        <input value={themes} onChange={(event) => setThemes(event.target.value)} />
-      </Field>
-      <Field label="Emotional tone">
-        <input value={tone} onChange={(event) => setTone(event.target.value)} />
-      </Field>
-      <Field label="Reliability">
-        <Select value={reliability} onChange={setReliability} options={["high", "medium", "low", "unknown"]} />
-      </Field>
-      <Field label="Truth status">
-        <Select
-          value={truthStatus}
-          onChange={setTruthStatus}
-          options={["archival_source", "adam_memory", "adam_inference", "system_inference", "model_generated"]}
-        />
+      <Field label="Adam context">
+        <TextArea rows={5} value={adamContextNote} onChange={setAdamContextNote} />
       </Field>
       <Field label="Prompt pair potential">
         <Select value={promptPairPotential} onChange={setPromptPairPotential} options={["high", "medium", "low", "none"]} />
@@ -649,8 +638,8 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
         <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
         <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
       </div>
-      <Field label="Boundary notes">
-        <TextArea value={boundaryNotes} onChange={setBoundaryNotes} />
+      <Field label="Boundary rationale">
+        <TextArea value={boundaryRationale} onChange={setBoundaryRationale} />
       </Field>
     </div>
   );
@@ -718,12 +707,12 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
   const [quotedMaterial, setQuotedMaterial] = useState(true);
   const [authenticity, setAuthenticity] = useState(4);
   const [density, setDensity] = useState(4);
-  const [tone, setTone] = useState("tender, dry");
   const [phrases, setPhrases] = useState("call when you get in");
   const [voiceContext, setVoiceContext] = useState(true);
   const [sft, setSft] = useState(false);
   const [dpo, setDpo] = useState(false);
   const [why, setWhy] = useState("");
+  const [boundaryRationale, setBoundaryRationale] = useState("");
 
   useEffect(() => {
     onChange({
@@ -739,15 +728,16 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
       email_date: payloadString(headers.date),
       authenticity_value: authenticity,
       voice_density: density,
-      emotional_tone: parseList(tone),
       recurring_phrases: parseList(phrases),
       usable_for_voice_context: voiceContext ? "yes" : "no",
       usable_for_sft: sft ? "yes" : "no",
       usable_for_dpo: dpo ? "yes" : "no",
-      why_it_matters: why
+      why_it_matters: why,
+      boundary_rationale: boundaryRationale
     });
   }, [
     authenticity,
+    boundaryRationale,
     charlesRole,
     charlesVoicePresence,
     contextUse,
@@ -762,7 +752,6 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
     phrases,
     quotedMaterial,
     sft,
-    tone,
     voiceContext,
     voiceMode,
     why
@@ -803,9 +792,6 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
       </Field>
       <Rating label="Authenticity" value={authenticity} onChange={setAuthenticity} />
       <Rating label="Voice density" value={density} onChange={setDensity} />
-      <Field label="Emotional tone">
-        <input value={tone} onChange={(event) => setTone(event.target.value)} />
-      </Field>
       <Field label="Recurring phrases">
         <input value={phrases} onChange={(event) => setPhrases(event.target.value)} />
       </Field>
@@ -817,6 +803,9 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
       </div>
       <Field label="Why it matters">
         <TextArea value={why} onChange={setWhy} />
+      </Field>
+      <Field label="Boundary rationale">
+        <TextArea value={boundaryRationale} onChange={setBoundaryRationale} />
       </Field>
     </div>
   );
