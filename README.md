@@ -110,6 +110,8 @@ The real local credential values belong in `.env`, which is ignored by git. Dock
 
 The current Drive import MVP stores selected Drive file metadata and provenance first. It creates CharlesOps asset, external reference, object file, snapshot, boundary, annotation, and triage task records; binary mirroring/export is intentionally deferred to the next asset pipeline step.
 
+For large vault folders, use **Scan folder** instead of manually selecting files. The scanner walks Drive folders with a configurable file cap, imports metadata in batches of 50, defaults to photos/writing/audio/video/email candidates, and skips backup-looking folders unless you turn that off.
+
 ## GitHub Sync
 
 This project is synced to the private GitHub repository `adamrotmil/chas`.

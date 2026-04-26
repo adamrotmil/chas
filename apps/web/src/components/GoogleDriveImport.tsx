@@ -1,6 +1,6 @@
 "use client";
 
-import { Cloud, FolderOpen, Loader2, ShieldCheck } from "lucide-react";
+import { Cloud, FolderOpen, Loader2, Search, ShieldCheck } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { importDriveFiles } from "@/lib/api";
 import type { DriveFileImport, DriveImportResponse, JsonRecord } from "@/lib/types";
@@ -8,6 +8,10 @@ import type { DriveFileImport, DriveImportResponse, JsonRecord } from "@/lib/typ
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const GAPI_SCRIPT_ID = "google-api-loader";
 const GIS_SCRIPT_ID = "google-identity-services";
+const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const IMPORT_BATCH_SIZE = 50;
+const DEFAULT_SCAN_LIMIT = 1000;
+const MAX_SCAN_LIMIT = 10000;
 const DRIVE_FILE_FIELDS = [
   "id",
   "name",
@@ -23,13 +27,18 @@ const DRIVE_FILE_FIELDS = [
   "webContentLink",
   "iconLink",
   "thumbnailLink",
-  "parents"
+  "parents",
+  "fileExtension"
 ].join(",");
+const DRIVE_LIST_FIELDS = `nextPageToken,incompleteSearch,files(${DRIVE_FILE_FIELDS})`;
+const BULK_BACKUP_FOLDER_PATTERN =
+  /\b(backup|backups|time machine|carbon copy|external drive|hard drive|hdd|clone|disk image|windowsimagebackup|system volume information|photos library|node_modules)\b/i;
 
 let googleLibrariesPromise: Promise<void> | null = null;
 
-type ImportState = "idle" | "loading" | "consent" | "picking" | "importing" | "done" | "error";
-
+type ImportState = "idle" | "loading" | "consent" | "picking" | "scanning" | "importing" | "done" | "error";
+type PickerMode = "files" | "folder";
+type CandidateKind = "photos" | "writing" | "audioVideo" | "email" | "archives" | "other";
 type PickerDocument = JsonRecord;
 
 interface DriveMetadata extends JsonRecord {
@@ -46,6 +55,35 @@ interface DriveMetadata extends JsonRecord {
   iconLink?: string;
   thumbnailLink?: string;
   parents?: string[];
+  fileExtension?: string;
+}
+
+interface DriveListResponse extends JsonRecord {
+  files?: DriveMetadata[];
+  nextPageToken?: string;
+  incompleteSearch?: boolean;
+}
+
+interface ScanFilters {
+  photos: boolean;
+  writing: boolean;
+  audioVideo: boolean;
+  email: boolean;
+  archives: boolean;
+  other: boolean;
+}
+
+interface ScanSummary {
+  foldersScanned: number;
+  filesScanned: number;
+  candidates: number;
+  skippedFolders: number;
+}
+
+interface ScanFolder {
+  id: string;
+  name: string;
+  path: string;
 }
 
 interface GoogleDriveImportProps {
@@ -102,6 +140,60 @@ function asRecordArray(value: unknown): PickerDocument[] {
   return Array.isArray(value) ? value.filter((item): item is PickerDocument => Boolean(item && typeof item === "object")) : [];
 }
 
+function isFolder(metadata: DriveMetadata): boolean {
+  return metadata.mimeType === FOLDER_MIME_TYPE;
+}
+
+function queryEscape(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+function clampScanLimit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SCAN_LIMIT;
+  }
+  return Math.min(Math.max(Math.round(value), 50), MAX_SCAN_LIMIT);
+}
+
+function classifyDriveFile(metadata: DriveMetadata): CandidateKind {
+  const mime = (metadata.mimeType ?? "").toLowerCase();
+  const name = (metadata.name ?? "").toLowerCase();
+  const extension = (metadata.fileExtension ?? name.split(".").pop() ?? "").toLowerCase();
+
+  if (mime.startsWith("image/")) {
+    return "photos";
+  }
+  if (mime.startsWith("audio/") || mime.startsWith("video/")) {
+    return "audioVideo";
+  }
+  if (mime === "message/rfc822" || ["eml", "mbox", "msg"].includes(extension)) {
+    return "email";
+  }
+  if (["zip", "tar", "gz", "tgz", "7z", "rar", "dmg"].includes(extension) || mime.includes("zip")) {
+    return "archives";
+  }
+  if (
+    mime.startsWith("text/") ||
+    mime === "application/pdf" ||
+    mime === "application/rtf" ||
+    mime === "application/vnd.google-apps.document" ||
+    mime === "application/vnd.google-apps.presentation" ||
+    mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mime === "application/msword" ||
+    ["txt", "md", "rtf", "pdf", "doc", "docx", "pages"].includes(extension)
+  ) {
+    return "writing";
+  }
+  return "other";
+}
+
+function shouldImportCandidate(metadata: DriveMetadata, filters: ScanFilters): boolean {
+  if (isFolder(metadata)) {
+    return false;
+  }
+  return filters[classifyDriveFile(metadata)];
+}
+
 async function fetchDriveMetadata(accessToken: string, fileId: string): Promise<DriveMetadata> {
   const params = new URLSearchParams({
     fields: DRIVE_FILE_FIELDS,
@@ -119,6 +211,33 @@ async function fetchDriveMetadata(accessToken: string, fileId: string): Promise<
   }
 
   return response.json() as Promise<DriveMetadata>;
+}
+
+async function listDriveChildren(accessToken: string, folderId: string, pageToken?: string): Promise<DriveListResponse> {
+  const params = new URLSearchParams({
+    fields: DRIVE_LIST_FIELDS,
+    includeItemsFromAllDrives: "true",
+    pageSize: "1000",
+    q: `'${queryEscape(folderId)}' in parents and trashed = false`,
+    supportsAllDrives: "true"
+  });
+
+  if (pageToken) {
+    params.set("pageToken", pageToken);
+  }
+
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Drive folder scan failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<DriveListResponse>;
 }
 
 function toImportPayload(doc: PickerDocument, metadata: DriveMetadata): DriveFileImport {
@@ -148,10 +267,38 @@ function toImportPayload(doc: PickerDocument, metadata: DriveMetadata): DriveFil
   };
 }
 
+async function importFilesInBatches(files: DriveFileImport[]): Promise<DriveImportResponse> {
+  const aggregate: DriveImportResponse = {
+    imported: [],
+    created_count: 0,
+    existing_count: 0
+  };
+
+  for (let index = 0; index < files.length; index += IMPORT_BATCH_SIZE) {
+    const response = await importDriveFiles(files.slice(index, index + IMPORT_BATCH_SIZE));
+    aggregate.imported.push(...response.imported);
+    aggregate.created_count += response.created_count;
+    aggregate.existing_count += response.existing_count;
+  }
+
+  return aggregate;
+}
+
 export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
   const [state, setState] = useState<ImportState>("idle");
   const [message, setMessage] = useState("Drive intake is ready.");
   const [result, setResult] = useState<DriveImportResponse | null>(null);
+  const [scanLimit, setScanLimit] = useState(DEFAULT_SCAN_LIMIT);
+  const [scanFilters, setScanFilters] = useState<ScanFilters>({
+    photos: true,
+    writing: true,
+    audioVideo: true,
+    email: true,
+    archives: false,
+    other: false
+  });
+  const [skipBackupFolders, setSkipBackupFolders] = useState(true);
+  const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const accessTokenRef = useRef<string | null>(null);
 
@@ -168,7 +315,11 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     };
   }, []);
 
-  const busy = state === "loading" || state === "consent" || state === "picking" || state === "importing";
+  const busy = state === "loading" || state === "consent" || state === "picking" || state === "scanning" || state === "importing";
+
+  function updateFilter(key: CandidateKind, checked: boolean) {
+    setScanFilters((current) => ({ ...current, [key]: checked }));
+  }
 
   async function requestAccessToken(): Promise<string> {
     const google = window.google;
@@ -221,20 +372,114 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
       })
     );
 
-    const response = await importDriveFiles(files);
+    const response = await importFilesInBatches(files);
     setResult(response);
     setState("done");
     setMessage(`Imported ${response.imported.length} Drive ${response.imported.length === 1 ? "item" : "items"}.`);
     await onImported();
   }
 
-  async function openPicker() {
+  async function scanPickedFolder(accessToken: string, doc: PickerDocument) {
+    const picker = window.google?.picker;
+    const folderId = picker ? asString(doc[picker.Document.ID]) : undefined;
+    if (!folderId) {
+      throw new Error("The selected Drive folder did not include a folder ID.");
+    }
+
+    const rootMetadata = await fetchDriveMetadata(accessToken, folderId);
+    const rootName = rootMetadata.name ?? "Selected folder";
+    const maxFiles = clampScanLimit(scanLimit);
+    const queue: ScanFolder[] = [{ id: folderId, name: rootName, path: rootName }];
+    const seenFolders = new Set([folderId]);
+    const candidates: DriveFileImport[] = [];
+    let filesScanned = 0;
+    let foldersScanned = 0;
+    let skippedFolders = 0;
+
+    setState("scanning");
+    setMessage(`Scanning ${rootName}.`);
+    setScanSummary({ foldersScanned, filesScanned, candidates: 0, skippedFolders });
+
+    while (queue.length > 0 && filesScanned < maxFiles) {
+      const folder = queue.shift()!;
+      foldersScanned += 1;
+      let pageToken: string | undefined;
+
+      do {
+        const page = await listDriveChildren(accessToken, folder.id, pageToken);
+        const files = page.files ?? [];
+
+        for (const item of files) {
+          if (!item.id) {
+            continue;
+          }
+
+          const itemName = item.name ?? "Untitled Drive item";
+          const itemPath = `${folder.path}/${itemName}`;
+
+          if (isFolder(item)) {
+            if (skipBackupFolders && BULK_BACKUP_FOLDER_PATTERN.test(itemName)) {
+              skippedFolders += 1;
+              continue;
+            }
+            if (!seenFolders.has(item.id)) {
+              seenFolders.add(item.id);
+              queue.push({ id: item.id, name: itemName, path: itemPath });
+            }
+            continue;
+          }
+
+          filesScanned += 1;
+          if (shouldImportCandidate(item, scanFilters)) {
+            candidates.push(
+              toImportPayload(
+                {},
+                {
+                  ...item,
+                  charlesOpsPath: itemPath,
+                  charlesOpsRootFolderId: folderId,
+                  charlesOpsRootFolderName: rootName,
+                  charlesOpsCandidateKind: classifyDriveFile(item)
+                }
+              )
+            );
+          }
+
+          if (filesScanned >= maxFiles) {
+            break;
+          }
+        }
+
+        pageToken = page.nextPageToken;
+        setScanSummary({ foldersScanned, filesScanned, candidates: candidates.length, skippedFolders });
+        setMessage(`Scanned ${filesScanned} files across ${foldersScanned} folders.`);
+      } while (pageToken && filesScanned < maxFiles);
+    }
+
+    if (candidates.length === 0) {
+      setResult({ imported: [], created_count: 0, existing_count: 0 });
+      setState("done");
+      setMessage(`Scanned ${filesScanned} files; no matching candidates imported.`);
+      return;
+    }
+
+    setState("importing");
+    setMessage(`Importing ${candidates.length} matching Drive metadata records.`);
+    const response = await importFilesInBatches(candidates);
+    setResult(response);
+    setState("done");
+    setMessage(`Imported ${response.imported.length} Drive metadata records from ${rootName}.`);
+    await onImported();
+  }
+
+  async function openPicker(mode: PickerMode) {
     if (!config.ready || busy) {
       return;
     }
 
     setError(null);
     setResult(null);
+    setScanSummary(null);
 
     try {
       setState("loading");
@@ -247,11 +492,16 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
       }
 
       setState("picking");
-      setMessage("Choose Drive files to add to CharlesOps.");
-      const docsView = new picker.DocsView(picker.ViewId.DOCS).setIncludeFolders(false).setSelectFolderEnabled(false);
-      const drivePicker = new picker.PickerBuilder()
+      setMessage(mode === "folder" ? "Choose a Drive folder to scan." : "Choose Drive files to add to CharlesOps.");
+
+      const docsView =
+        mode === "folder"
+          ? new picker.DocsView(picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true)
+          : new picker.DocsView(picker.ViewId.DOCS).setIncludeFolders(false).setSelectFolderEnabled(false);
+      docsView.setMode(picker.DocsViewMode.LIST).setEnableDrives(true);
+
+      const builder = new picker.PickerBuilder()
         .addView(docsView)
-        .enableFeature(picker.Feature.MULTISELECT_ENABLED)
         .setOAuthToken(accessToken)
         .setDeveloperKey(config.apiKey)
         .setAppId(config.projectNumber)
@@ -259,7 +509,11 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
           const action = data[picker.Response.ACTION];
           if (action === picker.Action.PICKED) {
             const docs = asRecordArray(data[picker.Response.DOCUMENTS]);
-            void importPickedDocuments(accessToken, docs).catch((caught) => {
+            const work =
+              mode === "folder"
+                ? scanPickedFolder(accessToken, docs[0] ?? {})
+                : importPickedDocuments(accessToken, docs);
+            void work.catch((caught) => {
               setState("error");
               setError(caught instanceof Error ? caught.message : "Drive import failed.");
               setMessage("Drive import failed.");
@@ -268,10 +522,18 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
             setState("idle");
             setMessage("Drive picker closed.");
           }
-        })
-        .build();
+        });
 
-      drivePicker.setVisible(true);
+      if (mode === "files") {
+        builder.enableFeature(picker.Feature.MULTISELECT_ENABLED);
+      } else {
+        builder.setMaxItems(1);
+      }
+      if (picker.Feature.SUPPORT_DRIVES) {
+        builder.enableFeature(picker.Feature.SUPPORT_DRIVES);
+      }
+
+      builder.build().setVisible(true);
     } catch (caught) {
       setState("error");
       setError(caught instanceof Error ? caught.message : "Unable to open Google Drive.");
@@ -289,6 +551,14 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
           <span className="eyebrow">Drive intake</span>
           <h2>Google Drive source import</h2>
           <p>{config.ready ? message : "Google Drive credentials are missing from the web environment."}</p>
+          {scanSummary ? (
+            <div className="drive-import-result">
+              <span>{scanSummary.foldersScanned} folders</span>
+              <span>{scanSummary.filesScanned} scanned</span>
+              <span>{scanSummary.candidates} candidates</span>
+              <span>{scanSummary.skippedFolders} skipped folders</span>
+            </div>
+          ) : null}
           {result ? (
             <div className="drive-import-result">
               <span>{result.created_count} new</span>
@@ -299,14 +569,63 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
           {error ? <p className="inline-error">{error}</p> : null}
         </div>
       </div>
+
+      <div className="drive-import-controls">
+        <label className="drive-limit-field">
+          <span>Scan cap</span>
+          <input
+            max={MAX_SCAN_LIMIT}
+            min={50}
+            step={50}
+            type="number"
+            value={scanLimit}
+            onChange={(event) => setScanLimit(clampScanLimit(Number.parseInt(event.target.value, 10)))}
+          />
+        </label>
+        <div className="drive-filter-grid" aria-label="Drive scan filters">
+          <label>
+            <input checked={scanFilters.photos} onChange={(event) => updateFilter("photos", event.target.checked)} type="checkbox" />
+            Photos
+          </label>
+          <label>
+            <input checked={scanFilters.writing} onChange={(event) => updateFilter("writing", event.target.checked)} type="checkbox" />
+            Writing
+          </label>
+          <label>
+            <input checked={scanFilters.audioVideo} onChange={(event) => updateFilter("audioVideo", event.target.checked)} type="checkbox" />
+            Audio/video
+          </label>
+          <label>
+            <input checked={scanFilters.email} onChange={(event) => updateFilter("email", event.target.checked)} type="checkbox" />
+            Email
+          </label>
+          <label>
+            <input checked={scanFilters.archives} onChange={(event) => updateFilter("archives", event.target.checked)} type="checkbox" />
+            Archives
+          </label>
+          <label>
+            <input checked={scanFilters.other} onChange={(event) => updateFilter("other", event.target.checked)} type="checkbox" />
+            Other
+          </label>
+          <label>
+            <input checked={skipBackupFolders} onChange={(event) => setSkipBackupFolders(event.target.checked)} type="checkbox" />
+            Skip backup-like folders
+          </label>
+        </div>
+      </div>
+
       <div className="drive-import-actions">
         <span className="drive-safety">
           <ShieldCheck size={16} />
           Metadata first
         </span>
-        <button className="primary-action" disabled={!config.ready || busy} onClick={() => void openPicker()}>
+        <button className="secondary-action" disabled={!config.ready || busy} onClick={() => void openPicker("folder")}>
+          {busy ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
+          Scan folder
+        </button>
+        <button className="primary-action" disabled={!config.ready || busy} onClick={() => void openPicker("files")}>
           {busy ? <Loader2 size={18} className="spin" /> : <FolderOpen size={18} />}
-          Select Drive files
+          Select files
         </button>
       </div>
     </section>

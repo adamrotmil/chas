@@ -51,6 +51,7 @@ interface GooglePickerNamespace {
   };
   Feature: {
     MULTISELECT_ENABLED: string;
+    SUPPORT_DRIVES: string;
   };
   PickerBuilder: new () => GooglePickerBuilder;
   Response: {
@@ -59,12 +60,15 @@ interface GooglePickerNamespace {
   };
   ViewId: {
     DOCS: string;
+    FOLDERS: string;
   };
 }
 
 interface GooglePickerDocsView {
+  setEnableDrives: (enableDrives: boolean) => GooglePickerDocsView;
   setIncludeFolders: (includeFolders: boolean) => GooglePickerDocsView;
   setMode: (mode: string) => GooglePickerDocsView;
+  setParent: (parentId: string) => GooglePickerDocsView;
   setSelectFolderEnabled: (enabled: boolean) => GooglePickerDocsView;
 }
 
@@ -74,6 +78,7 @@ interface GooglePickerBuilder {
   setAppId: (appId: string) => GooglePickerBuilder;
   setCallback: (callback: (data: GooglePickerResponse) => void) => GooglePickerBuilder;
   setDeveloperKey: (developerKey: string) => GooglePickerBuilder;
+  setMaxItems: (maxItems: number) => GooglePickerBuilder;
   setOAuthToken: (oauthToken: string) => GooglePickerBuilder;
   build: () => GooglePicker;
 }

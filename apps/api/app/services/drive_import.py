@@ -11,11 +11,14 @@ from app.schemas import DriveFileImport, DriveImportItemResult
 
 
 SOURCE_SYSTEM = "google_drive"
+FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
 
 def _asset_type_for(mime_type: Optional[str], name: str) -> str:
     mime = (mime_type or "").lower()
     lowered_name = name.lower()
+    if mime == FOLDER_MIME_TYPE:
+        return "folder"
     if mime.startswith("image/"):
         return "photo"
     if mime.startswith("audio/"):

@@ -186,9 +186,9 @@ h2 {
 }
 
 .drive-import {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(300px, 0.8fr) auto;
+  align-items: start;
   gap: 18px;
   margin-bottom: 20px;
   padding: 16px;
@@ -199,7 +199,10 @@ h2 {
 }
 
 .drive-import-copy,
+.drive-import-controls,
 .drive-import-actions,
+.drive-limit-field,
+.drive-filter-grid label,
 .drive-safety,
 .drive-import-result,
 .drive-import-actions button {
@@ -254,10 +257,53 @@ h2 {
 
 .drive-import-actions {
   flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
 }
 
+.drive-import-controls {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drive-limit-field {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.drive-limit-field span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.drive-limit-field input {
+  max-width: 120px;
+}
+
+.drive-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.drive-filter-grid label {
+  gap: 7px;
+  min-height: 30px;
+  color: #344139;
+  font-size: 0.86rem;
+}
+
+.drive-filter-grid input {
+  width: 16px;
+  min-height: 16px;
+}
+
 .drive-safety {
+  justify-content: center;
   gap: 6px;
 }
 
@@ -270,6 +316,12 @@ h2 {
   background: var(--accent);
   color: #ffffff;
   font-weight: 800;
+}
+
+.drive-import-actions .secondary-action {
+  border-color: #b9c9c2;
+  background: #fbfcfa;
+  color: var(--accent-strong);
 }
 
 .inline-error {
@@ -675,6 +727,7 @@ button:focus-visible {
   .gold-grid,
   .toggle-grid,
   .rating-panel,
+  .drive-filter-grid,
   .dashboard {
     grid-template-columns: 1fr;
   }
