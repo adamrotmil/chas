@@ -15,6 +15,44 @@ export interface Asset {
   updated_at: string;
 }
 
+export interface DriveFileImport {
+  drive_file_id: string;
+  name: string;
+  mime_type?: string | null;
+  web_view_link?: string | null;
+  icon_link?: string | null;
+  thumbnail_link?: string | null;
+  size_bytes?: number | null;
+  md5_checksum?: string | null;
+  sha1_checksum?: string | null;
+  sha256_checksum?: string | null;
+  created_time?: string | null;
+  modified_time?: string | null;
+  parents: string[];
+  picker_document: JsonRecord;
+  drive_metadata: JsonRecord;
+}
+
+export interface DriveImportItemResult {
+  asset_id: string;
+  human_id: string;
+  title: string;
+  asset_type: string;
+  created: boolean;
+  external_ref_id: string;
+  object_file_id: string;
+  asset_snapshot_id: string;
+  boundary_id: string;
+  task_id?: string | null;
+  annotation_id: string;
+}
+
+export interface DriveImportResponse {
+  imported: DriveImportItemResult[];
+  created_count: number;
+  existing_count: number;
+}
+
 export interface Task {
   id: string;
   human_id: string;

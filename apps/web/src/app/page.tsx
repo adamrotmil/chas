@@ -4,6 +4,7 @@ import { Activity, Archive, Database, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { flagTask, getAssets, getGoldVoiceExamples, getMemories, getTasks, skipTask, submitTask } from "@/lib/api";
 import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
+import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
 
 function queueLabel(queue: string): string {
@@ -161,6 +162,8 @@ export default function Home() {
           {metric("Gold edits", goldExamples.length, "voice examples", <Sparkles size={18} />)}
           {metric("Session", completedThisSession, "submitted now", <Activity size={18} />)}
         </section>
+
+        <GoogleDriveImport onImported={load} />
 
         {error ? <div className="error-banner">{error}</div> : null}
 

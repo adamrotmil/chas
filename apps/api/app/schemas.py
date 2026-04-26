@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
 
 
 class AssetCreate(SQLModel):
@@ -152,3 +153,47 @@ class DatasetBuildRequest(SQLModel):
     export_type: str
     version: str = "v0"
     split: str = "train"
+
+
+class DriveFileImport(SQLModel):
+    drive_file_id: str
+    name: str
+    mime_type: Optional[str] = None
+    web_view_link: Optional[str] = None
+    icon_link: Optional[str] = None
+    thumbnail_link: Optional[str] = None
+    size_bytes: Optional[int] = None
+    md5_checksum: Optional[str] = None
+    sha1_checksum: Optional[str] = None
+    sha256_checksum: Optional[str] = None
+    created_time: Optional[datetime] = None
+    modified_time: Optional[datetime] = None
+    parents: List[str] = Field(default_factory=list)
+    picker_document: Dict[str, Any] = Field(default_factory=dict)
+    drive_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DriveImportRequest(SQLModel):
+    files: List[DriveFileImport]
+    imported_by: str = "adam"
+    create_triage_tasks: bool = True
+
+
+class DriveImportItemResult(SQLModel):
+    asset_id: str
+    human_id: str
+    title: str
+    asset_type: str
+    created: bool
+    external_ref_id: str
+    object_file_id: str
+    asset_snapshot_id: str
+    boundary_id: str
+    task_id: Optional[str] = None
+    annotation_id: str
+
+
+class DriveImportResponse(SQLModel):
+    imported: List[DriveImportItemResult]
+    created_count: int
+    existing_count: int

@@ -185,6 +185,107 @@ h2 {
   margin-bottom: 20px;
 }
 
+.drive-import {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.drive-import-copy,
+.drive-import-actions,
+.drive-safety,
+.drive-import-result,
+.drive-import-actions button {
+  display: flex;
+  align-items: center;
+}
+
+.drive-import-copy {
+  min-width: 0;
+  gap: 12px;
+}
+
+.drive-import-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid #bfd5dd;
+  border-radius: 8px;
+  background: #e8f3f6;
+  color: #275d73;
+}
+
+.drive-import h2 {
+  margin-top: 4px;
+}
+
+.drive-import p {
+  max-width: 780px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.drive-import-result {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.drive-import-result span,
+.drive-safety {
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: #eef5f0;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.drive-import-actions {
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.drive-safety {
+  gap: 6px;
+}
+
+.drive-import-actions button {
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.inline-error {
+  color: var(--warning) !important;
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .metric {
   display: grid;
   gap: 6px;
@@ -548,8 +649,18 @@ button:focus-visible {
   }
 
   .workspace-grid,
-  .preview-band {
+  .preview-band,
+  .drive-import {
     grid-template-columns: 1fr;
+  }
+
+  .drive-import {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .drive-import-actions {
+    justify-content: space-between;
   }
 }
 
@@ -584,5 +695,16 @@ button:focus-visible {
 
   .status-chip {
     margin-left: 0;
+  }
+
+  .drive-import-copy,
+  .drive-import-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .drive-safety,
+  .drive-import-actions button {
+    justify-content: center;
   }
 }

@@ -91,15 +91,24 @@ Local browser origins for credentials:
 - `http://localhost:3000`
 - `http://localhost:3003`
 
+Google Picker also needs the numeric Cloud project number:
+
+```text
+1030126815863
+```
+
 The local env variables are:
 
 ```bash
 GOOGLE_CLOUD_PROJECT_ID=gen-lang-client-0798252524
+NEXT_PUBLIC_GOOGLE_CLOUD_PROJECT_NUMBER=1030126815863
 NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=...
 NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID=...
 ```
 
 The real local credential values belong in `.env`, which is ignored by git. Docker Compose passes the `NEXT_PUBLIC_GOOGLE_*` values through to `apps/web`.
+
+The current Drive import MVP stores selected Drive file metadata and provenance first. It creates CharlesOps asset, external reference, object file, snapshot, boundary, annotation, and triage task records; binary mirroring/export is intentionally deferred to the next asset pipeline step.
 
 ## GitHub Sync
 

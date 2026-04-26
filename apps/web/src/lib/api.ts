@@ -1,4 +1,4 @@
-import type { Annotation, Asset, GoldVoiceExample, Memory, Task } from "./types";
+import type { Annotation, Asset, DriveFileImport, DriveImportResponse, GoldVoiceExample, Memory, Task } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
 
@@ -58,5 +58,12 @@ export function flagTask(taskId: string, reason?: string): Promise<Task> {
   return request<Task>(`/tasks/${taskId}/flag`, {
     method: "POST",
     body: JSON.stringify({ reason })
+  });
+}
+
+export function importDriveFiles(files: DriveFileImport[]): Promise<DriveImportResponse> {
+  return request<DriveImportResponse>("/imports/drive", {
+    method: "POST",
+    body: JSON.stringify({ files, imported_by: "adam", create_triage_tasks: true })
   });
 }
