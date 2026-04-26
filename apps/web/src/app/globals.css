@@ -188,7 +188,7 @@ p {
 
 .workbench-layout {
   display: grid;
-  grid-template-columns: 212px minmax(300px, 326px) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 212px) 6px var(--queue-width, 326px) 6px minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
@@ -198,6 +198,42 @@ p {
 .workbench-column {
   min-height: 0;
   border-right: 1px solid var(--line-soft);
+}
+
+.column-resizer {
+  position: relative;
+  z-index: 5;
+  width: 6px;
+  min-width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.column-resizer::before {
+  position: absolute;
+  inset: 0 2px;
+  background: var(--line-soft);
+  content: "";
+}
+
+.column-resizer::after {
+  position: absolute;
+  inset: 0 -5px;
+  content: "";
+}
+
+.column-resizer:hover::before,
+.column-resizer:focus-visible::before,
+.is-column-resizing .column-resizer::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(61, 139, 253, 0.18);
+}
+
+.is-column-resizing,
+.is-column-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .sidebar {
@@ -538,7 +574,7 @@ p {
 
 .review-grid {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) minmax(360px, 440px);
+  grid-template-columns: minmax(420px, 1fr) 6px var(--inspector-width, 440px);
   min-height: 0;
   overflow: hidden;
 }
@@ -560,7 +596,6 @@ p {
   display: grid;
   grid-template-rows: 48px minmax(0, 1fr);
   min-height: 0;
-  border-left: 1px solid var(--line-soft);
   background: rgba(16, 23, 32, 0.8);
 }
 
@@ -1246,11 +1281,15 @@ button:focus-visible {
 
 @media (max-width: 1240px) {
   .workbench-layout {
-    grid-template-columns: 188px 292px minmax(0, 1fr);
+    grid-template-columns: var(--sidebar-width, 188px) 6px var(--queue-width, 292px) 6px minmax(0, 1fr);
   }
 
   .review-grid {
     grid-template-columns: 1fr;
+  }
+
+  .inspector-column-resizer {
+    display: none;
   }
 
   .inspector {
@@ -1288,6 +1327,10 @@ button:focus-visible {
   .workbench-layout {
     grid-template-columns: 1fr;
     overflow: visible;
+  }
+
+  .column-resizer {
+    display: none;
   }
 
   .sidebar,

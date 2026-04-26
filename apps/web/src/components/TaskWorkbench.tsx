@@ -71,6 +71,8 @@ const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
 };
 
 const NEW_PERSON_VALUE = "__new_person__";
+const INSPECTOR_RESIZE_STEP = 16;
+const inspectorBounds = { min: 320, max: 640 };
 
 const decisionPromptLabels: Record<string, string> = {
   source_genre: "What kind of document it is",
@@ -168,6 +170,10 @@ function decisionBoolean(decisions: Decisions, key: string, fallback: boolean): 
     return value.toLowerCase() === "yes" || value.toLowerCase() === "true";
   }
   return fallback;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function entityOptionLabel(entity: Entity): string {
@@ -1285,6 +1291,7 @@ export function TaskWorkbench({
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [draftDecisions, setDraftDecisions] = useState<Decisions>({});
   const [inspectorTab, setInspectorTab] = useState<"metadata" | "annotations" | "history">("metadata");
+  const [inspectorWidth, setInspectorWidth] = useState(440);
   const [reviewStatus, setReviewStatus] = useState("needs_review");
   const [decisions, setDecisions] = useState<Decisions>({});
   const [chunkSelection, setChunkSelection] = useState<ChunkSelection>({
@@ -1415,6 +1422,40 @@ export function TaskWorkbench({
     setDecisions((current) => (sameDecisionRecord(current, value) ? current : value));
   }, []);
 
+  const resizeInspector = useCallback((nextWidth: number) => {
+    setInspectorWidth(clamp(nextWidth, inspectorBounds.min, inspectorBounds.max));
+  }, []);
+
+  function startInspectorResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = inspectorWidth;
+    document.body.classList.add("is-column-resizing");
+
+    function handleMove(moveEvent: PointerEvent) {
+      resizeInspector(startWidth - (moveEvent.clientX - startX));
+    }
+
+    function handleEnd() {
+      document.body.classList.remove("is-column-resizing");
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleEnd);
+      window.removeEventListener("pointercancel", handleEnd);
+    }
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleEnd);
+    window.addEventListener("pointercancel", handleEnd);
+  }
+
+  function handleInspectorResizeKey(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    resizeInspector(inspectorWidth + (event.key === "ArrowLeft" ? INSPECTOR_RESIZE_STEP : -INSPECTOR_RESIZE_STEP));
+  }
+
   const initialChunkSelection = useMemo<ChunkSelection>(() => {
     const selectedChunkIds = Array.isArray(draftDecisions.selected_chunk_ids)
       ? draftDecisions.selected_chunk_ids.map(String)
@@ -1506,7 +1547,10 @@ export function TaskWorkbench({
         </div>
       </header>
 
-      <div className="review-grid">
+      <div
+        className="review-grid"
+        style={{ "--inspector-width": `${inspectorWidth}px` } as React.CSSProperties}
+      >
         <section className="review-canvas" aria-label="Source and derived review surface">
           <SourcePreview task={task} />
           <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
@@ -1517,6 +1561,19 @@ export function TaskWorkbench({
             onChange={handleTextEditChange}
           />
         </section>
+
+        <div
+          className="column-resizer inspector-column-resizer"
+          role="separator"
+          aria-label="Resize inspector column"
+          aria-orientation="vertical"
+          aria-valuemin={inspectorBounds.min}
+          aria-valuemax={inspectorBounds.max}
+          aria-valuenow={inspectorWidth}
+          tabIndex={0}
+          onPointerDown={startInspectorResize}
+          onKeyDown={handleInspectorResizeKey}
+        />
 
         <aside className="inspector" aria-label="Task inspector">
           <nav className="inspector-tabs" aria-label="Inspector tabs">

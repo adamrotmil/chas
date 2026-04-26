@@ -22,7 +22,7 @@ import {
   Sparkles,
   Video
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { flagTask, getAssets, getGoldVoiceExamples, getMemories, getTasks, skipTask, submitTask } from "@/lib/api";
 import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
@@ -30,6 +30,7 @@ import { TaskWorkbench } from "@/components/TaskWorkbench";
 
 type NavMode = "intake" | "queue" | "review" | "gold_edits" | "exports" | "models" | "settings";
 type CollectionId = "text_segments" | "voice_samples" | "emails" | "photos" | "videos" | "documents" | "all";
+type ShellColumn = "sidebar" | "queue";
 
 const topNav = [
   { id: "queue", label: "Queue", icon: <Inbox size={15} /> },
@@ -58,6 +59,16 @@ const collectionDefs: { id: CollectionId; label: string; icon: React.ReactNode }
   { id: "documents", label: "Documents", icon: <Box size={15} /> },
   { id: "all", label: "All Items", icon: <Database size={15} /> }
 ];
+
+const RESIZE_STEP = 16;
+const shellColumnBounds: Record<ShellColumn, { min: number; max: number }> = {
+  sidebar: { min: 172, max: 340 },
+  queue: { min: 260, max: 520 }
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
 
 function queueLabel(queue: string): string {
   return queue
@@ -200,6 +211,7 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [goldExamples, setGoldExamples] = useState<GoldVoiceExample[]>([]);
+  const [shellWidths, setShellWidths] = useState<Record<ShellColumn, number>>({ sidebar: 212, queue: 326 });
   const [selectedMode, setSelectedMode] = useState<NavMode>("queue");
   const [selectedCollection, setSelectedCollection] = useState<CollectionId>("text_segments");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -301,6 +313,41 @@ export default function Home() {
     await load();
   }
 
+  const resizeShellColumn = useCallback((column: ShellColumn, nextWidth: number) => {
+    const bounds = shellColumnBounds[column];
+    setShellWidths((current) => ({ ...current, [column]: clamp(nextWidth, bounds.min, bounds.max) }));
+  }, []);
+
+  function startShellResize(column: ShellColumn, event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = shellWidths[column];
+    document.body.classList.add("is-column-resizing");
+
+    function handleMove(moveEvent: PointerEvent) {
+      resizeShellColumn(column, startWidth + moveEvent.clientX - startX);
+    }
+
+    function handleEnd() {
+      document.body.classList.remove("is-column-resizing");
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleEnd);
+      window.removeEventListener("pointercancel", handleEnd);
+    }
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleEnd);
+    window.addEventListener("pointercancel", handleEnd);
+  }
+
+  function handleShellResizeKey(column: ShellColumn, event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    resizeShellColumn(column, shellWidths[column] + (event.key === "ArrowRight" ? RESIZE_STEP : -RESIZE_STEP));
+  }
+
   return (
     <main className="app-shell">
       <header className="global-chrome">
@@ -348,7 +395,15 @@ export default function Home() {
         </button>
       </header>
 
-      <div className="workbench-layout">
+      <div
+        className="workbench-layout"
+        style={
+          {
+            "--sidebar-width": `${shellWidths.sidebar}px`,
+            "--queue-width": `${shellWidths.queue}px`
+          } as React.CSSProperties
+        }
+      >
         <aside className="sidebar">
           <nav className="primary-rail" aria-label="Workbench navigation">
             {sideNav.map((item) => {
@@ -411,6 +466,19 @@ export default function Home() {
           </div>
         </aside>
 
+        <div
+          className="column-resizer"
+          role="separator"
+          aria-label="Resize navigation column"
+          aria-orientation="vertical"
+          aria-valuemin={shellColumnBounds.sidebar.min}
+          aria-valuemax={shellColumnBounds.sidebar.max}
+          aria-valuenow={shellWidths.sidebar}
+          tabIndex={0}
+          onPointerDown={(event) => startShellResize("sidebar", event)}
+          onKeyDown={(event) => handleShellResizeKey("sidebar", event)}
+        />
+
         <section className="queue-panel" aria-label="Task queue">
           <header className="queue-panel-header">
             <div>
@@ -463,6 +531,19 @@ export default function Home() {
             </button>
           </footer>
         </section>
+
+        <div
+          className="column-resizer"
+          role="separator"
+          aria-label="Resize queue column"
+          aria-orientation="vertical"
+          aria-valuemin={shellColumnBounds.queue.min}
+          aria-valuemax={shellColumnBounds.queue.max}
+          aria-valuenow={shellWidths.queue}
+          tabIndex={0}
+          onPointerDown={(event) => startShellResize("queue", event)}
+          onKeyDown={(event) => handleShellResizeKey("queue", event)}
+        />
 
         <section className="workbench-column">
           {selectedTask ? (
