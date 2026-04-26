@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db.session import get_session
-from app.models import Annotation, Task
-from app.schemas import TaskStatusUpdate, TaskSubmit
+from app.models import Annotation, Task, TaskDraft
+from app.schemas import TaskDraftUpsert, TaskStatusUpdate, TaskSubmit
 from app.services.gold_voice import upsert_gold_voice_artifacts
 from app.services.source_review import upsert_source_review_artifacts
 
@@ -20,6 +20,12 @@ def _task_or_404(session: Session, task_id: str) -> Task:
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+def _task_draft(session: Session, task_id: str, user_id: str = "adam") -> Optional[TaskDraft]:
+    return session.exec(
+        select(TaskDraft).where(TaskDraft.task_id == task_id).where(TaskDraft.user_id == user_id)
+    ).first()
 
 
 @router.get("", response_model=List[Task])
@@ -54,6 +60,49 @@ def next_task(
 @router.get("/{task_id}", response_model=Task)
 def get_task(task_id: str, session: Session = Depends(get_session)) -> Task:
     return _task_or_404(session, task_id)
+
+
+@router.get("/{task_id}/draft", response_model=Optional[TaskDraft])
+def get_task_draft(
+    task_id: str,
+    user_id: str = "adam",
+    session: Session = Depends(get_session),
+) -> Optional[TaskDraft]:
+    task = _task_or_404(session, task_id)
+    return _task_draft(session, task.id, user_id=user_id)
+
+
+@router.put("/{task_id}/draft", response_model=TaskDraft)
+def upsert_task_draft(
+    task_id: str,
+    payload: TaskDraftUpsert,
+    session: Session = Depends(get_session),
+) -> TaskDraft:
+    task = _task_or_404(session, task_id)
+    draft = _task_draft(session, task.id, user_id=payload.user_id)
+    if draft is None:
+        draft = TaskDraft(task_id=task.id, user_id=payload.user_id)
+    draft.decisions = payload.decisions
+    draft.notes = payload.notes
+    draft.updated_at = datetime.now(timezone.utc)
+    session.add(draft)
+    session.commit()
+    session.refresh(draft)
+    return draft
+
+
+@router.delete("/{task_id}/draft")
+def delete_task_draft(
+    task_id: str,
+    user_id: str = "adam",
+    session: Session = Depends(get_session),
+) -> dict:
+    task = _task_or_404(session, task_id)
+    draft = _task_draft(session, task.id, user_id=user_id)
+    if draft:
+        session.delete(draft)
+        session.commit()
+    return {"deleted": bool(draft)}
 
 
 @router.post("/{task_id}/submit", response_model=Annotation)
@@ -95,6 +144,9 @@ def submit_task(
     task.status = "submitted"
     task.completed_at = datetime.now(timezone.utc)
     task.updated_at = datetime.now(timezone.utc)
+    draft = _task_draft(session, task.id)
+    if draft:
+        session.delete(draft)
     session.add(task)
     session.add(annotation)
     session.commit()

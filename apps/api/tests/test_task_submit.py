@@ -18,6 +18,7 @@ from app.models import (
     SFTCandidate,
     Segment,
     Task,
+    TaskDraft,
 )
 
 
@@ -129,6 +130,83 @@ def test_gold_voice_submission_creates_annotation_and_training_artifacts():
     assert "messages" in sft.text
     assert dpo.status_code == 200
     assert "preferred_output" in dpo.text
+
+
+def test_task_draft_autosaves_and_is_cleared_on_submit():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_DRAFT_REVIEW",
+            asset_type="text",
+            title="Draft review source",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        segment = Segment(
+            human_id="SEG_DRAFT_REVIEW",
+            asset_id=asset.id,
+            segment_type="text_preview",
+            title="Draft review preview",
+            text_content="A small source text.",
+        )
+        session.add(segment)
+        session.flush()
+        task = Task(
+            human_id="TASK_DRAFT_REVIEW",
+            task_type="text_segment_review",
+            target_type="segment",
+            target_id=segment.id,
+            queue="text_segments_needing_review",
+            input_payload={"asset_id": asset.id, "source_filename": "draft.txt"},
+            created_by="text_extraction",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    saved = client.put(
+        f"/api/tasks/{task_id}/draft",
+        json={
+            "decisions": {
+                "source_genre": "letter",
+                "authorship": "third_party",
+                "authorship_note": "Not Charles voice, but part of the source world.",
+            },
+            "notes": "Mid-review scratch note.",
+        },
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["decisions"]["source_genre"] == "letter"
+    assert saved.json()["notes"] == "Mid-review scratch note."
+
+    loaded = client.get(f"/api/tasks/{task_id}/draft")
+    assert loaded.status_code == 200
+    assert loaded.json()["decisions"]["authorship"] == "third_party"
+
+    submitted = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "segment_boundary_good": "yes",
+                "source_genre": "letter",
+                "authorship": "third_party",
+                "fictionality_status": "factual",
+                "truth_status": "archival_source",
+                "voice_presence": "context_only",
+                "usable_for_voice_context": "yes",
+                "usable_for_grounded_generation": "no",
+                "boundary_rationale": "Local context only.",
+            },
+            "notes": "Final review.",
+        },
+    )
+
+    assert submitted.status_code == 200
+    with Session(engine) as session:
+        assert session.exec(select(TaskDraft)).first() is None
 
 
 def test_text_source_review_submission_updates_segment_boundary_and_candidate_task():

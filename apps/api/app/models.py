@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Column, DateTime, JSON, Text
+from sqlalchemy import Column, DateTime, JSON, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -237,6 +237,16 @@ class Task(IdMixin, TimestampMixin, table=True):
     required_decisions: List[str] = Field(default_factory=list, sa_column=json_column())
     created_by: str = "seed"
     completed_at: Optional[datetime] = None
+
+
+class TaskDraft(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "task_drafts"
+    __table_args__ = (UniqueConstraint("task_id", "user_id", name="uq_task_drafts_task_user"),)
+
+    task_id: str = Field(foreign_key="tasks.id", index=True)
+    user_id: str = Field(default="adam", index=True)
+    decisions: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    notes: Optional[str] = Field(default=None, sa_column=text_column())
 
 
 class Annotation(IdMixin, table=True):

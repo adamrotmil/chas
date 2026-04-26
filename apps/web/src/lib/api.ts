@@ -10,7 +10,8 @@ import type {
   GoldVoiceExample,
   Memory,
   Segment,
-  Task
+  Task,
+  TaskDraft
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
@@ -72,6 +73,23 @@ export function submitTask(
   return request<Annotation>(`/tasks/${taskId}/submit`, {
     method: "POST",
     body: JSON.stringify({ decisions, notes })
+  });
+}
+
+export function getTaskDraft(taskId: string): Promise<TaskDraft | null> {
+  return request<TaskDraft | null>(`/tasks/${taskId}/draft`);
+}
+
+export function saveTaskDraft(taskId: string, decisions: Record<string, unknown>, notes?: string): Promise<TaskDraft> {
+  return request<TaskDraft>(`/tasks/${taskId}/draft`, {
+    method: "PUT",
+    body: JSON.stringify({ decisions, notes, user_id: "adam" })
+  });
+}
+
+export async function deleteTaskDraft(taskId: string): Promise<void> {
+  await request<{ deleted: boolean }>(`/tasks/${taskId}/draft`, {
+    method: "DELETE"
   });
 }
 

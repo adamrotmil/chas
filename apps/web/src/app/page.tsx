@@ -7,6 +7,17 @@ import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
 
+const pipelineTabs = [
+  { id: "all", label: "All" },
+  { id: "text_sources", label: "Text Sources" },
+  { id: "photos", label: "Photos" },
+  { id: "videos", label: "Videos" },
+  { id: "paintings", label: "Paintings" },
+  { id: "prompt_pairs", label: "Prompt Pairs" },
+  { id: "gold_edits", label: "Gold Edits" },
+  { id: "exports", label: "Exports" }
+];
+
 function queueLabel(queue: string): string {
   return queue
     .split("_")
@@ -58,11 +69,39 @@ function taskSortRank(task: Task): number {
   return task.created_by === "seed" ? 1 : 0;
 }
 
+function taskMatchesPipeline(task: Task, pipeline: string): boolean {
+  if (pipeline === "all") {
+    return true;
+  }
+
+  const sourceType = typeof task.input_payload.source_type === "string" ? task.input_payload.source_type : "";
+  const sourceFilename = typeof task.input_payload.source_filename === "string" ? task.input_payload.source_filename.toLowerCase() : "";
+  switch (pipeline) {
+    case "text_sources":
+      return ["text_segment_review", "email_voice_sample"].includes(task.task_type) || ["document", "email"].includes(sourceType);
+    case "photos":
+      return task.task_type === "photo_context" || sourceType === "photo";
+    case "videos":
+      return task.task_type.includes("video") || sourceType === "video" || /\.(mov|mp4|m4v)$/i.test(sourceFilename);
+    case "paintings":
+      return task.task_type.includes("painting") || sourceType === "painting" || sourceType === "artwork";
+    case "prompt_pairs":
+      return task.task_type === "grounded_prompt_pair_candidate";
+    case "gold_edits":
+      return task.task_type === "gold_voice_edit";
+    case "exports":
+      return task.task_type.includes("export") || task.queue.includes("export");
+    default:
+      return true;
+  }
+}
+
 export default function Home() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [goldExamples, setGoldExamples] = useState<GoldVoiceExample[]>([]);
+  const [selectedPipeline, setSelectedPipeline] = useState<string>("all");
   const [selectedQueue, setSelectedQueue] = useState<string>("all");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [completedThisSession, setCompletedThisSession] = useState(0);
@@ -105,11 +144,15 @@ export default function Home() {
       ),
     [tasks]
   );
-  const filteredTasks = useMemo(
-    () => readyTasks.filter((task) => selectedQueue === "all" || task.queue === selectedQueue),
-    [readyTasks, selectedQueue]
+  const pipelineTasks = useMemo(
+    () => readyTasks.filter((task) => taskMatchesPipeline(task, selectedPipeline)),
+    [readyTasks, selectedPipeline]
   );
-  const queues = useMemo(() => Array.from(new Set(readyTasks.map((task) => task.queue))).sort(), [readyTasks]);
+  const filteredTasks = useMemo(
+    () => pipelineTasks.filter((task) => selectedQueue === "all" || task.queue === selectedQueue),
+    [pipelineTasks, selectedQueue]
+  );
+  const queues = useMemo(() => Array.from(new Set(pipelineTasks.map((task) => task.queue))).sort(), [pipelineTasks]);
   const selectedTask = useMemo(() => {
     if (selectedTaskId) {
       const explicit = filteredTasks.find((task) => task.id === selectedTaskId);
@@ -165,7 +208,7 @@ export default function Home() {
             }}
           >
             All Ready
-            <span>{readyTasks.length}</span>
+            <span>{pipelineTasks.length}</span>
           </button>
           {queues.map((queue) => (
             <button
@@ -177,7 +220,7 @@ export default function Home() {
               }}
             >
               {queueLabel(queue)}
-              <span>{readyTasks.filter((task) => task.queue === queue).length}</span>
+              <span>{pipelineTasks.filter((task) => task.queue === queue).length}</span>
             </button>
           ))}
         </nav>
@@ -193,6 +236,26 @@ export default function Home() {
             <RefreshCw size={18} />
           </button>
         </header>
+
+        <nav className="pipeline-tabs" aria-label="Pipeline stages">
+          {pipelineTabs.map((tab) => {
+            const count = readyTasks.filter((task) => taskMatchesPipeline(task, tab.id)).length;
+            return (
+              <button
+                key={tab.id}
+                className={selectedPipeline === tab.id ? "active" : ""}
+                onClick={() => {
+                  setSelectedPipeline(tab.id);
+                  setSelectedQueue("all");
+                  setSelectedTaskId(null);
+                }}
+              >
+                {tab.label}
+                <span>{count}</span>
+              </button>
+            );
+          })}
+        </nav>
 
         <section className="dashboard" aria-label="Dashboard">
           {metric("Assets", assets.length, "seeded source records", <Archive size={18} />)}
@@ -210,10 +273,10 @@ export default function Home() {
           <div className="task-list" aria-label="Tasks">
             <div className="section-heading">
               <span>Queue</span>
-              <strong>{queueLabel(selectedQueue)}</strong>
+              <strong>{pipelineTabs.find((tab) => tab.id === selectedPipeline)?.label ?? queueLabel(selectedQueue)}</strong>
             </div>
             {loading ? <p className="quiet">Loading workbench data...</p> : null}
-            {!loading && filteredTasks.length === 0 ? <p className="quiet">No ready tasks in this queue.</p> : null}
+            {!loading && filteredTasks.length === 0 ? <p className="quiet">No ready tasks in this tab.</p> : null}
             {filteredTasks.map((task) => (
               <button
                 key={task.id}

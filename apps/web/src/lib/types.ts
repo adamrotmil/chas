@@ -108,6 +108,16 @@ export interface Task {
   completed_at?: string | null;
 }
 
+export interface TaskDraft {
+  id: string;
+  task_id: string;
+  user_id: string;
+  decisions: JsonRecord;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Segment {
   id: string;
   human_id: string;

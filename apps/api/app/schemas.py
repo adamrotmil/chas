@@ -38,6 +38,12 @@ class TaskStatusUpdate(SQLModel):
     notes: Optional[str] = None
 
 
+class TaskDraftUpsert(SQLModel):
+    decisions: Dict[str, Any] = Field(default_factory=dict)
+    notes: Optional[str] = None
+    user_id: str = "adam"
+
+
 class AnnotationCreate(SQLModel):
     task_id: Optional[str] = None
     target_type: Optional[str] = None

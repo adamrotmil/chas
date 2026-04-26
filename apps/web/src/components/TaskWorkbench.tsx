@@ -13,8 +13,8 @@ import {
   Sparkles,
   TextCursorInput
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { createEntity, getAssetTextChunks, getEntities } from "@/lib/api";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createEntity, getAssetTextChunks, getEntities, getTaskDraft, saveTaskDraft } from "@/lib/api";
 import type { Entity, Segment, Task } from "@/lib/types";
 
 type Decisions = Record<string, unknown>;
@@ -131,6 +131,32 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
+function decisionString(decisions: Decisions, key: string, fallback = ""): string {
+  const value = decisions[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function decisionNumber(decisions: Decisions, key: string, fallback: number): number {
+  const value = decisions[key];
+  return typeof value === "number" ? value : fallback;
+}
+
+function decisionListText(decisions: Decisions, key: string, fallback = ""): string {
+  const value = decisions[key];
+  return Array.isArray(value) ? value.map(String).join(", ") : fallback;
+}
+
+function decisionBoolean(decisions: Decisions, key: string, fallback: boolean): boolean {
+  const value = decisions[key];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.toLowerCase() === "yes" || value.toLowerCase() === "true";
+  }
+  return fallback;
+}
+
 function entityOptionLabel(entity: Entity): string {
   const relationships = [entity.relationship_to_charles, entity.relationship_to_adam].filter(Boolean).join(" / ");
   return relationships ? `${entity.canonical_name} (${relationships})` : entity.canonical_name;
@@ -226,19 +252,21 @@ function SourcePreview({ task }: { task: Task }) {
 function EditableExtraction({
   task,
   activeChunk,
+  initialCleanedText,
   onChange
 }: {
   task: Task;
   activeChunk?: Segment;
+  initialCleanedText?: string;
   onChange: (value: Decisions) => void;
 }) {
   const previewText = payloadString(task.input_payload.preview_text) || payloadString(task.input_payload.text);
   const activeChunkId = activeChunk?.id ?? "";
-  const [cleanedText, setCleanedText] = useState(activeChunk?.text_content || previewText);
+  const [cleanedText, setCleanedText] = useState(initialCleanedText || activeChunk?.text_content || previewText);
 
   useEffect(() => {
-    setCleanedText(activeChunk?.text_content || previewText);
-  }, [activeChunkId, activeChunk?.text_content, previewText, task.id]);
+    setCleanedText(initialCleanedText || activeChunk?.text_content || previewText);
+  }, [activeChunkId, activeChunk?.text_content, initialCleanedText, previewText, task.id]);
 
   useEffect(() => {
     onChange({
@@ -266,22 +294,24 @@ function EditableExtraction({
 
 function ChunkBrowser({
   task,
+  initialSelection,
   onChange
 }: {
   task: Task;
+  initialSelection: ChunkSelection;
   onChange: (selection: ChunkSelection, activeChunk?: Segment) => void;
 }) {
   const assetId = payloadString(task.input_payload.asset_id);
   const [chunks, setChunks] = useState<Segment[]>([]);
-  const [activeId, setActiveId] = useState("");
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [activeId, setActiveId] = useState(initialSelection.active_chunk_id ?? "");
+  const [selectedIds, setSelectedIds] = useState<string[]>(initialSelection.selected_chunk_ids);
   const [error, setError] = useState("");
   const activeChunk = chunks.find((chunk) => chunk.id === activeId) ?? chunks[0];
 
   useEffect(() => {
     setChunks([]);
-    setActiveId("");
-    setSelectedIds([]);
+    setActiveId(initialSelection.active_chunk_id ?? "");
+    setSelectedIds(initialSelection.selected_chunk_ids);
     setError("");
     if (!assetId) {
       return;
@@ -294,7 +324,7 @@ function ChunkBrowser({
           return;
         }
         setChunks(nextChunks);
-        setActiveId(nextChunks[0]?.id ?? "");
+        setActiveId(initialSelection.active_chunk_id ?? nextChunks[0]?.id ?? "");
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
@@ -305,7 +335,7 @@ function ChunkBrowser({
     return () => {
       cancelled = true;
     };
-  }, [assetId, task.id]);
+  }, [assetId, initialSelection.active_chunk_id, initialSelection.selected_chunk_ids, task.id]);
 
   useEffect(() => {
     onChange({
@@ -423,13 +453,21 @@ function Rating({
   );
 }
 
-function AssetTriageForm({ task, onChange }: { task: Task; onChange: (value: Decisions) => void }) {
+function AssetTriageForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
   const payload = task.input_payload;
-  const [sourceType, setSourceType] = useState(payloadString(payload.source_type, "unknown"));
-  const [importance, setImportance] = useState("medium");
-  const [privacy, setPrivacy] = useState("unreviewed");
-  const [processNext, setProcessNext] = useState("yes");
-  const [triageNotes, setTriageNotes] = useState("");
+  const [sourceType, setSourceType] = useState(decisionString(initialDecisions, "source_type", payloadString(payload.source_type, "unknown")));
+  const [importance, setImportance] = useState(decisionString(initialDecisions, "importance", "medium"));
+  const [privacy, setPrivacy] = useState(decisionString(initialDecisions, "initial_privacy_level", "unreviewed"));
+  const [processNext, setProcessNext] = useState(decisionString(initialDecisions, "process_next", "yes"));
+  const [triageNotes, setTriageNotes] = useState(decisionString(initialDecisions, "notes"));
 
   useEffect(() => {
     onChange({
@@ -466,19 +504,29 @@ function AssetTriageForm({ task, onChange }: { task: Task; onChange: (value: Dec
   );
 }
 
-function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: Decisions) => void }) {
+function PhotoContextForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
   const payload = task.input_payload;
-  const [visiblePeople, setVisiblePeople] = useState(payloadArray(payload.machine_guess_people).join(", "));
-  const [absentPeople, setAbsentPeople] = useState("");
-  const [place, setPlace] = useState(payloadString(payload.machine_guess_place, "unknown"));
-  const [dateRange, setDateRange] = useState("unknown");
-  const [dateConfidence, setDateConfidence] = useState("unknown");
-  const [event, setEvent] = useState("unknown");
-  const [description, setDescription] = useState("");
-  const [invisibleContext, setInvisibleContext] = useState("");
-  const [memoryPotential, setMemoryPotential] = useState(4);
-  const [privacySensitivity, setPrivacySensitivity] = useState(2);
-  const [galleryEligibility, setGalleryEligibility] = useState("family_private");
+  const [visiblePeople, setVisiblePeople] = useState(
+    decisionListText(initialDecisions, "visible_people", payloadArray(payload.machine_guess_people).join(", "))
+  );
+  const [absentPeople, setAbsentPeople] = useState(decisionListText(initialDecisions, "absent_but_relevant_people"));
+  const [place, setPlace] = useState(decisionString(initialDecisions, "place", payloadString(payload.machine_guess_place, "unknown")));
+  const [dateRange, setDateRange] = useState(decisionString(initialDecisions, "date_or_range", "unknown"));
+  const [dateConfidence, setDateConfidence] = useState(decisionString(initialDecisions, "date_confidence", "unknown"));
+  const [event, setEvent] = useState(decisionString(initialDecisions, "event", "unknown"));
+  const [description, setDescription] = useState(decisionString(initialDecisions, "visual_description_correction"));
+  const [invisibleContext, setInvisibleContext] = useState(decisionString(initialDecisions, "invisible_context_note"));
+  const [memoryPotential, setMemoryPotential] = useState(decisionNumber(initialDecisions, "memory_potential", 4));
+  const [privacySensitivity, setPrivacySensitivity] = useState(decisionNumber(initialDecisions, "privacy_sensitivity", 2));
+  const [galleryEligibility, setGalleryEligibility] = useState(decisionString(initialDecisions, "gallery_eligibility", "family_private"));
 
   useEffect(() => {
     onChange({
@@ -548,35 +596,53 @@ function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: De
   );
 }
 
-function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (value: Decisions) => void }) {
+function TextSegmentReviewForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
   const payload = task.input_payload;
-  const [boundaryGood, setBoundaryGood] = useState("yes");
-  const [title, setTitle] = useState(payloadString(payload.segment_title, ""));
-  const [sourceGenre, setSourceGenre] = useState("document");
-  const [authorship, setAuthorship] = useState("unknown");
+  const initialCreatorIds = Array.isArray(initialDecisions.creator_entity_ids)
+    ? initialDecisions.creator_entity_ids.map(String)
+    : [];
+  const initialCreatorName = decisionString(initialDecisions, "creator_name");
+  const [boundaryGood, setBoundaryGood] = useState(decisionString(initialDecisions, "segment_boundary_good", "yes"));
+  const [title, setTitle] = useState(decisionString(initialDecisions, "segment_title", payloadString(payload.segment_title, "")));
+  const [sourceGenre, setSourceGenre] = useState(decisionString(initialDecisions, "source_genre", "document"));
+  const [authorship, setAuthorship] = useState(decisionString(initialDecisions, "authorship", "unknown"));
   const [entities, setEntities] = useState<Entity[]>([]);
-  const [creatorSelection, setCreatorSelection] = useState("");
-  const [newPersonName, setNewPersonName] = useState("");
-  const [newPersonRelationshipToCharles, setNewPersonRelationshipToCharles] = useState("");
-  const [newPersonRelationshipToAdam, setNewPersonRelationshipToAdam] = useState("");
+  const [creatorSelection, setCreatorSelection] = useState(initialCreatorIds[0] ?? (initialCreatorName ? NEW_PERSON_VALUE : ""));
+  const [newPersonName, setNewPersonName] = useState(initialCreatorName);
+  const [newPersonRelationshipToCharles, setNewPersonRelationshipToCharles] = useState(
+    decisionString(initialDecisions, "creator_relationship_to_charles")
+  );
+  const [newPersonRelationshipToAdam, setNewPersonRelationshipToAdam] = useState(
+    decisionString(initialDecisions, "creator_relationship_to_adam")
+  );
   const [newPersonDescription, setNewPersonDescription] = useState("");
-  const [newPersonConfidence, setNewPersonConfidence] = useState("medium");
+  const [newPersonConfidence, setNewPersonConfidence] = useState(decisionString(initialDecisions, "creator_confidence", "medium"));
   const [entityError, setEntityError] = useState("");
   const [entityBusy, setEntityBusy] = useState(false);
-  const [authorshipNote, setAuthorshipNote] = useState("");
-  const [fictionalityStatus, setFictionalityStatus] = useState("unknown");
-  const [truthStatus, setTruthStatus] = useState("archival_source");
-  const [voicePresence, setVoicePresence] = useState("unknown");
-  const [people, setPeople] = useState("");
-  const [places, setPlaces] = useState("");
-  const [dateRange, setDateRange] = useState("unknown");
-  const [adamContextNote, setAdamContextNote] = useState("");
-  const [promptPairPotential, setPromptPairPotential] = useState("medium");
-  const [voiceContext, setVoiceContext] = useState(true);
-  const [groundedGeneration, setGroundedGeneration] = useState(true);
-  const [sft, setSft] = useState(false);
-  const [dpo, setDpo] = useState(false);
-  const [boundaryRationale, setBoundaryRationale] = useState("");
+  const [authorshipNote, setAuthorshipNote] = useState(decisionString(initialDecisions, "authorship_note"));
+  const [fictionalityStatus, setFictionalityStatus] = useState(decisionString(initialDecisions, "fictionality_status", "unknown"));
+  const [truthStatus, setTruthStatus] = useState(decisionString(initialDecisions, "truth_status", "archival_source"));
+  const [voicePresence, setVoicePresence] = useState(decisionString(initialDecisions, "voice_presence", "unknown"));
+  const [people, setPeople] = useState(decisionListText(initialDecisions, "people"));
+  const [places, setPlaces] = useState(decisionListText(initialDecisions, "places"));
+  const [dateRange, setDateRange] = useState(decisionString(initialDecisions, "date_or_range", "unknown"));
+  const [adamContextNote, setAdamContextNote] = useState(decisionString(initialDecisions, "adam_context_note"));
+  const [promptPairPotential, setPromptPairPotential] = useState(decisionString(initialDecisions, "prompt_pair_potential", "medium"));
+  const [voiceContext, setVoiceContext] = useState(decisionBoolean(initialDecisions, "usable_for_voice_context", true));
+  const [groundedGeneration, setGroundedGeneration] = useState(
+    decisionBoolean(initialDecisions, "usable_for_grounded_generation", true)
+  );
+  const [sft, setSft] = useState(decisionBoolean(initialDecisions, "usable_for_sft", false));
+  const [dpo, setDpo] = useState(decisionBoolean(initialDecisions, "usable_for_dpo", false));
+  const [boundaryRationale, setBoundaryRationale] = useState(decisionString(initialDecisions, "boundary_rationale"));
   const selectedCreator = entities.find((entity) => entity.id === creatorSelection);
   const creatingPerson = creatorSelection === NEW_PERSON_VALUE;
   const creatorName = selectedCreator?.canonical_name || (creatingPerson ? newPersonName.trim() : "");
@@ -614,6 +680,7 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
       creator_name: creatorName,
       creator_relationship_to_charles: creatorRelationshipToCharles,
       creator_relationship_to_adam: creatorRelationshipToAdam,
+      creator_confidence: creatingPerson ? newPersonConfidence : selectedCreator?.confidence,
       authorship_note: authorshipNote,
       fictionality_status: fictionalityStatus,
       people: parseList(people),
@@ -639,6 +706,7 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
     creatorSelection,
     creatorRelationshipToAdam,
     creatorRelationshipToCharles,
+    creatingPerson,
     dateRange,
     dpo,
     fictionalityStatus,
@@ -647,6 +715,8 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
     people,
     places,
     promptPairPotential,
+    selectedCreator?.confidence,
+    newPersonConfidence,
     sft,
     sourceGenre,
     title,
@@ -830,24 +900,34 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
   );
 }
 
-function BoundaryReviewForm({ onChange }: { onChange: (value: Decisions) => void }) {
-  const [privacyLevel, setPrivacyLevel] = useState("family_private");
+function BoundaryReviewForm({
+  initialDecisions,
+  onChange
+}: {
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
+  const [privacyLevel, setPrivacyLevel] = useState(decisionString(initialDecisions, "privacy_level", "family_private"));
   const [flags, setFlags] = useState({
-    searchable: true,
-    retrievable_in_chat: true,
-    quotable: false,
-    summarizable: true,
-    usable_for_voice_context: true,
-    usable_for_sft: false,
-    usable_for_dpo: false,
-    usable_for_eval: true,
-    usable_for_gallery_public: false,
-    usable_for_gallery_family: true,
-    usable_for_simulation: true,
-    contains_living_person_sensitive_material: false,
-    redaction_required: false
+    searchable: decisionBoolean(initialDecisions, "searchable", true),
+    retrievable_in_chat: decisionBoolean(initialDecisions, "retrievable_in_chat", true),
+    quotable: decisionBoolean(initialDecisions, "quotable", false),
+    summarizable: decisionBoolean(initialDecisions, "summarizable", true),
+    usable_for_voice_context: decisionBoolean(initialDecisions, "usable_for_voice_context", true),
+    usable_for_sft: decisionBoolean(initialDecisions, "usable_for_sft", false),
+    usable_for_dpo: decisionBoolean(initialDecisions, "usable_for_dpo", false),
+    usable_for_eval: decisionBoolean(initialDecisions, "usable_for_eval", true),
+    usable_for_gallery_public: decisionBoolean(initialDecisions, "usable_for_gallery_public", false),
+    usable_for_gallery_family: decisionBoolean(initialDecisions, "usable_for_gallery_family", true),
+    usable_for_simulation: decisionBoolean(initialDecisions, "usable_for_simulation", true),
+    contains_living_person_sensitive_material: decisionBoolean(
+      initialDecisions,
+      "contains_living_person_sensitive_material",
+      false
+    ),
+    redaction_required: decisionBoolean(initialDecisions, "redaction_required", false)
   });
-  const [notes, setNotes] = useState("");
+  const [notes, setNotes] = useState(decisionString(initialDecisions, "notes"));
 
   useEffect(() => {
     onChange({ privacy_level: privacyLevel, ...flags, notes });
@@ -882,25 +962,33 @@ function BoundaryReviewForm({ onChange }: { onChange: (value: Decisions) => void
   );
 }
 
-function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value: Decisions) => void }) {
+function EmailVoiceSampleForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
   const headers =
     task.input_payload.email_headers && typeof task.input_payload.email_headers === "object"
       ? (task.input_payload.email_headers as Record<string, unknown>)
       : {};
-  const [voiceMode, setVoiceMode] = useState("father_to_adam");
-  const [charlesVoicePresence, setCharlesVoicePresence] = useState("unknown");
-  const [charlesRole, setCharlesRole] = useState("unknown");
-  const [otherVoices, setOtherVoices] = useState("Adam, other correspondents");
-  const [contextUse, setContextUse] = useState("conversation_context");
-  const [quotedMaterial, setQuotedMaterial] = useState(true);
-  const [authenticity, setAuthenticity] = useState(4);
-  const [density, setDensity] = useState(4);
-  const [phrases, setPhrases] = useState("call when you get in");
-  const [voiceContext, setVoiceContext] = useState(true);
-  const [sft, setSft] = useState(false);
-  const [dpo, setDpo] = useState(false);
-  const [why, setWhy] = useState("");
-  const [boundaryRationale, setBoundaryRationale] = useState("");
+  const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", "father_to_adam"));
+  const [charlesVoicePresence, setCharlesVoicePresence] = useState(decisionString(initialDecisions, "charles_voice_presence", "unknown"));
+  const [charlesRole, setCharlesRole] = useState(decisionString(initialDecisions, "charles_email_role", "unknown"));
+  const [otherVoices, setOtherVoices] = useState(decisionListText(initialDecisions, "other_voice_roles", "Adam, other correspondents"));
+  const [contextUse, setContextUse] = useState(decisionString(initialDecisions, "context_use", "conversation_context"));
+  const [quotedMaterial, setQuotedMaterial] = useState(decisionBoolean(initialDecisions, "quoted_or_forwarded_material_present", true));
+  const [authenticity, setAuthenticity] = useState(decisionNumber(initialDecisions, "authenticity_value", 4));
+  const [density, setDensity] = useState(decisionNumber(initialDecisions, "voice_density", 4));
+  const [phrases, setPhrases] = useState(decisionListText(initialDecisions, "recurring_phrases", "call when you get in"));
+  const [voiceContext, setVoiceContext] = useState(decisionBoolean(initialDecisions, "usable_for_voice_context", true));
+  const [sft, setSft] = useState(decisionBoolean(initialDecisions, "usable_for_sft", false));
+  const [dpo, setDpo] = useState(decisionBoolean(initialDecisions, "usable_for_dpo", false));
+  const [why, setWhy] = useState(decisionString(initialDecisions, "why_it_matters"));
+  const [boundaryRationale, setBoundaryRationale] = useState(decisionString(initialDecisions, "boundary_rationale"));
 
   useEffect(() => {
     onChange({
@@ -1005,16 +1093,32 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
   );
 }
 
-function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: Decisions) => void }) {
+function GoldVoiceEditForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
   const payload = task.input_payload;
-  const defaultRatings = (payload.ratings ?? {}) as Record<string, unknown>;
-  const [prompt, setPrompt] = useState(payloadString(payload.prompt, ""));
-  const [voiceMode, setVoiceMode] = useState(payloadString(payload.voice_mode, "father_to_adam"));
-  const [truthMode, setTruthMode] = useState(payloadString(payload.truth_mode, "generative_reconstruction"));
-  const [modelDraft, setModelDraft] = useState(payloadString(payload.model_draft, ""));
-  const [goldEdit, setGoldEdit] = useState(payloadString(payload.adam_gold_edit, ""));
-  const [authenticityRationale, setAuthenticityRationale] = useState("");
-  const [failureModes, setFailureModes] = useState(payloadArray(payload.failure_modes).join(", ") || "too_generic, too_therapy_like");
+  const initialRatings =
+    initialDecisions.ratings && typeof initialDecisions.ratings === "object"
+      ? (initialDecisions.ratings as Record<string, unknown>)
+      : {};
+  const defaultRatings = { ...((payload.ratings ?? {}) as Record<string, unknown>), ...initialRatings };
+  const [prompt, setPrompt] = useState(decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")));
+  const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", payloadString(payload.voice_mode, "father_to_adam")));
+  const [truthMode, setTruthMode] = useState(
+    decisionString(initialDecisions, "truth_mode", payloadString(payload.truth_mode, "generative_reconstruction"))
+  );
+  const [modelDraft, setModelDraft] = useState(decisionString(initialDecisions, "model_draft", payloadString(payload.model_draft, "")));
+  const [goldEdit, setGoldEdit] = useState(decisionString(initialDecisions, "adam_gold_edit", payloadString(payload.adam_gold_edit, "")));
+  const [authenticityRationale, setAuthenticityRationale] = useState(decisionString(initialDecisions, "authenticity_rationale"));
+  const [failureModes, setFailureModes] = useState(
+    decisionListText(initialDecisions, "failure_modes", payloadArray(payload.failure_modes).join(", ") || "too_generic, too_therapy_like")
+  );
   const [ratings, setRatings] = useState({
     voice_fidelity: payloadNumber(defaultRatings.voice_fidelity, 5),
     mode_match: payloadNumber(defaultRatings.mode_match, 5),
@@ -1024,12 +1128,16 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
     non_parody: payloadNumber(defaultRatings.non_parody, 5),
     grounding: payloadNumber(defaultRatings.grounding, 5)
   });
+  const initialExportFlags =
+    initialDecisions.export_flags && typeof initialDecisions.export_flags === "object"
+      ? (initialDecisions.export_flags as Record<string, unknown>)
+      : {};
   const [exportFlags, setExportFlags] = useState({
-    sft: true,
-    dpo: true,
-    eval: true,
-    anti_pattern: true,
-    style_rule: true
+    sft: typeof initialExportFlags.sft === "boolean" ? initialExportFlags.sft : true,
+    dpo: typeof initialExportFlags.dpo === "boolean" ? initialExportFlags.dpo : true,
+    eval: typeof initialExportFlags.eval === "boolean" ? initialExportFlags.eval : true,
+    anti_pattern: typeof initialExportFlags.anti_pattern === "boolean" ? initialExportFlags.anti_pattern : true,
+    style_rule: typeof initialExportFlags.style_rule === "boolean" ? initialExportFlags.style_rule : true
   });
 
   useEffect(() => {
@@ -1118,6 +1226,8 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
 }
 
 export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchProps) {
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const [draftDecisions, setDraftDecisions] = useState<Decisions>({});
   const [decisions, setDecisions] = useState<Decisions>({});
   const [chunkSelection, setChunkSelection] = useState<ChunkSelection>({
     chunk_scope: "preview_only",
@@ -1127,22 +1237,108 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
   const [activeChunk, setActiveChunk] = useState<Segment | undefined>();
   const [textEdits, setTextEdits] = useState<Decisions>({});
   const [notes, setNotes] = useState("");
+  const [draftStatus, setDraftStatus] = useState("Loading draft");
+  const [draftUpdatedAt, setDraftUpdatedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const lastSavedDraftRef = useRef("");
+  const autosaveReadyRef = useRef(false);
   const descriptor = taskLabels[task.task_type] ?? { label: task.task_type, icon: <Gauge size={18} /> };
 
   useEffect(() => {
+    let cancelled = false;
+    setDraftLoaded(false);
+    setDraftDecisions({});
     setDecisions({});
     setNotes("");
     setChunkSelection({ chunk_scope: "preview_only", selected_chunk_ids: [], selected_chunk_count: 0 });
     setActiveChunk(undefined);
     setTextEdits({});
+    setDraftStatus("Loading draft");
+    setDraftUpdatedAt(null);
+    lastSavedDraftRef.current = "";
+    autosaveReadyRef.current = false;
+
+    getTaskDraft(task.id)
+      .then((draft) => {
+        if (cancelled) {
+          return;
+        }
+        const nextDecisions = draft?.decisions ?? {};
+        const selectedChunkIds = Array.isArray(nextDecisions.selected_chunk_ids)
+          ? nextDecisions.selected_chunk_ids.map(String)
+          : [];
+        const nextSelection = {
+          chunk_scope: decisionString(nextDecisions, "chunk_scope", selectedChunkIds.length > 0 ? "selected_chunks" : "preview_only"),
+          selected_chunk_ids: selectedChunkIds,
+          active_chunk_id: decisionString(nextDecisions, "active_chunk_id") || undefined,
+          selected_chunk_count: selectedChunkIds.length
+        };
+        setDraftDecisions(nextDecisions);
+        setDecisions(nextDecisions);
+        setNotes(draft?.notes ?? "");
+        setChunkSelection(nextSelection);
+        setDraftUpdatedAt(draft?.updated_at ?? null);
+        setDraftStatus(draft ? "Draft restored" : "No draft yet");
+        lastSavedDraftRef.current = JSON.stringify({ decisions: { ...nextDecisions, ...nextSelection }, notes: draft?.notes ?? "" });
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setDraftStatus(caught instanceof Error ? `Draft load failed: ${caught.message}` : "Draft load failed");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDraftLoaded(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [task.id]);
+
+  const autosaveDecisions = useMemo(
+    () => ({ ...decisions, ...chunkSelection, ...textEdits }),
+    [chunkSelection, decisions, textEdits]
+  );
+
+  useEffect(() => {
+    if (!draftLoaded || busy) {
+      return;
+    }
+    const serialized = JSON.stringify({ decisions: autosaveDecisions, notes });
+    if (!autosaveReadyRef.current) {
+      autosaveReadyRef.current = true;
+      lastSavedDraftRef.current = serialized;
+      return;
+    }
+    if (serialized === lastSavedDraftRef.current) {
+      return;
+    }
+
+    setDraftStatus("Saving draft");
+    const timeout = window.setTimeout(() => {
+      saveTaskDraft(task.id, autosaveDecisions, notes)
+        .then((draft) => {
+          lastSavedDraftRef.current = serialized;
+          setDraftUpdatedAt(draft.updated_at);
+          setDraftStatus("Draft saved");
+        })
+        .catch((caught: unknown) => {
+          setDraftStatus(caught instanceof Error ? `Draft save failed: ${caught.message}` : "Draft save failed");
+        });
+    }, 1000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [autosaveDecisions, busy, draftLoaded, notes, task.id]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      await onSubmit({ ...decisions, ...chunkSelection, ...textEdits }, notes);
+      await onSubmit(autosaveDecisions, notes);
     } finally {
       setBusy(false);
     }
@@ -1157,20 +1353,45 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
     setTextEdits((current) => (sameDecisionRecord(current, value) ? current : value));
   }, []);
 
+  const handleDecisionChange = useCallback((value: Decisions) => {
+    setDecisions((current) => (sameDecisionRecord(current, value) ? current : value));
+  }, []);
+
+  const initialChunkSelection = useMemo<ChunkSelection>(() => {
+    const selectedChunkIds = Array.isArray(draftDecisions.selected_chunk_ids)
+      ? draftDecisions.selected_chunk_ids.map(String)
+      : [];
+    return {
+      chunk_scope: decisionString(draftDecisions, "chunk_scope", selectedChunkIds.length > 0 ? "selected_chunks" : "preview_only"),
+      selected_chunk_ids: selectedChunkIds,
+      active_chunk_id: decisionString(draftDecisions, "active_chunk_id") || undefined,
+      selected_chunk_count: selectedChunkIds.length
+    };
+  }, [draftDecisions]);
+
+  if (!draftLoaded) {
+    return (
+      <div className="workbench loading-workbench">
+        <Gauge size={18} />
+        <span>{draftStatus}</span>
+      </div>
+    );
+  }
+
   const form = (() => {
     switch (task.task_type) {
       case "asset_triage":
-        return <AssetTriageForm task={task} onChange={setDecisions} />;
+        return <AssetTriageForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "photo_context":
-        return <PhotoContextForm task={task} onChange={setDecisions} />;
+        return <PhotoContextForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "text_segment_review":
-        return <TextSegmentReviewForm task={task} onChange={setDecisions} />;
+        return <TextSegmentReviewForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "boundary_review":
-        return <BoundaryReviewForm onChange={setDecisions} />;
+        return <BoundaryReviewForm initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "email_voice_sample":
-        return <EmailVoiceSampleForm task={task} onChange={setDecisions} />;
+        return <EmailVoiceSampleForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "gold_voice_edit":
-        return <GoldVoiceEditForm task={task} onChange={setDecisions} />;
+        return <GoldVoiceEditForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       default:
         return (
           <Field label="Decision payload">
@@ -1224,8 +1445,13 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
       </section>
 
       <SourcePreview task={task} />
-      <ChunkBrowser task={task} onChange={handleChunkChange} />
-      <EditableExtraction task={task} activeChunk={activeChunk} onChange={handleTextEditChange} />
+      <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
+      <EditableExtraction
+        task={task}
+        activeChunk={activeChunk}
+        initialCleanedText={decisionString(draftDecisions, "cleaned_text")}
+        onChange={handleTextEditChange}
+      />
 
       <section className="decision-surface">{form}</section>
 
@@ -1249,6 +1475,9 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
         <div className="status-chip">
           <CheckCircle2 size={16} />
           <span>{task.status}</span>
+        </div>
+        <div className="status-chip draft-chip">
+          <span>{draftUpdatedAt ? draftStatus : draftStatus}</span>
         </div>
       </footer>
     </form>

@@ -104,6 +104,7 @@ button:disabled {
 }
 
 .queue-nav button,
+.pipeline-tabs button,
 .task-row,
 .icon-button,
 .workbench-actions button {
@@ -135,6 +136,7 @@ button:disabled {
 }
 
 .queue-nav button.active,
+.pipeline-tabs button.active,
 .task-row.active {
   border-color: #9ac5b0;
   background: #e9f4ed;
@@ -194,6 +196,36 @@ h2 {
   grid-template-columns: repeat(5, minmax(120px, 1fr));
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.pipeline-tabs {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.pipeline-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 8px;
+  color: var(--ink);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.pipeline-tabs button span {
+  display: grid;
+  min-width: 22px;
+  height: 20px;
+  place-items: center;
+  border-radius: 5px;
+  background: #edf2ea;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .drive-import {
@@ -517,6 +549,14 @@ h2 {
   gap: 10px;
   min-height: min-content;
   padding: 10px;
+}
+
+.loading-workbench {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-weight: 800;
 }
 
 .workbench-column {
@@ -982,6 +1022,12 @@ button:focus-visible {
   font-weight: 800;
 }
 
+.draft-chip {
+  margin-left: 0;
+  background: #fbfcfa;
+  color: var(--muted);
+}
+
 .empty-state,
 .error-banner {
   display: grid;
@@ -1024,6 +1070,10 @@ button:focus-visible {
 
   .dashboard {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pipeline-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .workspace-grid,
@@ -1078,6 +1128,7 @@ button:focus-visible {
   }
 
   .queue-nav,
+  .pipeline-tabs,
   .drive-import-controls,
   .form-grid,
   .gold-grid,
