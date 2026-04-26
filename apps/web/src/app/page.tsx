@@ -159,28 +159,6 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
   }
 }
 
-function assetMatchesCollection(asset: Asset, collection: CollectionId): boolean {
-  const type = asset.asset_type.toLowerCase();
-  const filename = (asset.original_filename ?? asset.title ?? "").toLowerCase();
-  const mime = (asset.mime_type ?? "").toLowerCase();
-  switch (collection) {
-    case "text_segments":
-      return ["text", "document"].includes(type) || mime.startsWith("text/") || /\.(txt|md)$/i.test(filename);
-    case "voice_samples":
-      return type === "audio" || mime.startsWith("audio/");
-    case "emails":
-      return type === "email" || /\.(eml|msg|mbox)$/i.test(filename);
-    case "photos":
-      return type === "photo" || mime.startsWith("image/");
-    case "videos":
-      return type === "video" || mime.startsWith("video/");
-    case "documents":
-      return ["document", "text", "pdf", "scan"].includes(type) || /\.(doc|docx|txt|rtf|pdf)$/i.test(filename);
-    case "all":
-      return true;
-  }
-}
-
 function queueHealthScore(task: Task): number {
   const payload = task.input_payload;
   const hasPreview = typeof payload.preview_text === "string" && payload.preview_text.trim().length > 0;
@@ -277,13 +255,10 @@ export default function Home() {
       Object.fromEntries(
         collectionDefs.map((collection) => [
           collection.id,
-          collection.id === "all"
-            ? assets.length
-            : assets.filter((asset) => assetMatchesCollection(asset, collection.id)).length ||
-              readyTasks.filter((task) => taskMatchesCollection(task, collection.id)).length
+          collection.id === "all" ? readyTasks.length : readyTasks.filter((task) => taskMatchesCollection(task, collection.id)).length
         ])
       ) as Record<CollectionId, number>,
-    [assets, readyTasks]
+    [readyTasks]
   );
   const selectedCollectionDef = collectionDefs.find((collection) => collection.id === selectedCollection) ?? collectionDefs[0];
   const selectedTaskIndex = selectedTask ? filteredTasks.findIndex((task) => task.id === selectedTask.id) : -1;
