@@ -2,11 +2,15 @@
 
 import {
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ClipboardList,
+  Copy,
   Flag,
   Gauge,
   Image,
   Mail,
+  RotateCcw,
   Save,
   ShieldCheck,
   SkipForward,
@@ -43,9 +47,18 @@ function sameDecisionRecord(left: Decisions, right: Decisions): boolean {
 
 interface TaskWorkbenchProps {
   task: Task;
+  queuePosition: number;
+  queueTotal: number;
+  qualityScore: number;
+  completedThisSession: number;
+  memoriesCount: number;
+  goldExamplesCount: number;
+  assetsCount: number;
   onSubmit: (decisions: Decisions, notes?: string) => Promise<void>;
   onSkip: () => Promise<void>;
   onFlag: () => Promise<void>;
+  onPrevious: () => void;
+  onNext: () => void;
 }
 
 const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -172,6 +185,31 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+function formatDraftTime(value: string | null): string {
+  if (!value) {
+    return "";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(new Date(value));
+}
+
+function LinePreview({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/);
+  return (
+    <div className="line-preview">
+      {lines.map((line, index) => (
+        <div className="line-row" key={`${index}-${line.slice(0, 12)}`}>
+          <span>{index + 1}</span>
+          <code>{line || " "}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FormHint({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="form-hint">
@@ -226,7 +264,7 @@ function SourcePreview({ task }: { task: Task }) {
   return (
     <section className="source-text">
       <div className="source-text-header">
-        <span>Text preview</span>
+        <span>Source text</span>
         <strong>{payloadString(task.input_payload.source_filename) || payloadString(task.input_payload.asset_title)}</strong>
       </div>
       {emailHeaders ? (
@@ -237,7 +275,7 @@ function SourcePreview({ task }: { task: Task }) {
           {payloadString(emailHeaders.date) ? <span>Date: {payloadString(emailHeaders.date)}</span> : null}
         </div>
       ) : null}
-      <pre>{previewText}</pre>
+      <LinePreview text={previewText} />
       {typeof task.input_payload.chunk_count === "number" || typeof task.input_payload.total_chars === "number" ? (
         <div className="source-text-meta">
           {typeof task.input_payload.chunk_count === "number" ? <span>{task.input_payload.chunk_count} chunks</span> : null}
@@ -284,10 +322,14 @@ function EditableExtraction({
   return (
     <section className="editable-extraction">
       <div>
-        <span>Cleaned text</span>
-        <strong>{activeChunk ? "Editing active chunk" : "Editing preview"}</strong>
+        <span>Derived working version</span>
+        <strong>{activeChunk ? "Active chunk" : "Preview copy"}</strong>
       </div>
       <TextArea value={cleanedText} onChange={setCleanedText} rows={8} />
+      <div className="editor-foot">
+        <span>{cleanedText.length} chars</span>
+        <span>{cleanedText === (activeChunk?.text_content || previewText) ? "Unchanged" : "Edited"}</span>
+      </div>
     </section>
   );
 }
@@ -403,7 +445,7 @@ function ChunkBrowser({
                   {locatorNumber(activeChunk.locator, "char_end")}
                 </span>
               </div>
-              <pre>{activeChunk.text_content}</pre>
+              <LinePreview text={activeChunk.text_content ?? ""} />
             </div>
           ) : null}
         </>
@@ -1225,9 +1267,25 @@ function GoldVoiceEditForm({
   );
 }
 
-export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchProps) {
+export function TaskWorkbench({
+  task,
+  queuePosition,
+  queueTotal,
+  qualityScore,
+  completedThisSession,
+  memoriesCount,
+  goldExamplesCount,
+  assetsCount,
+  onSubmit,
+  onSkip,
+  onFlag,
+  onPrevious,
+  onNext
+}: TaskWorkbenchProps) {
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [draftDecisions, setDraftDecisions] = useState<Decisions>({});
+  const [inspectorTab, setInspectorTab] = useState<"metadata" | "annotations" | "history">("metadata");
+  const [reviewStatus, setReviewStatus] = useState("needs_review");
   const [decisions, setDecisions] = useState<Decisions>({});
   const [chunkSelection, setChunkSelection] = useState<ChunkSelection>({
     chunk_scope: "preview_only",
@@ -1410,6 +1468,7 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
         );
     }
   })();
+  const taskSource = payloadString(task.input_payload.source_filename) || payloadString(task.input_payload.asset_title) || task.target_id;
 
   return (
     <form className="workbench" onSubmit={handleSubmit}>
@@ -1422,48 +1481,147 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
           <h2>{taskDisplayTitle(task)}</h2>
         </div>
         <div className="task-meta">
-          <span>{labelFromKey(task.queue)}</span>
-          <strong>{task.priority}</strong>
+          <div className="quality-score">
+            <strong>{qualityScore}</strong>
+            <span>Quality score</span>
+          </div>
+          <select value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value)} aria-label="Review status">
+            <option value="needs_review">Needs Review</option>
+            <option value="needs_context">Needs Context</option>
+            <option value="draft">Draft</option>
+            <option value="approved">Approved</option>
+            <option value="blocked">Blocked</option>
+          </select>
+          <div className="queue-stepper" aria-label="Queue position">
+            <button type="button" onClick={onPrevious} disabled={queuePosition <= 1} aria-label="Previous task">
+              <ChevronLeft size={16} />
+            </button>
+            <span>
+              {queuePosition} / {queueTotal}
+            </span>
+            <button type="button" onClick={onNext} disabled={queuePosition >= queueTotal} aria-label="Next task">
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
       </header>
 
-      <section className="preview-band">
-        <div>
-          <span>Target</span>
-          <strong>
-            {task.target_type} / {task.target_id.slice(0, 8)}
-          </strong>
-        </div>
-        <div>
-          <span>Reason</span>
-          <p>{task.reason_created}</p>
-        </div>
-        <div>
-          <span>Required</span>
-          <p>{task.required_decisions.map(promptFromDecisionKey).join(", ")}</p>
-        </div>
-      </section>
+      <div className="review-grid">
+        <section className="review-canvas" aria-label="Source and derived review surface">
+          <SourcePreview task={task} />
+          <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
+          <EditableExtraction
+            task={task}
+            activeChunk={activeChunk}
+            initialCleanedText={decisionString(draftDecisions, "cleaned_text")}
+            onChange={handleTextEditChange}
+          />
+        </section>
 
-      <SourcePreview task={task} />
-      <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
-      <EditableExtraction
-        task={task}
-        activeChunk={activeChunk}
-        initialCleanedText={decisionString(draftDecisions, "cleaned_text")}
-        onChange={handleTextEditChange}
-      />
+        <aside className="inspector" aria-label="Task inspector">
+          <nav className="inspector-tabs" aria-label="Inspector tabs">
+            {(["metadata", "annotations", "history"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                className={inspectorTab === tab ? "active" : ""}
+                onClick={() => setInspectorTab(tab)}
+              >
+                {labelFromKey(tab)}
+              </button>
+            ))}
+          </nav>
 
-      <section className="decision-surface">{form}</section>
+          {inspectorTab === "metadata" ? (
+            <div className="inspector-panel">
+              <section className="metadata-grid">
+                <Field label="Collection">
+                  <input readOnly value={labelFromKey(task.queue)} />
+                </Field>
+                <Field label="Source">
+                  <input readOnly value={taskSource} />
+                </Field>
+                <Field label="Type">
+                  <input readOnly value={descriptor.label} />
+                </Field>
+                <Field label="Confidence">
+                  <select defaultValue="unreviewed">
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                    <option value="unreviewed">Unreviewed</option>
+                  </select>
+                </Field>
+              </section>
+              <section className="preview-band">
+                <div>
+                  <span>Target</span>
+                  <strong>
+                    {task.target_type} / {task.target_id.slice(0, 8)}
+                  </strong>
+                </div>
+                <div>
+                  <span>Reason</span>
+                  <p>{task.reason_created}</p>
+                </div>
+                <div>
+                  <span>Required</span>
+                  <p>{task.required_decisions.map(promptFromDecisionKey).join(", ")}</p>
+                </div>
+              </section>
+              <section className="decision-surface">{form}</section>
+            </div>
+          ) : null}
 
-      <Field label="Session notes" hint="Working notes for this review session only; these are not exported as training target text.">
-        <TextArea value={notes} onChange={setNotes} rows={3} />
-      </Field>
+          {inspectorTab === "annotations" ? (
+            <div className="inspector-panel">
+              <Field label="Session notes" hint="Working notes for this review session only; these are not exported as training target text.">
+                <TextArea value={notes} onChange={setNotes} rows={5} />
+              </Field>
+              <section className="decision-summary">
+                <span>Current draft decisions</span>
+                {Object.entries(autosaveDecisions).slice(0, 12).map(([key, value]) => (
+                  <div key={key}>
+                    <strong>{promptFromDecisionKey(key)}</strong>
+                    <p>{Array.isArray(value) ? value.join(", ") : typeof value === "object" ? JSON.stringify(value) : String(value)}</p>
+                  </div>
+                ))}
+              </section>
+            </div>
+          ) : null}
+
+          {inspectorTab === "history" ? (
+            <div className="inspector-panel">
+              <section className="history-stack">
+                <div>
+                  <span>Task status</span>
+                  <strong>{labelFromKey(task.status)}</strong>
+                </div>
+                <div>
+                  <span>Draft state</span>
+                  <strong>{draftStatus}</strong>
+                </div>
+                <div>
+                  <span>Last autosave</span>
+                  <strong>{formatDraftTime(draftUpdatedAt) || "Not saved yet"}</strong>
+                </div>
+                <div>
+                  <span>Session submissions</span>
+                  <strong>{completedThisSession}</strong>
+                </div>
+                <div>
+                  <span>Archive graph</span>
+                  <strong>
+                    {assetsCount} assets / {memoriesCount} memories / {goldExamplesCount} gold edits
+                  </strong>
+                </div>
+              </section>
+            </div>
+          ) : null}
+        </aside>
+      </div>
 
       <footer className="workbench-actions">
-        <button className="primary-action" type="submit" disabled={busy}>
-          <Save size={18} />
-          <span>{busy ? "Saving" : "Submit"}</span>
-        </button>
         <button type="button" onClick={onSkip}>
           <SkipForward size={18} />
           <span>Skip</span>
@@ -1472,12 +1630,24 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
           <Flag size={18} />
           <span>Flag</span>
         </button>
+        <button type="button" disabled>
+          <Copy size={18} />
+          <span>Duplicate</span>
+        </button>
+        <button type="button" disabled>
+          <RotateCcw size={18} />
+          <span>Reset</span>
+        </button>
+        <button className="primary-action" type="submit" disabled={busy}>
+          <Save size={18} />
+          <span>{busy ? "Saving" : "Submit"}</span>
+        </button>
         <div className="status-chip">
           <CheckCircle2 size={16} />
           <span>{task.status}</span>
         </div>
         <div className="status-chip draft-chip">
-          <span>{draftUpdatedAt ? draftStatus : draftStatus}</span>
+          <span>{draftUpdatedAt ? `${draftStatus} ${formatDraftTime(draftUpdatedAt)}` : draftStatus}</span>
         </div>
       </footer>
     </form>
