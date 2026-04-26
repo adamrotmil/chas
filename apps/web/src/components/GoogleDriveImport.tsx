@@ -1,7 +1,7 @@
 "use client";
 
 import { Cloud, Download, FolderOpen, Loader2, Search, ShieldCheck } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { importDriveFiles, uploadAssetMirror } from "@/lib/api";
 import type { AssetMirrorResponse, DriveFileImport, DriveImportItemResult, DriveImportResponse, JsonRecord } from "@/lib/types";
 
@@ -405,6 +405,8 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
   const [mirrorSummary, setMirrorSummary] = useState<MirrorSummary | null>(null);
   const [lastImported, setLastImported] = useState<MirrorCandidate[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [googleLibrariesReady, setGoogleLibrariesReady] = useState(false);
+  const [googleLibrariesLoading, setGoogleLibrariesLoading] = useState(false);
   const accessTokenRef = useRef<string | null>(null);
   const accessTokenScopeRef = useRef<string>("");
 
@@ -428,7 +430,44 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     state === "scanning" ||
     state === "importing" ||
     state === "mirroring";
+  const driveActionsReady = config.ready && googleLibrariesReady;
   const mirrorableImportedCount = lastImported.filter((candidate) => candidate.file.mime_type !== FOLDER_MIME_TYPE).length;
+
+  useEffect(() => {
+    if (!config.ready) {
+      return;
+    }
+
+    let cancelled = false;
+    setGoogleLibrariesLoading(true);
+    setMessage("Loading Google Drive tools.");
+
+    void loadGoogleLibraries()
+      .then(() => {
+        if (cancelled) {
+          return;
+        }
+        setGoogleLibrariesReady(true);
+        setMessage("Drive intake is ready.");
+      })
+      .catch((caught) => {
+        if (cancelled) {
+          return;
+        }
+        setState("error");
+        setError(caught instanceof Error ? caught.message : "Unable to load Google Drive tools.");
+        setMessage("Drive import failed.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setGoogleLibrariesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [config.ready]);
 
   function updateFilter(key: CandidateKind, checked: boolean) {
     setScanFilters((current) => ({ ...current, [key]: checked }));
@@ -448,14 +487,14 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     return requested.split(/\s+/).filter(Boolean).every((scope) => grantedScopes.has(scope));
   }
 
-  async function requestAccessToken(scope: string = DRIVE_SCOPE): Promise<string> {
+  function requestAccessToken(scope: string = DRIVE_SCOPE): Promise<string> {
     const google = window.google;
     if (!google?.accounts?.oauth2) {
       throw new Error("Google Identity Services did not load.");
     }
 
     if (accessTokenRef.current && hasGrantedScopes(accessTokenScopeRef.current, scope)) {
-      return accessTokenRef.current;
+      return Promise.resolve(accessTokenRef.current);
     }
 
     setState("consent");
@@ -607,71 +646,80 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     await onImported();
   }
 
-  async function mirrorImportedCandidates() {
-    if (!config.ready || busy || lastImported.length === 0) {
-      return;
-    }
-
-    setError(null);
+  async function mirrorImportedCandidatesWithToken(accessToken: string) {
     const maxBytes = mirrorSizeLimitMb * BYTES_PER_MB;
     const summary: MirrorSummary = { mirrored: 0, existing: 0, skipped: 0, failed: 0 };
     let lastFailure: string | null = null;
 
-    try {
-      await loadGoogleLibraries();
-      const accessToken = await requestAccessToken(DRIVE_AND_STORAGE_SCOPE);
-      setState("mirroring");
-      setMessage(`Mirroring ${mirrorableImportedCount} imported Drive ${mirrorableImportedCount === 1 ? "item" : "items"}.`);
-      setMirrorSummary(summary);
+    setState("mirroring");
+    setMessage(`Mirroring ${mirrorableImportedCount} imported Drive ${mirrorableImportedCount === 1 ? "item" : "items"}.`);
+    setMirrorSummary(summary);
 
-      for (const candidate of lastImported) {
-        const { file, imported } = candidate;
-        const metadata = file.drive_metadata as DriveMetadata;
-        const canDownload = metadata.capabilities?.canDownload;
+    for (const candidate of lastImported) {
+      const { file, imported } = candidate;
+      const metadata = file.drive_metadata as DriveMetadata;
+      const canDownload = metadata.capabilities?.canDownload;
 
-        if (file.mime_type === FOLDER_MIME_TYPE || canDownload === false || (file.size_bytes && file.size_bytes > maxBytes)) {
+      if (file.mime_type === FOLDER_MIME_TYPE || canDownload === false || (file.size_bytes && file.size_bytes > maxBytes)) {
+        summary.skipped += 1;
+        setMirrorSummary({ ...summary });
+        continue;
+      }
+
+      try {
+        const download = await downloadDriveCopy(accessToken, file);
+        if (download.blob.size > maxBytes) {
           summary.skipped += 1;
           setMirrorSummary({ ...summary });
           continue;
         }
 
-        try {
-          const download = await downloadDriveCopy(accessToken, file);
-          if (download.blob.size > maxBytes) {
-            summary.skipped += 1;
-            setMirrorSummary({ ...summary });
-            continue;
-          }
+        const mirror: AssetMirrorResponse = await uploadAssetMirror(imported.asset_id, download.blob, {
+          source_system: "google_drive",
+          source_uri: file.web_view_link ?? `gdrive://files/${file.drive_file_id}`,
+          drive_file_id: file.drive_file_id,
+          drive_mime_type: file.mime_type,
+          export_mime_type: download.exportMimeType ?? null,
+          source_modified_time: file.modified_time,
+          storage_access_token: accessToken,
+          filename: download.filename
+        });
 
-          const mirror: AssetMirrorResponse = await uploadAssetMirror(imported.asset_id, download.blob, {
-            source_system: "google_drive",
-            source_uri: file.web_view_link ?? `gdrive://files/${file.drive_file_id}`,
-            drive_file_id: file.drive_file_id,
-            drive_mime_type: file.mime_type,
-            export_mime_type: download.exportMimeType ?? null,
-            source_modified_time: file.modified_time,
-            storage_access_token: accessToken,
-            filename: download.filename
-          });
-
-          if (mirror.created) {
-            summary.mirrored += 1;
-          } else {
-            summary.existing += 1;
-          }
-        } catch (caught) {
-          summary.failed += 1;
-          lastFailure = caught instanceof Error ? caught.message : "Mirror failed.";
+        if (mirror.created) {
+          summary.mirrored += 1;
+        } else {
+          summary.existing += 1;
         }
-
-        setMirrorSummary({ ...summary });
-        setMessage(`Mirrored ${summary.mirrored} files, skipped ${summary.skipped}.`);
+      } catch (caught) {
+        summary.failed += 1;
+        lastFailure = caught instanceof Error ? caught.message : "Mirror failed.";
       }
 
-      setState("done");
-      setError(lastFailure);
-      setMessage(`Mirror pass complete: ${summary.mirrored} copied, ${summary.existing} already present, ${summary.skipped} skipped.`);
-      await onImported();
+      setMirrorSummary({ ...summary });
+      setMessage(`Mirrored ${summary.mirrored} files, skipped ${summary.skipped}.`);
+    }
+
+    setState("done");
+    setError(lastFailure);
+    setMessage(`Mirror pass complete: ${summary.mirrored} copied, ${summary.existing} already present, ${summary.skipped} skipped.`);
+    await onImported();
+  }
+
+  function mirrorImportedCandidates() {
+    if (!driveActionsReady || busy || lastImported.length === 0) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      void requestAccessToken(DRIVE_AND_STORAGE_SCOPE)
+        .then((accessToken) => mirrorImportedCandidatesWithToken(accessToken))
+        .catch((caught) => {
+          setState("error");
+          setError(caught instanceof Error ? caught.message : "Drive mirror failed.");
+          setMessage("Drive mirror failed.");
+        });
     } catch (caught) {
       setState("error");
       setError(caught instanceof Error ? caught.message : "Drive mirror failed.");
@@ -679,8 +727,59 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     }
   }
 
-  async function openPicker(mode: PickerMode) {
-    if (!config.ready || busy) {
+  function openDrivePicker(mode: PickerMode, accessToken: string) {
+    const picker = window.google?.picker;
+    if (!picker) {
+      throw new Error("Google Picker did not load.");
+    }
+
+    setState("picking");
+    setMessage(mode === "folder" ? "Choose a Drive folder to scan." : "Choose Drive files to add to CharlesOps.");
+
+    const docsView =
+      mode === "folder"
+        ? new picker.DocsView(picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true)
+        : new picker.DocsView(picker.ViewId.DOCS).setIncludeFolders(false).setSelectFolderEnabled(false);
+    docsView.setMode(picker.DocsViewMode.LIST).setEnableDrives(true);
+
+    const builder = new picker.PickerBuilder()
+      .addView(docsView)
+      .setOAuthToken(accessToken)
+      .setDeveloperKey(config.apiKey)
+      .setAppId(config.projectNumber)
+      .setCallback((data) => {
+        const action = data[picker.Response.ACTION];
+        if (action === picker.Action.PICKED) {
+          const docs = asRecordArray(data[picker.Response.DOCUMENTS]);
+          const work =
+            mode === "folder"
+              ? scanPickedFolder(accessToken, docs[0] ?? {})
+              : importPickedDocuments(accessToken, docs);
+          void work.catch((caught) => {
+            setState("error");
+            setError(caught instanceof Error ? caught.message : "Drive import failed.");
+            setMessage("Drive import failed.");
+          });
+        } else if (action === picker.Action.CANCEL) {
+          setState("idle");
+          setMessage("Drive picker closed.");
+        }
+      });
+
+    if (mode === "files") {
+      builder.enableFeature(picker.Feature.MULTISELECT_ENABLED);
+    } else {
+      builder.setMaxItems(1);
+    }
+    if (picker.Feature.SUPPORT_DRIVES) {
+      builder.enableFeature(picker.Feature.SUPPORT_DRIVES);
+    }
+
+    builder.build().setVisible(true);
+  }
+
+  function openPicker(mode: PickerMode) {
+    if (!driveActionsReady || busy) {
       return;
     }
 
@@ -691,58 +790,13 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     setLastImported([]);
 
     try {
-      setState("loading");
-      setMessage("Loading Google Drive picker.");
-      await loadGoogleLibraries();
-      const accessToken = await requestAccessToken();
-      const picker = window.google?.picker;
-      if (!picker) {
-        throw new Error("Google Picker did not load.");
-      }
-
-      setState("picking");
-      setMessage(mode === "folder" ? "Choose a Drive folder to scan." : "Choose Drive files to add to CharlesOps.");
-
-      const docsView =
-        mode === "folder"
-          ? new picker.DocsView(picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true)
-          : new picker.DocsView(picker.ViewId.DOCS).setIncludeFolders(false).setSelectFolderEnabled(false);
-      docsView.setMode(picker.DocsViewMode.LIST).setEnableDrives(true);
-
-      const builder = new picker.PickerBuilder()
-        .addView(docsView)
-        .setOAuthToken(accessToken)
-        .setDeveloperKey(config.apiKey)
-        .setAppId(config.projectNumber)
-        .setCallback((data) => {
-          const action = data[picker.Response.ACTION];
-          if (action === picker.Action.PICKED) {
-            const docs = asRecordArray(data[picker.Response.DOCUMENTS]);
-            const work =
-              mode === "folder"
-                ? scanPickedFolder(accessToken, docs[0] ?? {})
-                : importPickedDocuments(accessToken, docs);
-            void work.catch((caught) => {
-              setState("error");
-              setError(caught instanceof Error ? caught.message : "Drive import failed.");
-              setMessage("Drive import failed.");
-            });
-          } else if (action === picker.Action.CANCEL) {
-            setState("idle");
-            setMessage("Drive picker closed.");
-          }
+      void requestAccessToken()
+        .then((accessToken) => openDrivePicker(mode, accessToken))
+        .catch((caught) => {
+          setState("error");
+          setError(caught instanceof Error ? caught.message : "Unable to open Google Drive.");
+          setMessage("Drive import failed.");
         });
-
-      if (mode === "files") {
-        builder.enableFeature(picker.Feature.MULTISELECT_ENABLED);
-      } else {
-        builder.setMaxItems(1);
-      }
-      if (picker.Feature.SUPPORT_DRIVES) {
-        builder.enableFeature(picker.Feature.SUPPORT_DRIVES);
-      }
-
-      builder.build().setVisible(true);
     } catch (caught) {
       setState("error");
       setError(caught instanceof Error ? caught.message : "Unable to open Google Drive.");
@@ -849,18 +903,18 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
         </span>
         <button
           className="secondary-action"
-          disabled={!config.ready || busy || mirrorableImportedCount === 0}
+          disabled={!driveActionsReady || busy || mirrorableImportedCount === 0}
           onClick={() => void mirrorImportedCandidates()}
         >
           {state === "mirroring" ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
           Mirror imported
         </button>
-        <button className="secondary-action" disabled={!config.ready || busy} onClick={() => void openPicker("folder")}>
-          {busy ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
+        <button className="secondary-action" disabled={!driveActionsReady || busy} onClick={() => void openPicker("folder")}>
+          {busy || googleLibrariesLoading ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
           Scan folder
         </button>
-        <button className="primary-action" disabled={!config.ready || busy} onClick={() => void openPicker("files")}>
-          {busy ? <Loader2 size={18} className="spin" /> : <FolderOpen size={18} />}
+        <button className="primary-action" disabled={!driveActionsReady || busy} onClick={() => void openPicker("files")}>
+          {busy || googleLibrariesLoading ? <Loader2 size={18} className="spin" /> : <FolderOpen size={18} />}
           Select files
         </button>
       </div>
