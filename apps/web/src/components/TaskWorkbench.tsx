@@ -57,6 +57,30 @@ const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
   gold_voice_edit: { label: "Gold Voice Edit", icon: <Sparkles size={18} /> }
 };
 
+const decisionPromptLabels: Record<string, string> = {
+  source_genre: "What kind of document it is",
+  authorship: "Who made it",
+  fictionality_status: "Whether it is factual, fictional, mixed, memory, inference, or generated",
+  truth_status: "Where its truth comes from",
+  voice_presence: "Whether Charles's voice is present",
+  adam_context_note: "Why Adam thinks it matters",
+  boundary_rationale: "Why this boundary/use decision is OK",
+  usable_for_voice_context: "Whether it can be used for voice context",
+  usable_for_grounded_generation: "Whether it can ground generated responses",
+  usable_for_sft: "Whether it can be used for SFT",
+  usable_for_dpo: "Whether it can be used for DPO",
+  charles_voice_presence: "Whether Charles's voice is actually present",
+  charles_email_role: "Where Charles appears in the thread",
+  other_voice_roles: "Who else is speaking",
+  context_use: "How this source should be used",
+  authenticity_value: "How authentic the signal is",
+  voice_density: "How much Charles voice signal is present",
+  adam_gold_edit: "What Adam changed into the preferred version",
+  ratings: "Why the preferred version works",
+  failure_modes: "What the rejected version gets wrong",
+  export_flags: "Which downstream examples to create"
+};
+
 function payloadString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -66,6 +90,10 @@ function labelFromKey(value: string): string {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function promptFromDecisionKey(value: string): string {
+  return decisionPromptLabels[value] ?? labelFromKey(value);
 }
 
 function taskDisplayTitle(task: Task): string {
@@ -99,12 +127,22 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span className="field-label">{label}</span>
+      {hint ? <small>{hint}</small> : null}
       {children}
     </label>
+  );
+}
+
+function FormHint({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="form-hint">
+      <strong>{title}</strong>
+      <p>{children}</p>
+    </div>
   );
 }
 
@@ -363,7 +401,7 @@ function Rating({
 }) {
   return (
     <label className="rating">
-      <span>{label}</span>
+      <span>{labelFromKey(label)}</span>
       <input
         type="range"
         min={1}
@@ -465,28 +503,31 @@ function PhotoContextForm({ task, onChange }: { task: Task; onChange: (value: De
 
   return (
     <div className="form-grid">
-      <Field label="Visible people">
+      <FormHint title="Photo context">
+        Add the who, where, when, and the invisible context that a stranger would miss from the image alone.
+      </FormHint>
+      <Field label="Who is visible?">
         <input value={visiblePeople} onChange={(event) => setVisiblePeople(event.target.value)} />
       </Field>
-      <Field label="Absent but relevant">
+      <Field label="Who matters but is not visible?">
         <input value={absentPeople} onChange={(event) => setAbsentPeople(event.target.value)} />
       </Field>
-      <Field label="Place">
+      <Field label="Where is this?">
         <input value={place} onChange={(event) => setPlace(event.target.value)} />
       </Field>
-      <Field label="Date or range">
+      <Field label="When is it from?">
         <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
       </Field>
-      <Field label="Date confidence">
+      <Field label="How sure is the date?">
         <Select value={dateConfidence} onChange={setDateConfidence} options={["exact", "year", "decade", "unknown"]} />
       </Field>
-      <Field label="Event">
+      <Field label="What event or moment is this?">
         <input value={event} onChange={(event) => setEvent(event.target.value)} />
       </Field>
-      <Field label="Visual correction">
+      <Field label="What should the visual description say?">
         <TextArea value={description} onChange={setDescription} />
       </Field>
-      <Field label="Invisible context">
+      <Field label="What context is not visible?">
         <TextArea rows={5} value={invisibleContext} onChange={setInvisibleContext} />
       </Field>
       <Rating label="Memory potential" value={memoryPotential} onChange={setMemoryPotential} />
@@ -561,13 +602,16 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
 
   return (
     <div className="form-grid">
-      <Field label="Boundary good">
+      <FormHint title="Raw source material">
+        Annotate what it is, who made it, what kind of truth it carries, who/where/when it is about, why Adam thinks it matters, and how safely it can be used.
+      </FormHint>
+      <Field label="Is this segment boundary good?" hint="Use no if this chunk should be split, merged, or excluded before downstream use.">
         <Select value={boundaryGood} onChange={setBoundaryGood} options={["yes", "no"]} />
       </Field>
-      <Field label="Segment title">
+      <Field label="What should we call this segment?" hint="A short human-readable title for queue cards and retrieval.">
         <input value={title} onChange={(event) => setTitle(event.target.value)} />
       </Field>
-      <Field label="Source genre">
+      <Field label="What kind of document is it?" hint="The backend stores this as source_genre.">
         <Select
           value={sourceGenre}
           onChange={setSourceGenre}
@@ -584,17 +628,17 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
           ]}
         />
       </Field>
-      <Field label="Authorship">
+      <Field label="Who made it?" hint="Mark Charles, Adam, mixed authorship, third party, or unknown.">
         <Select value={authorship} onChange={setAuthorship} options={["charles", "adam", "third_party", "mixed", "unknown"]} />
       </Field>
-      <Field label="Fictionality">
+      <Field label="Is it factual, fictional, or mixed?" hint="This separates a novel draft from a letter, memory, or factual source.">
         <Select
           value={fictionalityStatus}
           onChange={setFictionalityStatus}
           options={["factual", "fiction", "fictionalized_from_life", "mixed", "unknown"]}
         />
       </Field>
-      <Field label="Truth status">
+      <Field label="Where does its truth come from?" hint="Archival source, Adam memory, inference, generated text, or reconstruction.">
         <Select
           value={truthStatus}
           onChange={setTruthStatus}
@@ -610,35 +654,38 @@ function TextSegmentReviewForm({ task, onChange }: { task: Task; onChange: (valu
           ]}
         />
       </Field>
-      <Field label="Voice presence">
+      <Field label="Is Charles's voice actually present?" hint="Primary means this is directly useful as Charles voice evidence.">
         <Select
           value={voicePresence}
           onChange={setVoicePresence}
           options={["primary", "partial", "context_only", "absent", "unknown"]}
         />
       </Field>
-      <Field label="People">
+      <Field label="Who is it about?" hint="Comma-separated people or entities.">
         <input value={people} onChange={(event) => setPeople(event.target.value)} />
       </Field>
-      <Field label="Places">
+      <Field label="Where is it about?" hint="Comma-separated places, if known.">
         <input value={places} onChange={(event) => setPlaces(event.target.value)} />
       </Field>
-      <Field label="Date or range">
+      <Field label="When is it from or about?" hint="Use a year, date range, or unknown.">
         <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
       </Field>
-      <Field label="Adam context">
+      <Field label="Why does Adam think it matters?" hint="This is retrieval/context metadata, not training target text by itself.">
         <TextArea rows={5} value={adamContextNote} onChange={setAdamContextNote} />
       </Field>
-      <Field label="Prompt pair potential">
+      <Field label="Could this become prompt/response material?" hint="High/medium can spawn a grounded prompt-pair candidate task.">
         <Select value={promptPairPotential} onChange={setPromptPairPotential} options={["high", "medium", "low", "none"]} />
       </Field>
+      <FormHint title="Downstream use">
+        Decide whether this source can be searched, used as voice context, used to ground generated responses, or exported into training pairs.
+      </FormHint>
       <div className="toggle-grid">
         <Toggle label="usable_for_voice_context" checked={voiceContext} onChange={setVoiceContext} />
         <Toggle label="usable_for_grounded_generation" checked={groundedGeneration} onChange={setGroundedGeneration} />
         <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
         <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
       </div>
-      <Field label="Boundary rationale">
+      <Field label="Why is this boundary/use decision OK?" hint="Note privacy, sensitivity, uncertainty, or why this should stay local.">
         <TextArea value={boundaryRationale} onChange={setBoundaryRationale} />
       </Field>
     </div>
@@ -670,7 +717,10 @@ function BoundaryReviewForm({ onChange }: { onChange: (value: Decisions) => void
 
   return (
     <div className="form-grid">
-      <Field label="Privacy level">
+      <FormHint title="Boundary decision">
+        Decide whether this item can be searched, quoted, used for voice, used for training, or kept out of downstream flows.
+      </FormHint>
+      <Field label="How private is this?">
         <Select
           value={privacyLevel}
           onChange={setPrivacyLevel}
@@ -687,7 +737,7 @@ function BoundaryReviewForm({ onChange }: { onChange: (value: Decisions) => void
           />
         ))}
       </div>
-      <Field label="Notes">
+      <Field label="Why is this boundary decision right?">
         <TextArea value={notes} onChange={setNotes} />
       </Field>
     </div>
@@ -759,31 +809,34 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
 
   return (
     <div className="form-grid">
-      <Field label="Voice mode">
+      <FormHint title="Email voice sample">
+        Emails can contain multiple voices. Mark whether Charles is actually speaking, who else is present, and whether the thread is voice material, context, or something to exclude.
+      </FormHint>
+      <Field label="What mode is Charles speaking in?" hint="Use the closest voice/context mode, even if this is only partial evidence.">
         <Select
           value={voiceMode}
           onChange={setVoiceMode}
           options={["casual_email", "father_to_adam", "argument", "comic", "grief", "logistics", "other"]}
         />
       </Field>
-      <Field label="Charles voice">
+      <Field label="Is Charles's voice actually present?" hint="Primary for Charles-authored text; context only if others are speaking about him.">
         <Select
           value={charlesVoicePresence}
           onChange={setCharlesVoicePresence}
           options={["primary", "partial", "context_only", "absent", "unknown"]}
         />
       </Field>
-      <Field label="Charles role">
+      <Field label="Where does Charles appear in the thread?" hint="Sender, recipient, quoted author, mentioned person, mixed, or unknown.">
         <Select
           value={charlesRole}
           onChange={setCharlesRole}
           options={["sender", "recipient", "quoted_author", "mentioned", "mixed", "unknown"]}
         />
       </Field>
-      <Field label="Other voices">
+      <Field label="Who else is speaking?" hint="Comma-separated people or roles in the email thread.">
         <input value={otherVoices} onChange={(event) => setOtherVoices(event.target.value)} />
       </Field>
-      <Field label="Context use">
+      <Field label="How should this email be used?" hint="Voice sample, conversation context, factual context, prompt/response context, or exclude.">
         <Select
           value={contextUse}
           onChange={setContextUse}
@@ -792,19 +845,22 @@ function EmailVoiceSampleForm({ task, onChange }: { task: Task; onChange: (value
       </Field>
       <Rating label="Authenticity" value={authenticity} onChange={setAuthenticity} />
       <Rating label="Voice density" value={density} onChange={setDensity} />
-      <Field label="Recurring phrases">
+      <Field label="Any phrases worth preserving?" hint="Comma-separated turns of phrase, closings, habits, or verbal signatures.">
         <input value={phrases} onChange={(event) => setPhrases(event.target.value)} />
       </Field>
+      <FormHint title="Downstream use">
+        Decide whether this email can be used as voice context or training material. Quoted/forwarded material marks multi-voice contamination.
+      </FormHint>
       <div className="toggle-grid">
         <Toggle label="quoted_or_forwarded_material" checked={quotedMaterial} onChange={setQuotedMaterial} />
         <Toggle label="usable_for_voice_context" checked={voiceContext} onChange={setVoiceContext} />
         <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
         <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
       </div>
-      <Field label="Why it matters">
+      <Field label="Why does Adam think it matters?" hint="Context value, voice value, or why the thread should be handled carefully.">
         <TextArea value={why} onChange={setWhy} />
       </Field>
-      <Field label="Boundary rationale">
+      <Field label="Why is this boundary/use decision OK?">
         <TextArea value={boundaryRationale} onChange={setBoundaryRationale} />
       </Field>
     </div>
@@ -819,6 +875,7 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
   const [truthMode, setTruthMode] = useState(payloadString(payload.truth_mode, "generative_reconstruction"));
   const [modelDraft, setModelDraft] = useState(payloadString(payload.model_draft, ""));
   const [goldEdit, setGoldEdit] = useState(payloadString(payload.adam_gold_edit, ""));
+  const [authenticityRationale, setAuthenticityRationale] = useState("");
   const [failureModes, setFailureModes] = useState(payloadArray(payload.failure_modes).join(", ") || "too_generic, too_therapy_like");
   const [ratings, setRatings] = useState({
     voice_fidelity: payloadNumber(defaultRatings.voice_fidelity, 5),
@@ -847,18 +904,22 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
       generation_id: payloadString(payload.generation_id),
       model_draft: modelDraft,
       adam_gold_edit: goldEdit,
+      authenticity_rationale: authenticityRationale,
       ratings,
       failure_modes: parseList(failureModes),
       export_flags: exportFlags
     });
-  }, [exportFlags, failureModes, goldEdit, modelDraft, onChange, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, prompt, ratings, truthMode, voiceMode]);
+  }, [authenticityRationale, exportFlags, failureModes, goldEdit, modelDraft, onChange, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, prompt, ratings, truthMode, voiceMode]);
 
   return (
     <div className="gold-grid">
-      <Field label="Prompt">
+      <FormHint title="Generated/model output">
+        Compare the model draft against Adam's preferred version: what the model got wrong, what Adam changed, why the preferred version is more authentic, and which failure mode the rejected version shows.
+      </FormHint>
+      <Field label="What was the model asked to do?">
         <TextArea value={prompt} onChange={setPrompt} rows={3} />
       </Field>
-      <Field label="Voice mode">
+      <Field label="Which voice mode was requested?">
         <Select
           value={voiceMode}
           onChange={setVoiceMode}
@@ -876,14 +937,17 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
           ]}
         />
       </Field>
-      <Field label="Truth mode">
+      <Field label="What kind of reconstruction is this?">
         <Select value={truthMode} onChange={setTruthMode} options={["generative_reconstruction", "simulation", "interpretive"]} />
       </Field>
-      <Field label="Model draft">
+      <Field label="What did the model write?" hint="This becomes the rejected side if exported as DPO.">
         <TextArea value={modelDraft} onChange={setModelDraft} rows={8} />
       </Field>
-      <Field label="Adam gold edit">
+      <Field label="What did Adam change it into?" hint="This is the preferred version and the SFT assistant target.">
         <TextArea value={goldEdit} onChange={setGoldEdit} rows={10} />
+      </Field>
+      <Field label="Why is the preferred version more authentic?" hint="Name the specific voice, restraint, detail, or truth difference.">
+        <TextArea value={authenticityRationale} onChange={setAuthenticityRationale} rows={4} />
       </Field>
       <div className="rating-panel">
         {Object.entries(ratings).map(([key, value]) => (
@@ -895,9 +959,12 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
           />
         ))}
       </div>
-      <Field label="Failure modes">
+      <Field label="What failure mode does the rejected version show?" hint="Comma-separated labels such as too generic, too therapy-like, overwritten emotion.">
         <input value={failureModes} onChange={(event) => setFailureModes(event.target.value)} />
       </Field>
+      <FormHint title="Export artifacts">
+        Choose which downstream records this edit should create: SFT candidate, DPO pair, eval case, anti-pattern, or style rule.
+      </FormHint>
       <div className="toggle-grid">
         {Object.entries(exportFlags).map(([key, checked]) => (
           <Toggle
@@ -1014,7 +1081,7 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
         </div>
         <div>
           <span>Required</span>
-          <p>{task.required_decisions.map(labelFromKey).join(", ")}</p>
+          <p>{task.required_decisions.map(promptFromDecisionKey).join(", ")}</p>
         </div>
       </section>
 
@@ -1024,7 +1091,7 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
 
       <section className="decision-surface">{form}</section>
 
-      <Field label="Session notes">
+      <Field label="Session notes" hint="Working notes for this review session only; these are not exported as training target text.">
         <TextArea value={notes} onChange={setNotes} rows={3} />
       </Field>
 
