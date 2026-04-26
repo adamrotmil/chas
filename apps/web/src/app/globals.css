@@ -203,6 +203,7 @@ h2 {
 .drive-import-actions,
 .drive-limit-field,
 .drive-folder-field,
+.drive-preset-row,
 .drive-filter-grid label,
 .drive-safety,
 .drive-import-result,
@@ -295,6 +296,20 @@ h2 {
 .drive-folder-field input {
   width: 100%;
   min-width: 0;
+}
+
+.drive-preset-row {
+  gap: 8px;
+}
+
+.drive-preset-row button {
+  flex: 1 1 0;
+  min-height: 34px;
+  border: 1px solid #b9c9c2;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: var(--accent-strong);
+  font-weight: 800;
 }
 
 .drive-filter-grid {

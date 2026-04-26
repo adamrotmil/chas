@@ -14,6 +14,8 @@ const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const IMPORT_BATCH_SIZE = 50;
 const DEFAULT_SCAN_LIMIT = 100;
 const MAX_SCAN_LIMIT = 10000;
+const DEFAULT_CANDIDATE_LIMIT = 100;
+const MAX_CANDIDATE_LIMIT = 1000;
 const DEFAULT_MIRROR_SIZE_LIMIT_MB = 50;
 const MAX_MIRROR_SIZE_LIMIT_MB = 500;
 const BYTES_PER_MB = 1024 * 1024;
@@ -44,7 +46,7 @@ let googleLibrariesPromise: Promise<void> | null = null;
 
 type ImportState = "idle" | "loading" | "consent" | "picking" | "scanning" | "importing" | "mirroring" | "done" | "error";
 type PickerMode = "files" | "folder";
-type CandidateKind = "photos" | "writing" | "audioVideo" | "email" | "archives" | "other";
+type CandidateKind = "photos" | "documents" | "pdf" | "audioVideo" | "email" | "archives" | "other";
 type PickerDocument = JsonRecord;
 
 interface DriveMetadata extends JsonRecord {
@@ -77,7 +79,8 @@ interface DriveListResponse extends JsonRecord {
 
 interface ScanFilters {
   photos: boolean;
-  writing: boolean;
+  documents: boolean;
+  pdf: boolean;
   audioVideo: boolean;
   email: boolean;
   archives: boolean;
@@ -190,6 +193,13 @@ function clampScanLimit(value: number): number {
   return Math.min(Math.max(Math.round(value), 50), MAX_SCAN_LIMIT);
 }
 
+function clampCandidateLimit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_CANDIDATE_LIMIT;
+  }
+  return Math.min(Math.max(Math.round(value), 1), MAX_CANDIDATE_LIMIT);
+}
+
 function extractDriveFolderId(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -227,17 +237,19 @@ function classifyDriveFile(metadata: DriveMetadata): CandidateKind {
   if (["zip", "tar", "gz", "tgz", "7z", "rar", "dmg"].includes(extension) || mime.includes("zip")) {
     return "archives";
   }
+  if (mime === "application/pdf" || extension === "pdf") {
+    return "pdf";
+  }
   if (
     mime.startsWith("text/") ||
-    mime === "application/pdf" ||
     mime === "application/rtf" ||
     mime === "application/vnd.google-apps.document" ||
     mime === "application/vnd.google-apps.presentation" ||
     mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     mime === "application/msword" ||
-    ["txt", "md", "rtf", "pdf", "doc", "docx", "pages"].includes(extension)
+    ["txt", "md", "rtf", "doc", "docx", "pages"].includes(extension)
   ) {
-    return "writing";
+    return "documents";
   }
   return "other";
 }
@@ -412,10 +424,12 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
   const [result, setResult] = useState<DriveImportResponse | null>(null);
   const [folderInput, setFolderInput] = useState("");
   const [scanLimit, setScanLimit] = useState(DEFAULT_SCAN_LIMIT);
+  const [candidateLimit, setCandidateLimit] = useState(DEFAULT_CANDIDATE_LIMIT);
   const [mirrorSizeLimitMb, setMirrorSizeLimitMb] = useState(DEFAULT_MIRROR_SIZE_LIMIT_MB);
   const [scanFilters, setScanFilters] = useState<ScanFilters>({
     photos: true,
-    writing: true,
+    documents: true,
+    pdf: false,
     audioVideo: false,
     email: true,
     archives: false,
@@ -492,6 +506,36 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
 
   function updateFilter(key: CandidateKind, checked: boolean) {
     setScanFilters((current) => ({ ...current, [key]: checked }));
+  }
+
+  function applyTextFirstPreset() {
+    setScanFilters({
+      photos: false,
+      documents: true,
+      pdf: false,
+      audioVideo: false,
+      email: true,
+      archives: false,
+      other: false
+    });
+    setScanLimit((current) => Math.max(current, 1000));
+    setCandidateLimit(DEFAULT_CANDIDATE_LIMIT);
+    setMessage("Text-first filters ready.");
+  }
+
+  function applyPhotoTriagePreset() {
+    setScanFilters({
+      photos: true,
+      documents: false,
+      pdf: false,
+      audioVideo: false,
+      email: false,
+      archives: false,
+      other: false
+    });
+    setScanLimit(DEFAULT_SCAN_LIMIT);
+    setCandidateLimit(DEFAULT_CANDIDATE_LIMIT);
+    setMessage("Photo triage filters ready.");
   }
 
   function rememberImported(files: DriveFileImport[], response: DriveImportResponse) {
@@ -576,6 +620,7 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     const rootMetadata = await fetchDriveMetadata(accessToken, folderId);
     const rootName = rootMetadata.name ?? "Selected folder";
     const maxFiles = clampScanLimit(scanLimit);
+    const maxCandidates = clampCandidateLimit(candidateLimit);
     const queue: ScanFolder[] = [{ id: folderId, name: rootName, path: rootName }];
     const seenFolders = new Set([folderId]);
     const candidates: DriveFileImport[] = [];
@@ -587,7 +632,7 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
     setMessage(`Scanning ${rootName}.`);
     setScanSummary({ foldersScanned, filesScanned, candidates: 0, skippedFolders });
 
-    while (queue.length > 0 && filesScanned < maxFiles) {
+    while (queue.length > 0 && filesScanned < maxFiles && candidates.length < maxCandidates) {
       const folder = queue.shift()!;
       foldersScanned += 1;
       let pageToken: string | undefined;
@@ -632,15 +677,15 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
             );
           }
 
-          if (filesScanned >= maxFiles) {
+          if (filesScanned >= maxFiles || candidates.length >= maxCandidates) {
             break;
           }
         }
 
         pageToken = page.nextPageToken;
         setScanSummary({ foldersScanned, filesScanned, candidates: candidates.length, skippedFolders });
-        setMessage(`Scanned ${filesScanned} files across ${foldersScanned} folders.`);
-      } while (pageToken && filesScanned < maxFiles);
+        setMessage(`Scanned ${filesScanned} files across ${foldersScanned} folders; found ${candidates.length} candidates.`);
+      } while (pageToken && filesScanned < maxFiles && candidates.length < maxCandidates);
     }
 
     if (candidates.length === 0) {
@@ -913,6 +958,17 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
           />
         </label>
         <label className="drive-limit-field">
+          <span>Import cap</span>
+          <input
+            max={MAX_CANDIDATE_LIMIT}
+            min={1}
+            step={10}
+            type="number"
+            value={candidateLimit}
+            onChange={(event) => setCandidateLimit(clampCandidateLimit(Number.parseInt(event.target.value, 10)))}
+          />
+        </label>
+        <label className="drive-limit-field">
           <span>Mirror MB cap</span>
           <input
             max={MAX_MIRROR_SIZE_LIMIT_MB}
@@ -937,14 +993,26 @@ export function GoogleDriveImport({ onImported }: GoogleDriveImportProps) {
             }}
           />
         </label>
+        <div className="drive-preset-row" aria-label="Drive scan presets">
+          <button type="button" onClick={applyTextFirstPreset} disabled={busy}>
+            Text first
+          </button>
+          <button type="button" onClick={applyPhotoTriagePreset} disabled={busy}>
+            Photo triage
+          </button>
+        </div>
         <div className="drive-filter-grid" aria-label="Drive scan filters">
           <label>
             <input checked={scanFilters.photos} onChange={(event) => updateFilter("photos", event.target.checked)} type="checkbox" />
             Photos
           </label>
           <label>
-            <input checked={scanFilters.writing} onChange={(event) => updateFilter("writing", event.target.checked)} type="checkbox" />
-            Writing
+            <input checked={scanFilters.documents} onChange={(event) => updateFilter("documents", event.target.checked)} type="checkbox" />
+            Docs/text
+          </label>
+          <label>
+            <input checked={scanFilters.pdf} onChange={(event) => updateFilter("pdf", event.target.checked)} type="checkbox" />
+            PDFs
           </label>
           <label>
             <input checked={scanFilters.audioVideo} onChange={(event) => updateFilter("audioVideo", event.target.checked)} type="checkbox" />
