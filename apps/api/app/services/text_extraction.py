@@ -62,6 +62,28 @@ def should_attempt_text_extraction(filename: str, content_type: Optional[str], a
 
 
 class _TextHTMLParser(HTMLParser):
+    BLOCK_TAGS = {
+        "article",
+        "blockquote",
+        "body",
+        "br",
+        "div",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "td",
+        "th",
+        "tr",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self.parts: List[str] = []
@@ -70,17 +92,19 @@ class _TextHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
         if tag in {"script", "style"}:
             self._skip_depth += 1
-        elif tag in {"br", "div", "li", "p", "tr"}:
+        elif tag in self.BLOCK_TAGS:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"} and self._skip_depth:
             self._skip_depth -= 1
-        elif tag in {"div", "li", "p", "tr"}:
+        elif tag in self.BLOCK_TAGS - {"br"}:
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
         if not self._skip_depth:
+            if self.parts and self.parts[-1] and self.parts[-1][-1].isalnum() and data and data[0].isalnum():
+                self.parts.append(" ")
             self.parts.append(data)
 
     def text(self) -> str:

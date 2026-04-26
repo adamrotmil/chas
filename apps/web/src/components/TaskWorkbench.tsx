@@ -14,9 +14,16 @@ import {
   TextCursorInput
 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
-import type { Task } from "@/lib/types";
+import { getAssetTextChunks } from "@/lib/api";
+import type { Segment, Task } from "@/lib/types";
 
 type Decisions = Record<string, unknown>;
+type ChunkSelection = {
+  chunk_scope: string;
+  selected_chunk_ids: string[];
+  active_chunk_id?: string;
+  selected_chunk_count: number;
+};
 
 interface TaskWorkbenchProps {
   task: Task;
@@ -39,6 +46,11 @@ function payloadString(value: unknown, fallback = ""): string {
 }
 
 function payloadNumber(value: unknown, fallback = 3): number {
+  return typeof value === "number" ? value : fallback;
+}
+
+function locatorNumber(locator: Record<string, unknown>, key: string, fallback = 0): number {
+  const value = locator[key];
   return typeof value === "number" ? value : fallback;
 }
 
@@ -125,6 +137,124 @@ function SourcePreview({ task }: { task: Task }) {
           {typeof task.input_payload.total_chars === "number" ? <span>{task.input_payload.total_chars} chars extracted</span> : null}
           {task.input_payload.truncated ? <span>preview capped</span> : null}
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ChunkBrowser({
+  task,
+  onChange
+}: {
+  task: Task;
+  onChange: (selection: ChunkSelection) => void;
+}) {
+  const assetId = payloadString(task.input_payload.asset_id);
+  const [chunks, setChunks] = useState<Segment[]>([]);
+  const [activeId, setActiveId] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [error, setError] = useState("");
+  const activeChunk = chunks.find((chunk) => chunk.id === activeId) ?? chunks[0];
+
+  useEffect(() => {
+    setChunks([]);
+    setActiveId("");
+    setSelectedIds([]);
+    setError("");
+    if (!assetId) {
+      return;
+    }
+
+    let cancelled = false;
+    getAssetTextChunks(assetId)
+      .then((nextChunks) => {
+        if (cancelled) {
+          return;
+        }
+        setChunks(nextChunks);
+        setActiveId(nextChunks[0]?.id ?? "");
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : "Unable to load chunks.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId, task.id]);
+
+  useEffect(() => {
+    onChange({
+      chunk_scope: selectedIds.length > 0 ? "selected_chunks" : "preview_only",
+      selected_chunk_ids: selectedIds,
+      active_chunk_id: activeChunk?.id,
+      selected_chunk_count: selectedIds.length
+    });
+  }, [activeChunk?.id, onChange, selectedIds]);
+
+  if (!assetId || (chunks.length === 0 && !error)) {
+    return null;
+  }
+
+  function toggleChunk(chunkId: string) {
+    setSelectedIds((current) =>
+      current.includes(chunkId) ? current.filter((id) => id !== chunkId) : [...current, chunkId]
+    );
+  }
+
+  return (
+    <section className="chunk-browser">
+      <div className="chunk-browser-header">
+        <div>
+          <span>Extracted chunks</span>
+          <strong>{chunks.length} available</strong>
+        </div>
+        <div className="chunk-actions">
+          <button type="button" onClick={() => setSelectedIds(chunks.map((chunk) => chunk.id))} disabled={chunks.length === 0}>
+            Select all
+          </button>
+          <button type="button" onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0}>
+            Clear
+          </button>
+        </div>
+      </div>
+      {error ? <p className="quiet">{error}</p> : null}
+      {chunks.length > 0 ? (
+        <>
+          <div className="chunk-list" aria-label="Extracted text chunks">
+            {chunks.map((chunk, index) => {
+              const chunkIndex = locatorNumber(chunk.locator, "chunk_index", index + 1);
+              const selected = selectedIds.includes(chunk.id);
+              return (
+                <div className={chunk.id === activeChunk?.id ? "chunk-row active" : "chunk-row"} key={chunk.id}>
+                  <button type="button" onClick={() => setActiveId(chunk.id)}>
+                    Chunk {chunkIndex}
+                  </button>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleChunk(chunk.id)}
+                    aria-label={`Select chunk ${chunkIndex}`}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          {activeChunk ? (
+            <div className="chunk-detail">
+              <div className="chunk-detail-meta">
+                <span>Chunk {locatorNumber(activeChunk.locator, "chunk_index", 1)}</span>
+                <span>
+                  chars {locatorNumber(activeChunk.locator, "char_start")}-
+                  {locatorNumber(activeChunk.locator, "char_end")}
+                </span>
+              </div>
+              <pre>{activeChunk.text_content}</pre>
+            </div>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -720,15 +850,26 @@ function GoldVoiceEditForm({ task, onChange }: { task: Task; onChange: (value: D
 
 export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchProps) {
   const [decisions, setDecisions] = useState<Decisions>({});
+  const [chunkSelection, setChunkSelection] = useState<ChunkSelection>({
+    chunk_scope: "preview_only",
+    selected_chunk_ids: [],
+    selected_chunk_count: 0
+  });
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const descriptor = taskLabels[task.task_type] ?? { label: task.task_type, icon: <Gauge size={18} /> };
+
+  useEffect(() => {
+    setDecisions({});
+    setNotes("");
+    setChunkSelection({ chunk_scope: "preview_only", selected_chunk_ids: [], selected_chunk_count: 0 });
+  }, [task.id]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      await onSubmit(decisions, notes);
+      await onSubmit({ ...decisions, ...chunkSelection }, notes);
     } finally {
       setBusy(false);
     }
@@ -801,6 +942,7 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
       </section>
 
       <SourcePreview task={task} />
+      <ChunkBrowser task={task} onChange={setChunkSelection} />
 
       <section className="decision-surface">{form}</section>
 

@@ -7,6 +7,7 @@ import type {
   DriveImportResponse,
   GoldVoiceExample,
   Memory,
+  Segment,
   Task
 } from "./types";
 
@@ -36,6 +37,10 @@ export function getAssets(): Promise<Asset[]> {
 
 export function getTasks(): Promise<Task[]> {
   return request<Task[]>("/tasks");
+}
+
+export function getAssetTextChunks(assetId: string): Promise<Segment[]> {
+  return request<Segment[]>(`/segments?asset_id=${encodeURIComponent(assetId)}&segment_type=text_chunk&limit=500`);
 }
 
 export function getMemories(): Promise<Memory[]> {

@@ -108,6 +108,21 @@ export interface Task {
   completed_at?: string | null;
 }
 
+export interface Segment {
+  id: string;
+  human_id: string;
+  asset_id: string;
+  segment_type: string;
+  title?: string | null;
+  text_content?: string | null;
+  locator: JsonRecord;
+  source_truth_status: string;
+  maturity_level: string;
+  metadata_json: JsonRecord;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Memory {
   id: string;
   human_id: string;

@@ -8,6 +8,7 @@ from app.db.session import get_session
 from app.models import Annotation, Task
 from app.schemas import TaskStatusUpdate, TaskSubmit
 from app.services.gold_voice import upsert_gold_voice_artifacts
+from app.services.source_review import upsert_source_review_artifacts
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -76,6 +77,14 @@ def submit_task(
     creates_or_updates = {}
     if task.task_type == "gold_voice_edit":
         creates_or_updates = upsert_gold_voice_artifacts(
+            session=session,
+            task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+        )
+        annotation.creates_or_updates = creates_or_updates
+    elif task.task_type in {"text_segment_review", "email_voice_sample"}:
+        creates_or_updates = upsert_source_review_artifacts(
             session=session,
             task=task,
             decisions=payload.decisions,

@@ -590,6 +590,90 @@ h2 {
   flex-wrap: wrap;
 }
 
+.chunk-browser {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.chunk-browser-header,
+.chunk-detail-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chunk-browser-header span,
+.chunk-detail-meta span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.chunk-actions,
+.chunk-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chunk-actions button,
+.chunk-row {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.chunk-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 8px;
+}
+
+.chunk-row.active {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.chunk-row button {
+  min-height: 28px;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+}
+
+.chunk-row input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.chunk-detail {
+  display: grid;
+  gap: 8px;
+}
+
+.chunk-detail pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #243229;
+  font: inherit;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .decision-surface {
   min-width: 0;
 }

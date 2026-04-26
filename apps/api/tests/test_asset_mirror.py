@@ -13,6 +13,7 @@ from app.main import app
 from app.models import Annotation, Asset, AssetSnapshot, Derivative, ObjectFile, Segment, Task
 from app.services import asset_mirror
 from app.services.asset_mirror import mirror_upload_for_asset
+from app.services.text_extraction import extract_text_from_file
 
 
 def build_client(tmp_path: Path):
@@ -169,6 +170,9 @@ def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):
     assert response.status_code == 200
     body = response.json()
     assert body["created"] is True
+    chunk_response = client.get(f"/api/segments?asset_id={imported['asset_id']}&segment_type=text_chunk")
+    assert chunk_response.status_code == 200
+    assert len(chunk_response.json()) == 1
 
     with Session(engine) as session:
         asset = session.get(Asset, imported["asset_id"])
@@ -233,6 +237,24 @@ def test_email_mirror_upload_creates_multi_voice_review_task(tmp_path):
         assert task.input_payload["email_headers"]["subject"] == "Re: visit"
         assert "charles_voice_presence" in task.required_decisions
         assert "context_use" in task.required_decisions
+
+
+def test_html_email_text_extraction_preserves_inline_spacing(tmp_path):
+    path = tmp_path / "thread.eml"
+    path.write_bytes(
+        b"From: Charles <charles@example.com>\n"
+        b"To: Adam <adam@example.com>\n"
+        b"Subject: HTML spacing\n"
+        b"Content-Type: text/html; charset=utf-8\n"
+        b"\n"
+        b"<html><body><p><span>Hello</span><span>Adam</span></p><div>Next sentence.</div></body></html>"
+    )
+
+    result = extract_text_from_file(path, filename="thread.eml", content_type="message/rfc822", asset_type="text")
+
+    assert result.status == "extracted"
+    assert "Hello Adam" in result.text
+    assert "Next sentence." in result.text
 
 
 def test_asset_mirror_upload_is_idempotent_for_same_source_snapshot(tmp_path):

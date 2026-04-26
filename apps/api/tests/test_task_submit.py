@@ -6,12 +6,15 @@ from app.db.session import get_session
 from app.main import app
 from app.models import (
     AntiPattern,
+    Asset,
+    Boundary,
     ContextPack,
     DPOPair,
     Generation,
     GoldVoiceExample,
     PromptSpec,
     SFTCandidate,
+    Segment,
     Task,
 )
 
@@ -124,3 +127,90 @@ def test_gold_voice_submission_creates_annotation_and_training_artifacts():
     assert "messages" in sft.text
     assert dpo.status_code == 200
     assert "preferred_output" in dpo.text
+
+
+def test_text_source_review_submission_updates_segment_boundary_and_candidate_task():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_TEXT_REVIEW",
+            asset_type="text",
+            title="Novel draft",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        preview = Segment(
+            human_id="SEG_PREVIEW_REVIEW",
+            asset_id=asset.id,
+            segment_type="text_preview",
+            title="Novel draft preview",
+            text_content="Adam walks into a room and Charles narrates.",
+        )
+        chunk = Segment(
+            human_id="SEG_CHUNK_REVIEW_0001",
+            asset_id=asset.id,
+            segment_type="text_chunk",
+            title="Novel draft chunk 1",
+            text_content="This is a useful chunk for grounded prompt work.",
+            locator={"chunk_index": 1, "char_start": 0, "char_end": 49},
+        )
+        session.add(preview)
+        session.add(chunk)
+        session.flush()
+        task = Task(
+            human_id="TASK_TEXT_REVIEW",
+            task_type="text_segment_review",
+            target_type="segment",
+            target_id=preview.id,
+            queue="text_segments_needing_review",
+            input_payload={"asset_id": asset.id, "source_filename": "novel.txt"},
+            created_by="text_extraction",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+        chunk_id = chunk.id
+        preview_id = preview.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "segment_boundary_good": "yes",
+                "source_genre": "novel_draft",
+                "authorship": "charles",
+                "voice_role": "primary_charles_voice",
+                "truth_status": "archival_source",
+                "themes": ["fiction", "family"],
+                "prompt_pair_potential": "high",
+                "usable_for_voice_context": "yes",
+                "usable_for_grounded_generation": "yes",
+                "selected_chunk_ids": [chunk_id],
+                "chunk_scope": "selected_chunks",
+                "boundary_notes": "Safe for local source review.",
+            },
+            "notes": "Good source candidate.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["creates_or_updates"]["reviewed_segment_id"] == preview_id
+    assert body["creates_or_updates"]["reviewed_chunk_ids"] == [chunk_id]
+    assert body["creates_or_updates"]["prompt_pair_candidate_task_id"]
+
+    with Session(engine) as session:
+        preview = session.get(Segment, preview_id)
+        chunk = session.get(Segment, chunk_id)
+        boundary = session.exec(select(Boundary).where(Boundary.target_id == preview_id)).first()
+        candidate = session.get(Task, body["creates_or_updates"]["prompt_pair_candidate_task_id"])
+
+        assert preview.maturity_level == "L3_reviewed"
+        assert preview.metadata_json["latest_source_review"]["source_genre"] == "novel_draft"
+        assert chunk.metadata_json["selected_for_grounded_generation"] is True
+        assert boundary is not None
+        assert boundary.usable_for_voice_context is True
+        assert candidate is not None
+        assert candidate.task_type == "grounded_prompt_pair_candidate"
