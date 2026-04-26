@@ -12,6 +12,7 @@ from app.models import (
     DPOPair,
     Generation,
     GoldVoiceExample,
+    MetadataProfile,
     PromptSpec,
     SFTCandidate,
     Segment,
@@ -189,6 +190,9 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
                 "usable_for_grounded_generation": "yes",
                 "selected_chunk_ids": [chunk_id],
                 "chunk_scope": "selected_chunks",
+                "cleaned_text": "Reviewed cleaned text for annotation storage.",
+                "cleaned_text_scope": "active_chunk",
+                "cleaned_text_chunk_id": chunk_id,
                 "boundary_notes": "Safe for local source review.",
             },
             "notes": "Good source candidate.",
@@ -206,6 +210,7 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
         chunk = session.get(Segment, chunk_id)
         boundary = session.exec(select(Boundary).where(Boundary.target_id == preview_id)).first()
         candidate = session.get(Task, body["creates_or_updates"]["prompt_pair_candidate_task_id"])
+        profile = session.get(MetadataProfile, body["creates_or_updates"]["metadata_profile_id"])
 
         assert preview.maturity_level == "L3_reviewed"
         assert preview.metadata_json["latest_source_review"]["source_genre"] == "novel_draft"
@@ -214,3 +219,50 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
         assert boundary.usable_for_voice_context is True
         assert candidate is not None
         assert candidate.task_type == "grounded_prompt_pair_candidate"
+        assert profile is not None
+        assert profile.profile_type == "novel_draft"
+        assert profile.metadata_status == "adam_reviewed"
+        assert profile.authorship == "charles"
+        assert profile.themes == ["fiction", "family"]
+        assert profile.embedding_hints["selected_chunk_ids"] == [chunk_id]
+        assert profile.raw_profile["cleaned_text"] == "[stored on annotation only]"
+
+
+def test_metadata_profile_endpoint_crud():
+    client, _engine = build_client()
+
+    created = client.post(
+        "/api/metadata-profiles",
+        json={
+            "target_type": "segment",
+            "target_id": "seg_test",
+            "profile_type": "document_text",
+            "metadata_status": "machine_draft",
+            "title": "Draft profile",
+            "summary": "A short draft summary.",
+            "people": ["Charles"],
+            "themes": ["photography"],
+            "embedding_hints": {"profile_use": ["retrieval"]},
+        },
+    )
+
+    assert created.status_code == 200
+    profile_id = created.json()["id"]
+
+    updated = client.patch(
+        f"/api/metadata-profiles/{profile_id}",
+        json={
+            "metadata_status": "adam_reviewed",
+            "reviewed_by": "adam",
+            "adam_context_note": "This is useful as archive context.",
+        },
+    )
+
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["metadata_status"] == "adam_reviewed"
+    assert body["reviewed_at"]
+
+    listed = client.get("/api/metadata-profiles?target_type=segment&target_id=seg_test")
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == profile_id

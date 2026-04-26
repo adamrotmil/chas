@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session, select
 
-from app.models import Boundary, Segment, Task, utcnow
+from app.models import Boundary, MetadataProfile, Segment, Task, utcnow
 
 
 def _truthy(value: Any) -> bool:
@@ -23,6 +23,95 @@ def _string_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _safe_decision_profile(decisions: Dict[str, Any]) -> Dict[str, Any]:
+    profile = dict(decisions)
+    if "cleaned_text" in profile:
+        profile["cleaned_text"] = "[stored on annotation only]"
+    return profile
+
+
+def _profile_type(task: Task, decisions: Dict[str, Any]) -> str:
+    if task.task_type == "email_voice_sample":
+        return "email"
+    source_genre = _string(decisions.get("source_genre"), "document")
+    if source_genre in {"novel_draft", "memoir_fragment", "letter", "essay", "notes"}:
+        return source_genre
+    return "document_text"
+
+
+def _upsert_metadata_profile(
+    session: Session,
+    *,
+    task: Task,
+    segment: Segment,
+    decisions: Dict[str, Any],
+    annotation_id: str,
+    selected_chunk_ids: List[str],
+    chunk_scope: str,
+) -> MetadataProfile:
+    profile_type = _profile_type(task, decisions)
+    profile = session.exec(
+        select(MetadataProfile)
+        .where(MetadataProfile.target_type == "segment")
+        .where(MetadataProfile.target_id == segment.id)
+        .where(MetadataProfile.profile_type == profile_type)
+    ).first()
+    if profile is None:
+        profile = MetadataProfile(target_type="segment", target_id=segment.id, profile_type=profile_type)
+
+    profile.profile_version = "v1"
+    profile.metadata_status = "adam_reviewed"
+    profile.title = _string(decisions.get("segment_title"), segment.title or task.human_id)
+    profile.summary = _string(decisions.get("summary"))
+    profile.adam_context_note = _string(decisions.get("why_it_matters")) or _string(decisions.get("boundary_notes"))
+    profile.source_genre = _string(decisions.get("source_genre"), profile_type)
+    profile.authorship = _string(decisions.get("authorship"), "unknown")
+    profile.voice_presence = _string(decisions.get("charles_voice_presence")) or _string(decisions.get("voice_role"))
+    profile.voice_role = _string(decisions.get("voice_role")) or _string(decisions.get("context_use"))
+    profile.truth_status = _string(decisions.get("truth_status"), segment.source_truth_status)
+    profile.date_label = _string(decisions.get("date_or_range"), "unknown")
+    profile.date_confidence = _string(decisions.get("date_confidence"), "unknown")
+    profile.people = _string_list(decisions.get("people"))
+    profile.places = _string_list(decisions.get("places"))
+    profile.themes = _string_list(decisions.get("themes"))
+    profile.motifs = _string_list(decisions.get("motifs"))
+    profile.emotional_tone = _string_list(decisions.get("emotional_tone"))
+    profile.concrete_objects = _string_list(decisions.get("concrete_objects"))
+    profile.open_questions = _string_list(decisions.get("open_questions"))
+    profile.retrieval_notes = _string(decisions.get("retrieval_notes")) or _string(decisions.get("why_it_matters"))
+    profile.training_notes = _string(decisions.get("training_notes"))
+    profile.quality_signals = {
+        "source_reliability": decisions.get("source_reliability"),
+        "segment_boundary_good": decisions.get("segment_boundary_good"),
+        "prompt_pair_potential": decisions.get("prompt_pair_potential"),
+        "context_use": decisions.get("context_use"),
+        "authenticity_value": decisions.get("authenticity_value"),
+        "voice_density": decisions.get("voice_density"),
+        "usable_for_voice_context": decisions.get("usable_for_voice_context"),
+        "usable_for_grounded_generation": decisions.get("usable_for_grounded_generation"),
+        "usable_for_sft": decisions.get("usable_for_sft"),
+        "usable_for_dpo": decisions.get("usable_for_dpo"),
+        "extraction_edit_notes": decisions.get("extraction_edit_notes"),
+    }
+    profile.embedding_hints = {
+        "recommended_embedding_targets": ["source_text", "profile_summary", "adam_context_note"],
+        "selected_chunk_ids": selected_chunk_ids,
+        "chunk_scope": chunk_scope,
+        "cleaned_text_scope": decisions.get("cleaned_text_scope"),
+        "cleaned_text_chunk_id": decisions.get("cleaned_text_chunk_id"),
+        "profile_use": ["retrieval", "rag_context", "source_prioritization"],
+    }
+    profile.raw_profile = _safe_decision_profile(decisions)
+    profile.source_annotation_id = annotation_id
+    profile.created_by = "source_review"
+    profile.reviewed_by = "adam"
+    profile.reviewed_at = utcnow()
+    profile.updated_at = utcnow()
+    session.add(profile)
+    session.flush()
+    return profile
 
 
 def _find_or_create_segment_boundary(session: Session, segment: Segment, decisions: Dict[str, Any]) -> Boundary:
@@ -176,6 +265,15 @@ def upsert_source_review_artifacts(
             reviewed_chunk_ids.append(chunk.id)
 
     boundary = _find_or_create_segment_boundary(session, segment, decisions)
+    metadata_profile = _upsert_metadata_profile(
+        session,
+        task=task,
+        segment=segment,
+        decisions=decisions,
+        annotation_id=annotation_id,
+        selected_chunk_ids=selected_chunk_ids,
+        chunk_scope=chunk_scope,
+    )
     candidate_task = _create_prompt_pair_candidate_task(
         session,
         source_task=task,
@@ -191,5 +289,6 @@ def upsert_source_review_artifacts(
         "reviewed_segment_id": segment.id,
         "reviewed_chunk_ids": reviewed_chunk_ids,
         "boundary_id": boundary.id,
+        "metadata_profile_id": metadata_profile.id,
         "prompt_pair_candidate_task_id": candidate_task.id if candidate_task else None,
     }

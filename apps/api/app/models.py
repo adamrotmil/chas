@@ -256,6 +256,42 @@ class Annotation(IdMixin, table=True):
     )
 
 
+class MetadataProfile(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "metadata_profiles"
+
+    target_type: str = Field(index=True)
+    target_id: str = Field(index=True)
+    profile_type: str = Field(index=True)
+    profile_version: str = "v1"
+    metadata_status: str = Field(default="machine_draft", index=True)
+    title: Optional[str] = Field(default=None, index=True)
+    summary: Optional[str] = Field(default=None, sa_column=text_column())
+    adam_context_note: Optional[str] = Field(default=None, sa_column=text_column())
+    source_genre: Optional[str] = Field(default=None, index=True)
+    authorship: Optional[str] = Field(default=None, index=True)
+    voice_presence: Optional[str] = Field(default=None, index=True)
+    voice_role: Optional[str] = Field(default=None, index=True)
+    truth_status: Optional[str] = Field(default=None, index=True)
+    date_label: Optional[str] = None
+    date_confidence: Optional[str] = None
+    people: List[str] = Field(default_factory=list, sa_column=json_column())
+    places: List[str] = Field(default_factory=list, sa_column=json_column())
+    themes: List[str] = Field(default_factory=list, sa_column=json_column())
+    motifs: List[str] = Field(default_factory=list, sa_column=json_column())
+    emotional_tone: List[str] = Field(default_factory=list, sa_column=json_column())
+    concrete_objects: List[str] = Field(default_factory=list, sa_column=json_column())
+    open_questions: List[str] = Field(default_factory=list, sa_column=json_column())
+    retrieval_notes: Optional[str] = Field(default=None, sa_column=text_column())
+    training_notes: Optional[str] = Field(default=None, sa_column=text_column())
+    quality_signals: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    embedding_hints: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    raw_profile: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    source_annotation_id: Optional[str] = Field(default=None, foreign_key="annotations.id", index=True)
+    created_by: str = Field(default="system", index=True)
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+
+
 class PromptSpec(IdMixin, table=True):
     __tablename__ = "prompt_specs"
 

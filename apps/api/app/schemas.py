@@ -111,6 +111,70 @@ class MemoryUpdate(SQLModel):
     maturity_level: Optional[str] = None
 
 
+class MetadataProfileCreate(SQLModel):
+    target_type: str
+    target_id: str
+    profile_type: str
+    profile_version: str = "v1"
+    metadata_status: str = "machine_draft"
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    adam_context_note: Optional[str] = None
+    source_genre: Optional[str] = None
+    authorship: Optional[str] = None
+    voice_presence: Optional[str] = None
+    voice_role: Optional[str] = None
+    truth_status: Optional[str] = None
+    date_label: Optional[str] = None
+    date_confidence: Optional[str] = None
+    people: List[str] = Field(default_factory=list)
+    places: List[str] = Field(default_factory=list)
+    themes: List[str] = Field(default_factory=list)
+    motifs: List[str] = Field(default_factory=list)
+    emotional_tone: List[str] = Field(default_factory=list)
+    concrete_objects: List[str] = Field(default_factory=list)
+    open_questions: List[str] = Field(default_factory=list)
+    retrieval_notes: Optional[str] = None
+    training_notes: Optional[str] = None
+    quality_signals: Dict[str, Any] = Field(default_factory=dict)
+    embedding_hints: Dict[str, Any] = Field(default_factory=dict)
+    raw_profile: Dict[str, Any] = Field(default_factory=dict)
+    source_annotation_id: Optional[str] = None
+    created_by: str = "system"
+    reviewed_by: Optional[str] = None
+
+
+class MetadataProfileUpdate(SQLModel):
+    profile_type: Optional[str] = None
+    profile_version: Optional[str] = None
+    metadata_status: Optional[str] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    adam_context_note: Optional[str] = None
+    source_genre: Optional[str] = None
+    authorship: Optional[str] = None
+    voice_presence: Optional[str] = None
+    voice_role: Optional[str] = None
+    truth_status: Optional[str] = None
+    date_label: Optional[str] = None
+    date_confidence: Optional[str] = None
+    people: Optional[List[str]] = None
+    places: Optional[List[str]] = None
+    themes: Optional[List[str]] = None
+    motifs: Optional[List[str]] = None
+    emotional_tone: Optional[List[str]] = None
+    concrete_objects: Optional[List[str]] = None
+    open_questions: Optional[List[str]] = None
+    retrieval_notes: Optional[str] = None
+    training_notes: Optional[str] = None
+    quality_signals: Optional[Dict[str, Any]] = None
+    embedding_hints: Optional[Dict[str, Any]] = None
+    raw_profile: Optional[Dict[str, Any]] = None
+    source_annotation_id: Optional[str] = None
+    created_by: Optional[str] = None
+    reviewed_by: Optional[str] = None
+
+
 class PromptSpecCreate(SQLModel):
     human_id: str
     prompt_type: str
