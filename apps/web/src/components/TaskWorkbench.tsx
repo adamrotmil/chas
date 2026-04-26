@@ -94,6 +94,30 @@ function Select({
   );
 }
 
+function SourcePreview({ task }: { task: Task }) {
+  const previewText = payloadString(task.input_payload.preview_text) || payloadString(task.input_payload.text);
+  if (!previewText) {
+    return null;
+  }
+
+  return (
+    <section className="source-text">
+      <div className="source-text-header">
+        <span>Text preview</span>
+        <strong>{payloadString(task.input_payload.source_filename) || payloadString(task.input_payload.asset_title)}</strong>
+      </div>
+      <pre>{previewText}</pre>
+      {typeof task.input_payload.chunk_count === "number" || typeof task.input_payload.total_chars === "number" ? (
+        <div className="source-text-meta">
+          {typeof task.input_payload.chunk_count === "number" ? <span>{task.input_payload.chunk_count} chunks</span> : null}
+          {typeof task.input_payload.total_chars === "number" ? <span>{task.input_payload.total_chars} chars extracted</span> : null}
+          {task.input_payload.truncated ? <span>preview capped</span> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function Toggle({
   label,
   checked,
@@ -623,12 +647,7 @@ export function TaskWorkbench({ task, onSubmit, onSkip, onFlag }: TaskWorkbenchP
         </div>
       </section>
 
-      {payloadString(task.input_payload.text) ? (
-        <section className="source-text">
-          <span>Source text</span>
-          <p>{payloadString(task.input_payload.text)}</p>
-        </section>
-      ) : null}
+      <SourcePreview task={task} />
 
       <section className="decision-surface">{form}</section>
 

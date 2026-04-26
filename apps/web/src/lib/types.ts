@@ -102,6 +102,7 @@ export interface Task {
   reason_created?: string | null;
   input_payload: JsonRecord;
   required_decisions: string[];
+  created_by?: string | null;
   created_at: string;
   updated_at: string;
   completed_at?: string | null;

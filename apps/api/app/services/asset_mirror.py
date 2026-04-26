@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from app.models import Annotation, Asset, AssetSnapshot, ExternalRef, ObjectFile, utcnow
 from app.schemas import AssetMirrorResponse
+from app.services.text_extraction import extract_text_from_file, persist_text_extraction, should_attempt_text_extraction
 
 
 SOURCE_MIRROR_ROOT = "source_mirror"
@@ -150,6 +151,12 @@ async def mirror_upload_for_asset(
     latest_snapshot = _latest_mirror_snapshot(session, asset.id)
     provider = storage_provider.lower()
     configured_bucket = gcs_bucket or None
+    content_type = export_mime_type or upload.content_type or asset.mime_type
+    text_extraction = (
+        extract_text_from_file(temp_path, filename=filename, content_type=content_type, asset_type=asset.asset_type)
+        if should_attempt_text_extraction(filename, content_type, asset.asset_type)
+        else None
+    )
 
     if (
         latest_snapshot
@@ -175,7 +182,6 @@ async def mirror_upload_for_asset(
 
     version = (latest_snapshot.version + 1) if latest_snapshot else 1
     source_key = _safe_path_part(source_system, "source")
-    content_type = export_mime_type or upload.content_type or asset.mime_type
     object_key_parts = [gcs_prefix.strip("/")] if provider == "gcs" and gcs_prefix.strip("/") else []
     object_key_parts.extend([SOURCE_MIRROR_ROOT, source_key, asset_key, f"v{version}", filename])
     object_key = "/".join(object_key_parts)
@@ -276,6 +282,18 @@ async def mirror_upload_for_asset(
         external_ref.metadata_json = external_metadata
         session.add(external_ref)
 
+    text_extraction_summary = None
+    if text_extraction and text_extraction.status != "skipped":
+        text_extraction_summary = persist_text_extraction(
+            session,
+            asset=asset,
+            source_snapshot=snapshot,
+            source_object_file=object_file,
+            filename=filename,
+            content_type=content_type,
+            extraction=text_extraction,
+        )
+
     annotation = Annotation(
         annotator_id="system",
         target_type="asset",
@@ -288,6 +306,7 @@ async def mirror_upload_for_asset(
             "object_file_id": object_file.id,
             "asset_snapshot_id": snapshot.id,
             "external_ref_id": external_ref.id if external_ref else None,
+            "text_extraction": text_extraction_summary,
         },
     )
     session.add(annotation)

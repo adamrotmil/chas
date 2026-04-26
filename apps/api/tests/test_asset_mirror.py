@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.config import settings
 from app.db.session import get_session
 from app.main import app
-from app.models import Annotation, Asset, AssetSnapshot, ObjectFile
+from app.models import Annotation, Asset, AssetSnapshot, Derivative, ObjectFile, Segment, Task
 from app.services import asset_mirror
 from app.services.asset_mirror import mirror_upload_for_asset
 
@@ -47,6 +47,29 @@ def drive_payload() -> dict:
                 "parents": ["parent-folder"],
                 "picker_document": {"id": "drive-file-123"},
                 "drive_metadata": {"version": "7"},
+            }
+        ],
+        "imported_by": "adam",
+    }
+
+
+def text_drive_payload() -> dict:
+    return {
+        "files": [
+            {
+                "drive_file_id": "drive-text-123",
+                "name": "letter.txt",
+                "mime_type": "text/plain",
+                "web_view_link": "https://drive.google.com/file/d/drive-text-123/view",
+                "size_bytes": 1024,
+                "created_time": "2026-04-01T10:00:00Z",
+                "modified_time": "2026-04-02T10:00:00Z",
+                "parents": ["parent-folder"],
+                "picker_document": {"id": "drive-text-123"},
+                "drive_metadata": {
+                    "charlesOpsPath": "Vault/Letters/letter.txt",
+                    "charlesOpsCandidateKind": "documents",
+                },
             }
         ],
         "imported_by": "adam",
@@ -97,6 +120,53 @@ def test_asset_mirror_upload_creates_local_object_snapshot_and_annotation(tmp_pa
         annotation = session.get(Annotation, body["annotation_id"])
         assert annotation is not None
         assert annotation.annotation_type == "asset_mirrored"
+
+
+def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):
+    client, engine = build_client(tmp_path)
+    imported = client.post("/api/imports/drive", json=text_drive_payload()).json()["imported"][0]
+    source_text = b"Dear Adam,\n\nThis is a small source letter with Charles voice material.\n\nLove, Dad"
+
+    response = client.post(
+        f"/api/assets/{imported['asset_id']}/mirror/upload",
+        data={
+            "source_system": "google_drive",
+            "source_uri": "https://drive.google.com/file/d/drive-text-123/view",
+            "drive_file_id": "drive-text-123",
+            "drive_mime_type": "text/plain",
+            "source_modified_time": "2026-04-02T10:00:00Z",
+        },
+        files={"file": ("letter.txt", source_text, "text/plain")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created"] is True
+
+    with Session(engine) as session:
+        asset = session.get(Asset, imported["asset_id"])
+        assert asset is not None
+        assert asset.processing_status == "text_extracted"
+        assert asset.maturity_level == "L2_extracted"
+
+        derivative = session.exec(select(Derivative).where(Derivative.asset_id == asset.id)).first()
+        assert derivative is not None
+        assert derivative.derivative_type == "text_extraction"
+        assert derivative.status == "extracted"
+        assert "Dear Adam" in derivative.metadata_json["preview_text"]
+
+        segments = session.exec(select(Segment).where(Segment.asset_id == asset.id)).all()
+        assert {segment.segment_type for segment in segments} >= {"text_preview", "text_chunk"}
+        assert any("Charles voice material" in (segment.text_content or "") for segment in segments)
+
+        task = session.exec(select(Task).where(Task.task_type == "text_segment_review")).first()
+        assert task is not None
+        assert task.created_by == "text_extraction"
+        assert task.input_payload["source_type"] == "document"
+        assert "Dear Adam" in task.input_payload["preview_text"]
+
+        annotations = session.exec(select(Annotation).where(Annotation.target_id == asset.id)).all()
+        assert any(annotation.annotation_type == "text_extraction" for annotation in annotations)
 
 
 def test_asset_mirror_upload_is_idempotent_for_same_source_snapshot(tmp_path):

@@ -25,6 +25,10 @@ function metric(label: string, value: number, detail: string, icon: React.ReactN
   );
 }
 
+function taskSortRank(task: Task): number {
+  return task.created_by === "seed" ? 1 : 0;
+}
+
 export default function Home() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -65,7 +69,13 @@ export default function Home() {
     void load();
   }, []);
 
-  const readyTasks = useMemo(() => tasks.filter((task) => task.status === "ready"), [tasks]);
+  const readyTasks = useMemo(
+    () =>
+      [...tasks.filter((task) => task.status === "ready")].sort(
+        (left, right) => taskSortRank(left) - taskSortRank(right) || right.priority - left.priority
+      ),
+    [tasks]
+  );
   const filteredTasks = useMemo(
     () => readyTasks.filter((task) => selectedQueue === "all" || task.queue === selectedQueue),
     [readyTasks, selectedQueue]
