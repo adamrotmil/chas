@@ -43,6 +43,16 @@ def _clean_dict(value: Dict[str, Any]) -> Dict[str, Any]:
     return {key: item for key, item in value.items() if _meaningful(item)}
 
 
+def _locator_sort_value(segment: Segment, key: str, fallback: int) -> int:
+    locator = segment.locator if isinstance(segment.locator, dict) else {}
+    value = locator.get(key)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return fallback
+
+
 def _safe_decision_profile(decisions: Dict[str, Any]) -> Dict[str, Any]:
     profile = dict(decisions)
     if "cleaned_text" in profile:
@@ -243,6 +253,21 @@ def _task_payload_context(task: Task) -> Dict[str, Any]:
         "quote_policy": payload.get("quote_policy"),
         "privacy_clearance": payload.get("privacy_clearance"),
     }
+
+
+def _default_selected_chunk_ids(session: Session, segment: Segment) -> List[str]:
+    chunks = session.exec(
+        select(Segment)
+        .where(Segment.asset_id == segment.asset_id)
+        .where(Segment.segment_type == "text_chunk")
+    ).all()
+    chunks = sorted(
+        chunks,
+        key=lambda chunk: (_locator_sort_value(chunk, "chunk_index", 0), chunk.created_at, chunk.id),
+    )
+    if chunks:
+        return [chunk.id for chunk in chunks]
+    return [segment.id]
 
 
 def _create_prompt_pair_candidate_task(
@@ -511,11 +536,24 @@ def upsert_segment_boundary_review_artifacts(
         "usable_for_dpo": decisions.get("usable_for_dpo", "no"),
         "privacy_notes": decisions.get("privacy_notes") or decisions.get("boundary_rationale"),
     }
+    selection_defaulted = False
+    if not selected_chunk_ids and _candidate_is_wanted(task, merged_decisions):
+        selected_chunk_ids = _default_selected_chunk_ids(session, segment)
+        if selected_chunk_ids:
+            selection_defaulted = True
+            chunk_scope = "all_chunks_defaulted"
+            merged_decisions["selected_chunk_ids"] = selected_chunk_ids
+            merged_decisions["chunk_scope"] = chunk_scope
+            merged_decisions["chunk_selection_defaulted"] = "yes"
 
     reviewed_chunk_ids: List[str] = []
     if selected_chunk_ids:
         chunks = session.exec(select(Segment).where(Segment.id.in_(selected_chunk_ids))).all()
-        for chunk in chunks:
+        chunks_by_id = {chunk.id: chunk for chunk in chunks}
+        for chunk_id in selected_chunk_ids:
+            chunk = chunks_by_id.get(chunk_id)
+            if chunk is None:
+                continue
             if chunk.asset_id != segment.asset_id:
                 continue
             chunk.metadata_json = {
@@ -562,6 +600,7 @@ def upsert_segment_boundary_review_artifacts(
         "whole_source_context_mode": decisions.get("whole_source_context_mode"),
         "selected_chunk_ids": reviewed_chunk_ids,
         "chunk_scope": chunk_scope,
+        "chunk_selection_defaulted": "yes" if selection_defaulted else "no",
     }
     segment.metadata_json = {
         **dict(segment.metadata_json),

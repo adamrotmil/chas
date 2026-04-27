@@ -499,6 +499,91 @@ def test_text_source_review_submission_creates_processing_task_then_prompt_candi
         assert candidate.input_payload["source_use_modes"] == ["verbatim_preferred", "grounded_synthesis_allowed"]
 
 
+def test_boundary_review_defaults_to_all_chunks_for_prompt_candidate():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_BOUNDARY_DEFAULT_CHUNKS",
+            asset_type="text",
+            title="Reviewed draft",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        preview = Segment(
+            human_id="SEG_BOUNDARY_DEFAULT_PREVIEW",
+            asset_id=asset.id,
+            segment_type="text_preview",
+            title="Reviewed draft preview",
+            text_content="A reviewed source with two useful chunks.",
+        )
+        first_chunk = Segment(
+            human_id="SEG_BOUNDARY_DEFAULT_CHUNK_1",
+            asset_id=asset.id,
+            segment_type="text_chunk",
+            title="Reviewed draft chunk 1",
+            text_content="The first useful chunk.",
+            locator={"chunk_index": 1, "char_start": 0, "char_end": 23},
+        )
+        second_chunk = Segment(
+            human_id="SEG_BOUNDARY_DEFAULT_CHUNK_2",
+            asset_id=asset.id,
+            segment_type="text_chunk",
+            title="Reviewed draft chunk 2",
+            text_content="The second useful chunk.",
+            locator={"chunk_index": 2, "char_start": 24, "char_end": 48},
+        )
+        session.add(preview)
+        session.add(first_chunk)
+        session.add(second_chunk)
+        session.flush()
+        task = Task(
+            human_id="TASK_BOUNDARY_DEFAULT_CHUNKS",
+            task_type="text_segment_boundary_review",
+            target_type="segment",
+            target_id=preview.id,
+            queue="text_segments_needing_boundary_review",
+            input_payload={"asset_id": asset.id, "segment_id": preview.id},
+            created_by="source_review",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+        first_chunk_id = first_chunk.id
+        second_chunk_id = second_chunk.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "segment_boundary_status": "approved_chunks",
+                "chunk_scope": "preview_only",
+                "source_use_modes": ["verbatim_preferred", "grounded_synthesis_allowed"],
+                "source_use_mode": "grounded_synthesis_allowed",
+                "prompt_pair_decision": "yes",
+                "prompt_pair_potential": "high",
+                "quote_policy": "source_quote_allowed_after_boundary_review",
+                "privacy_clearance": "ok_for_local_generation",
+            },
+            "notes": "Approve the reviewed chunk set.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["creates_or_updates"]["reviewed_chunk_ids"] == [first_chunk_id, second_chunk_id]
+    assert body["creates_or_updates"]["prompt_pair_candidate_task_id"]
+    assert body["creates_or_updates"]["segment_boundary_review"]["chunk_scope"] == "all_chunks_defaulted"
+    assert body["creates_or_updates"]["segment_boundary_review"]["chunk_selection_defaulted"] == "yes"
+
+    with Session(engine) as session:
+        candidate = session.get(Task, body["creates_or_updates"]["prompt_pair_candidate_task_id"])
+
+        assert candidate is not None
+        assert candidate.input_payload["selected_chunk_ids"] == [first_chunk_id, second_chunk_id]
+
+
 def test_boundary_review_needs_split_does_not_create_prompt_candidate():
     client, engine = build_client()
 

@@ -918,8 +918,12 @@ function ChunkBrowser({
         if (cancelled) {
           return;
         }
+        const shouldDefaultSelect =
+          task.task_type === "text_segment_boundary_review" && initialSelection.selected_chunk_ids.length === 0;
+        const nextSelectedIds = shouldDefaultSelect ? nextChunks.map((chunk) => chunk.id) : initialSelection.selected_chunk_ids;
         setChunks(nextChunks);
         setActiveId(initialSelection.active_chunk_id ?? nextChunks[0]?.id ?? "");
+        setSelectedIds(nextSelectedIds);
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
@@ -930,7 +934,7 @@ function ChunkBrowser({
     return () => {
       cancelled = true;
     };
-  }, [assetId, initialSelection.active_chunk_id, initialSelection.selected_chunk_ids, task.id]);
+  }, [assetId, initialSelection.active_chunk_id, initialSelection.selected_chunk_ids, task.id, task.task_type]);
 
   useEffect(() => {
     onChange({
@@ -956,7 +960,9 @@ function ChunkBrowser({
       <div className="chunk-browser-header">
         <div>
           <span>Extracted chunks</span>
-          <strong>{chunks.length} available</strong>
+          <strong>
+            {selectedIds.length} selected / {chunks.length} available
+          </strong>
         </div>
         <div className="chunk-actions">
           <button type="button" onClick={() => setSelectedIds(chunks.map((chunk) => chunk.id))} disabled={chunks.length === 0}>
@@ -1492,7 +1498,7 @@ function TextSegmentReviewForm({
   const [readyForProcessing, setReadyForProcessing] = useState(
     decisionString(initialDecisions, "ready_for_processing", "yes")
   );
-  const [privacyLevel, setPrivacyLevel] = useState(decisionString(initialDecisions, "privacy_level", "family_private"));
+  const [privacyLevel, setPrivacyLevel] = useState(decisionString(initialDecisions, "privacy_level", "public_safe"));
   const [livingPersonSensitive, setLivingPersonSensitive] = useState(
     decisionBoolean(initialDecisions, "contains_living_person_sensitive_material", false)
   );
@@ -1786,7 +1792,7 @@ function TextSegmentBoundaryReviewForm({
     decisionString(initialDecisions, "privacy_clearance", "ok_for_local_generation")
   );
   const [privacyLevel, setPrivacyLevel] = useState(
-    decisionString(initialDecisions, "privacy_level", payloadString(task.input_payload.privacy_level, "family_private"))
+    decisionString(initialDecisions, "privacy_level", payloadString(task.input_payload.privacy_level, "public_safe"))
   );
   const [privacyNotes, setPrivacyNotes] = useState(
     decisionString(initialDecisions, "privacy_notes", decisionString(initialDecisions, "boundary_rationale"))
