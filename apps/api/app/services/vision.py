@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from app.models import Asset, MetadataProfile, Segment, Task, utcnow
+from app.models import Asset, Boundary, MetadataProfile, Segment, Task, utcnow
 
 
 VISION_DRAFT_SCHEMA: Dict[str, Any] = {
@@ -120,7 +120,7 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in {"yes", "true", "1", "approved", "accepted"}
+        return value.strip().lower() in {"yes", "true", "1", "approved", "accepted", "ready"}
     return False
 
 
@@ -398,6 +398,42 @@ def upsert_vision_review_artifacts(
 
     creates: Dict[str, Any] = {"metadata_profile_id": profile.id}
     asset_id = _string(task.input_payload.get("asset_id")) or profile.target_id
+    asset = session.get(Asset, asset_id)
+    ready_for_downstream = _truthy(decisions.get("ready_for_downstream"))
+    privacy_level = _string(decisions.get("privacy_level"), "unreviewed")
+    privacy_notes = _string(decisions.get("privacy_notes"))
+    redaction_required = privacy_level in {"sealed", "private_sensitive"} or "redact" in privacy_notes.lower()
+
+    boundary = session.exec(
+        select(Boundary).where(Boundary.target_type == "asset").where(Boundary.target_id == asset_id)
+    ).first()
+    if boundary is None:
+        boundary = Boundary(target_type="asset", target_id=asset_id)
+    boundary.privacy_level = privacy_level
+    boundary.searchable = ready_for_downstream and privacy_level not in {"sealed"}
+    boundary.retrievable_in_chat = ready_for_downstream and privacy_level not in {"sealed", "private_sensitive"}
+    boundary.quotable = False
+    boundary.summarizable = ready_for_downstream
+    boundary.usable_for_voice_context = ready_for_downstream and privacy_level not in {"sealed", "private_sensitive"}
+    boundary.usable_for_sft = False
+    boundary.usable_for_dpo = False
+    boundary.usable_for_eval = ready_for_downstream and privacy_level not in {"sealed"}
+    boundary.usable_for_gallery_public = ready_for_downstream and privacy_level == "public_candidate" and not redaction_required
+    boundary.usable_for_gallery_family = ready_for_downstream and privacy_level in {"family_private", "public_candidate"}
+    boundary.redaction_required = redaction_required
+    boundary.notes = privacy_notes or "Vision review boundary generated from Adam review."
+    boundary.reviewed_by = "adam"
+    boundary.reviewed_at = utcnow()
+    session.add(boundary)
+    session.flush()
+    creates["boundary_id"] = boundary.id
+
+    if asset is not None:
+        asset.processing_status = "vision_reviewed"
+        asset.maturity_level = "L3_reviewed" if ready_for_downstream and not redaction_required else "L2_needs_review"
+        asset.updated_at = utcnow()
+        session.add(asset)
+
     if corrected_ocr and ocr_review_status != "not_present":
         candidate_segments = session.exec(
             select(Segment)

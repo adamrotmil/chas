@@ -46,8 +46,8 @@ export function getAssets(): Promise<Asset[]> {
   return request<Asset[]>("/assets");
 }
 
-export function getAssetPreviewUrl(assetId: string): string {
-  return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview`;
+export function getAssetPreviewUrl(assetId: string, variant: "thumbnail" | "display" | "original" = "display"): string {
+  return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview?variant=${encodeURIComponent(variant)}`;
 }
 
 export function getAssetDossier(assetId: string): Promise<AssetDossier> {

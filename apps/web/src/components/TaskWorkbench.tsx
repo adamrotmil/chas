@@ -779,9 +779,11 @@ function SourcePreview({ task }: { task: Task }) {
 function PhotoAssetPreview({ task }: { task: Task }) {
   const assetId = payloadString(task.input_payload.asset_id) || (task.target_type === "asset" ? task.target_id : "");
   const [failed, setFailed] = useState(false);
+  const [variant, setVariant] = useState<"display" | "thumbnail" | "original">("display");
 
   useEffect(() => {
     setFailed(false);
+    setVariant("display");
   }, [assetId, task.id]);
 
   if (!assetId) {
@@ -797,17 +799,38 @@ function PhotoAssetPreview({ task }: { task: Task }) {
   return (
     <section className="photo-preview-panel">
       <div className="photo-preview-header">
-        <span>Photo preview</span>
-        <strong>{title}</strong>
+        <div>
+          <span>Photo preview</span>
+          <strong>{title}</strong>
+        </div>
+        <div className="photo-preview-tools" aria-label="Preview variant">
+          {(["display", "thumbnail", "original"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={variant === option ? "active" : ""}
+              onClick={() => {
+                setVariant(option);
+                setFailed(false);
+              }}
+              title={`Built: request the ${option} asset preview variant from the API.`}
+            >
+              {labelFromKey(option)}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="photo-preview-stage">
         {failed ? (
           <div className="photo-preview-empty">
             <Image size={24} />
-            <span>Mirrored image preview is not available for this source yet.</span>
+            <span>Preview is not available yet. Mirror the source or open the dossier to inspect Drive/source records.</span>
+            <button type="button" onClick={() => setFailed(false)}>
+              Retry
+            </button>
           </div>
         ) : (
-          <img src={getAssetPreviewUrl(assetId)} alt={title} onError={() => setFailed(true)} />
+          <img src={getAssetPreviewUrl(assetId, variant)} alt={title} onError={() => setFailed(true)} />
         )}
       </div>
     </section>

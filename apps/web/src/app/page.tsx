@@ -68,6 +68,12 @@ const topNav: NavItem[] = [
     tooltip: "Built: configure grounded prompt-pair drafts from approved source chunks. No live model call yet."
   },
   {
+    id: "gold_edits",
+    label: "Gold Edits",
+    icon: <Download size={15} />,
+    tooltip: "Built: review generated/draft pairs, edit the preferred answer, and set SFT/DPO export readiness."
+  },
+  {
     id: "exports",
     label: "Exports",
     icon: <FileText size={15} />,
@@ -285,7 +291,7 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
     case "gold_edits":
       return task.task_type === "gold_voice_edit";
     case "prompt_pairs":
-      return isPromptPairTask(task);
+      return task.task_type === "grounded_prompt_pair_candidate";
     case "privacy":
       return task.task_type === "boundary_review" || task.queue.includes("boundary") || task.queue.includes("privacy");
     case "exports":
@@ -468,7 +474,7 @@ export default function Home() {
     setError(null);
     try {
       await createPromptPairBatch(10);
-      navigateMode("prompt_pairs");
+      navigateMode("gold_edits");
       setSelectedTaskId(null);
       await load();
     } catch (caught) {
@@ -692,7 +698,7 @@ export default function Home() {
                   {...tooltip("Built: create up to 10 no-live-model prompt-pair draft review tasks from ready candidates.")}
                 >
                   <Sparkles size={15} />
-                  <span>{batchBusy ? "Creating" : "Create drafts"}</span>
+                  <span>{batchBusy ? "Creating" : "Create reviews"}</span>
                 </button>
               ) : null}
               {selectedMode === "vision_drafts" ? (

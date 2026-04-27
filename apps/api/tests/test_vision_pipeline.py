@@ -4,7 +4,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.session import get_session
 from app.main import app
-from app.models import Annotation, Asset, MetadataProfile, Segment, Task
+from app.models import Annotation, Asset, Boundary, MetadataProfile, Segment, Task
 
 
 def build_client():
@@ -133,7 +133,7 @@ def test_vision_review_submission_promotes_profile_and_creates_ocr_segment():
                 "adam_context_note": "Potential journal source; needs careful transcription.",
                 "privacy_level": "private_sensitive",
                 "privacy_notes": "Handwriting may contain private material.",
-                "ready_for_downstream": "later",
+                "ready_for_downstream": "yes",
                 "ocr_review_status": "adam_corrected",
                 "ocr_truth_status": "adam_expert_reconstruction",
                 "corrected_ocr_text": "first corrected line\nsecond corrected line",
@@ -162,6 +162,16 @@ def test_vision_review_submission_promotes_profile_and_creates_ocr_segment():
         assert profile.embedding_hints["question_answers"]["privacy"] == "Keep private until journal context is reviewed."
         assert profile.raw_profile["rejected_system_inferences"] == ["wrong_person_guess"]
         assert profile.source_annotation_id == annotation.id
+        boundary = session.exec(select(Boundary).where(Boundary.target_type == "asset").where(Boundary.target_id == photo_id)).first()
+        assert boundary is not None
+        assert boundary.privacy_level == "private_sensitive"
+        assert boundary.redaction_required is True
+        assert boundary.retrievable_in_chat is False
+        assert boundary.usable_for_eval is True
+        asset = session.get(Asset, photo_id)
+        assert asset is not None
+        assert asset.processing_status == "vision_reviewed"
+        assert asset.maturity_level == "L2_needs_review"
 
         assert ocr_segment is not None
         assert ocr_segment.asset_id == photo_id
