@@ -34,6 +34,7 @@ import {
   skipTask,
   submitTask
 } from "@/lib/api";
+import type { PromptPairBatchOptions } from "@/lib/api";
 import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
 import { ContextPackBuilderPanel } from "@/components/ContextPackBuilderPanel";
 import { ExportDryRunPanel } from "@/components/ExportDryRunPanel";
@@ -469,11 +470,11 @@ export default function Home() {
     await load();
   }
 
-  async function handleCreatePromptPairBatch() {
+  async function handleCreatePromptPairBatch(options: PromptPairBatchOptions = { limit: 10 }) {
     setBatchBusy(true);
     setError(null);
     try {
-      await createPromptPairBatch(10);
+      await createPromptPairBatch(options);
       navigateMode("gold_edits");
       setSelectedTaskId(null);
       await load();
@@ -784,7 +785,14 @@ export default function Home() {
             <ExportDryRunPanel />
           ) : (
             <div className={selectedMode === "prompt_pairs" ? "workbench-stack has-utility" : "workbench-stack"}>
-              {selectedMode === "prompt_pairs" ? <ContextPackBuilderPanel selectedTask={selectedTask} tasks={tasks} /> : null}
+              {selectedMode === "prompt_pairs" ? (
+                <ContextPackBuilderPanel
+                  selectedTask={selectedTask}
+                  tasks={tasks}
+                  batchBusy={batchBusy}
+                  onCreateBatch={handleCreatePromptPairBatch}
+                />
+              ) : null}
               {selectedTask ? (
                 <TaskWorkbench
                   key={selectedTask.id}

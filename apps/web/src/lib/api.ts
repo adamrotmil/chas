@@ -112,10 +112,21 @@ export function getDatasetJsonlUrl(exportType: "sft" | "dpo"): string {
   return `${API_BASE}/dataset-exports/jsonl?export_type=${encodeURIComponent(exportType)}`;
 }
 
-export function createPromptPairBatch(limit = 10): Promise<PromptPairBatchResponse> {
+export interface PromptPairBatchOptions {
+  limit?: number;
+  queue?: string;
+  prompt_intent?: string;
+  voice_mode?: string;
+  truth_mode?: string;
+  target_response_shape?: string;
+  boundary_clearance_needed?: string;
+}
+
+export function createPromptPairBatch(options: PromptPairBatchOptions | number = 10): Promise<PromptPairBatchResponse> {
+  const payload = typeof options === "number" ? { limit: options } : options;
   return request<PromptPairBatchResponse>("/prompt-pairs/batches", {
     method: "POST",
-    body: JSON.stringify({ limit })
+    body: JSON.stringify(payload)
   });
 }
 

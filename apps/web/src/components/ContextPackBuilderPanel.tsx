@@ -3,11 +3,14 @@
 import { Boxes, CheckCircle2, ShieldAlert, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { buildContextPack, getContextPacks } from "@/lib/api";
+import type { PromptPairBatchOptions } from "@/lib/api";
 import type { ContextPack, ContextPackBuildItem, ContextPackBuildResponse, JsonRecord, Task } from "@/lib/types";
 
 type Props = {
   selectedTask: Task | null;
   tasks: Task[];
+  batchBusy?: boolean;
+  onCreateBatch?: (options: PromptPairBatchOptions) => Promise<void>;
 };
 
 const defaultUserIntents = [
@@ -19,6 +22,7 @@ const defaultUserIntents = [
 ];
 
 const defaultTruthModes = ["adam_expert_reconstruction", "interpretive_synthesis", "archival_source", "system_inference"];
+const defaultResponseShapes = ["short_voice_response", "short_email_reply", "longer_letter", "memoir_paragraph", "archive_answer", "eval_prompt"];
 
 function payloadString(payload: JsonRecord, key: string, fallback = ""): string {
   const value = payload[key];
@@ -113,13 +117,16 @@ function displayDate(value: string): string {
   return date.toLocaleString();
 }
 
-export function ContextPackBuilderPanel({ selectedTask, tasks }: Props) {
+export function ContextPackBuilderPanel({ selectedTask, tasks, batchBusy = false, onCreateBatch }: Props) {
   const task = useMemo(() => selectedFactoryTask(selectedTask, tasks), [selectedTask, tasks]);
   const items = useMemo(() => contextItemsFromTask(task), [task]);
   const [packs, setPacks] = useState<ContextPack[]>([]);
   const [userIntent, setUserIntent] = useState("gold_voice_generation");
   const [voiceMode, setVoiceMode] = useState("father_to_adam");
   const [truthMode, setTruthMode] = useState("adam_expert_reconstruction");
+  const [targetResponseShape, setTargetResponseShape] = useState("short_voice_response");
+  const [boundaryClearance, setBoundaryClearance] = useState("review_before_export");
+  const [batchLimit, setBatchLimit] = useState(10);
   const [allowedFact, setAllowedFact] = useState("");
   const [blockedFact, setBlockedFact] = useState("");
   const [result, setResult] = useState<ContextPackBuildResponse | null>(null);
@@ -131,6 +138,8 @@ export function ContextPackBuilderPanel({ selectedTask, tasks }: Props) {
     setUserIntent(payloadString(payload, "prompt_intent", "gold_voice_generation"));
     setVoiceMode(payloadString(payload, "voice_mode", payloadString(payload, "voice_training_role", "father_to_adam")));
     setTruthMode(payloadString(payload, "truth_mode", "adam_expert_reconstruction"));
+    setTargetResponseShape(payloadString(payload, "target_response_shape", "short_voice_response"));
+    setBoundaryClearance(payloadString(payload, "boundary_clearance_needed", "review_before_export"));
     setAllowedFact(previewFactFromTask(task).slice(0, 1200));
   }, [task]);
 
@@ -230,6 +239,60 @@ export function ContextPackBuilderPanel({ selectedTask, tasks }: Props) {
           ) : (
             <em>No source rows found; use the allowed fact field as a temporary manual context fact.</em>
           )}
+        </div>
+      </div>
+
+      <div className="utility-grid context-builder-grid">
+        <label>
+          <span>Response shape</span>
+          <select value={targetResponseShape} onChange={(event) => setTargetResponseShape(event.target.value)}>
+            {defaultResponseShapes.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Boundary check</span>
+          <select value={boundaryClearance} onChange={(event) => setBoundaryClearance(event.target.value)}>
+            {["review_before_export", "source_boundary_clear", "needs_redaction", "do_not_export"].map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Batch size</span>
+          <input
+            type="number"
+            min={1}
+            max={50}
+            value={batchLimit}
+            onChange={(event) => setBatchLimit(Number(event.target.value))}
+          />
+        </label>
+        <div className="utility-mini-list">
+          <span>Factory action</span>
+          <button
+            type="button"
+            disabled={!onCreateBatch || batchBusy}
+            onClick={() =>
+              void onCreateBatch?.({
+                limit: Math.max(1, Math.min(50, batchLimit || 1)),
+                prompt_intent: userIntent,
+                voice_mode: voiceMode,
+                truth_mode: truthMode,
+                target_response_shape: targetResponseShape,
+                boundary_clearance_needed: boundaryClearance
+              })
+            }
+            title="Built: create no-live-model review tasks from ready prompt-pair candidates using these batch defaults."
+          >
+            <Sparkles size={14} />
+            {batchBusy ? "Creating reviews" : "Create review batch"}
+          </button>
         </div>
       </div>
 
