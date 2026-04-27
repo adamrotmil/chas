@@ -166,7 +166,9 @@ def _candidate_is_wanted(task: Task, decisions: Dict[str, Any]) -> bool:
         )
     if task.task_type == "email_voice_sample":
         return _string(decisions.get("context_use")) in {"charles_voice_sample", "prompt_response_context"} and (
-            _truthy(decisions.get("usable_for_voice_context")) or _truthy(decisions.get("usable_for_sft"))
+            _truthy(decisions.get("usable_for_voice_context"))
+            or _truthy(decisions.get("usable_for_grounded_generation"))
+            or _truthy(decisions.get("usable_for_sft"))
         )
     return False
 

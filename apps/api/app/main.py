@@ -2,7 +2,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import annotations, assets, boundaries, entities, exports, imports, memories, metadata_profiles, segments, tasks, voice
+from app.routers import (
+    annotations,
+    assets,
+    boundaries,
+    entities,
+    exports,
+    imports,
+    memories,
+    metadata_profiles,
+    prompt_pairs,
+    segments,
+    tasks,
+    voice,
+)
 
 app = FastAPI(
     title="CharlesOps API",
@@ -36,3 +49,4 @@ app.include_router(exports.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(segments.router, prefix="/api")
 app.include_router(metadata_profiles.router, prefix="/api")
+app.include_router(prompt_pairs.router, prefix="/api")

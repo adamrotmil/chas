@@ -67,6 +67,7 @@ const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
   text_segment_review: { label: "Text Segment Review", icon: <TextCursorInput size={18} /> },
   boundary_review: { label: "Boundary Review", icon: <ShieldCheck size={18} /> },
   email_voice_sample: { label: "Email Voice Sample", icon: <Mail size={18} /> },
+  grounded_prompt_pair_candidate: { label: "Prompt Pair Factory", icon: <ClipboardList size={18} /> },
   gold_voice_edit: { label: "Gold Voice Edit", icon: <Sparkles size={18} /> }
 };
 
@@ -93,7 +94,15 @@ const decisionPromptLabels: Record<string, string> = {
   other_voice_roles: "Who else is speaking",
   context_use: "How this source should be used",
   authenticity_value: "How authentic the signal is",
-  voice_density: "How much Charles voice signal is present",
+  voice_density: "Charles voice signal",
+  charles_voice_signal: "Charles voice signal",
+  notable_voice_evidence: "Notable voice evidence",
+  prompt_intent: "What kind of prompt/response pair to make",
+  source_chunks_to_use: "Which reviewed source chunks to use",
+  target_response_shape: "What shape the response should take",
+  boundary_clearance_needed: "What boundary check is needed before export",
+  prompt_text: "Prompt text for the candidate pair",
+  model_draft: "Draft rejected/pre-edit side",
   adam_gold_edit: "What Adam changed into the preferred version",
   ratings: "Why the preferred version works",
   failure_modes: "What the rejected version gets wrong",
@@ -117,7 +126,7 @@ function promptFromDecisionKey(value: string): string {
 
 function taskDisplayTitle(task: Task): string {
   const payload = task.input_payload;
-  for (const key of ["source_filename", "asset_title", "title", "segment_title", "prompt"]) {
+  for (const key of ["source_filename", "source_title", "asset_title", "title", "segment_title", "prompt"]) {
     const value = payload[key];
     if (typeof value === "string" && value.trim()) {
       return value;
@@ -258,7 +267,10 @@ function Select({
 }
 
 function SourcePreview({ task }: { task: Task }) {
-  const previewText = payloadString(task.input_payload.preview_text) || payloadString(task.input_payload.text);
+  const previewText =
+    payloadString(task.input_payload.preview_text) ||
+    payloadString(task.input_payload.source_excerpt) ||
+    payloadString(task.input_payload.text);
   if (!previewText) {
     return null;
   }
@@ -271,7 +283,11 @@ function SourcePreview({ task }: { task: Task }) {
     <section className="source-text">
       <div className="source-text-header">
         <span>Source text</span>
-        <strong>{payloadString(task.input_payload.source_filename) || payloadString(task.input_payload.asset_title)}</strong>
+        <strong>
+          {payloadString(task.input_payload.source_filename) ||
+            payloadString(task.input_payload.source_title) ||
+            payloadString(task.input_payload.asset_title)}
+        </strong>
       </div>
       {emailHeaders ? (
         <div className="source-text-email">
@@ -304,7 +320,10 @@ function EditableExtraction({
   initialCleanedText?: string;
   onChange: (value: Decisions) => void;
 }) {
-  const previewText = payloadString(task.input_payload.preview_text) || payloadString(task.input_payload.text);
+  const previewText =
+    payloadString(task.input_payload.preview_text) ||
+    payloadString(task.input_payload.source_excerpt) ||
+    payloadString(task.input_payload.text);
   const activeChunkId = activeChunk?.id ?? "";
   const [cleanedText, setCleanedText] = useState(initialCleanedText || activeChunk?.text_content || previewText);
 
@@ -1023,24 +1042,31 @@ function EmailVoiceSampleForm({
     task.input_payload.email_headers && typeof task.input_payload.email_headers === "object"
       ? (task.input_payload.email_headers as Record<string, unknown>)
       : {};
+  const initialPresence = decisionString(initialDecisions, "charles_voice_presence", "unclear");
+  const normalizedPresence =
+    initialPresence === "primary" ? "charles_authored" : initialPresence === "partial" ? "charles_quoted" : initialPresence;
   const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", "father_to_adam"));
-  const [charlesVoicePresence, setCharlesVoicePresence] = useState(decisionString(initialDecisions, "charles_voice_presence", "unknown"));
+  const [charlesVoicePresence, setCharlesVoicePresence] = useState(normalizedPresence);
   const [charlesRole, setCharlesRole] = useState(decisionString(initialDecisions, "charles_email_role", "unknown"));
   const [otherVoices, setOtherVoices] = useState(decisionListText(initialDecisions, "other_voice_roles", "Adam, other correspondents"));
   const [contextUse, setContextUse] = useState(decisionString(initialDecisions, "context_use", "conversation_context"));
   const [quotedMaterial, setQuotedMaterial] = useState(decisionBoolean(initialDecisions, "quoted_or_forwarded_material_present", true));
   const [authenticity, setAuthenticity] = useState(decisionNumber(initialDecisions, "authenticity_value", 4));
-  const [density, setDensity] = useState(decisionNumber(initialDecisions, "voice_density", 4));
-  const [phrases, setPhrases] = useState(decisionListText(initialDecisions, "recurring_phrases", "call when you get in"));
+  const [voiceSignal, setVoiceSignal] = useState(decisionString(initialDecisions, "charles_voice_signal", "medium"));
+  const [evidence, setEvidence] = useState(decisionListText(initialDecisions, "notable_voice_evidence"));
   const [voiceContext, setVoiceContext] = useState(decisionBoolean(initialDecisions, "usable_for_voice_context", true));
+  const [groundedGeneration, setGroundedGeneration] = useState(
+    decisionBoolean(initialDecisions, "usable_for_grounded_generation", true)
+  );
   const [sft, setSft] = useState(decisionBoolean(initialDecisions, "usable_for_sft", false));
   const [dpo, setDpo] = useState(decisionBoolean(initialDecisions, "usable_for_dpo", false));
   const [why, setWhy] = useState(decisionString(initialDecisions, "why_it_matters"));
   const [boundaryRationale, setBoundaryRationale] = useState(decisionString(initialDecisions, "boundary_rationale"));
+  const directCharlesVoice = ["charles_authored", "charles_quoted", "primary", "partial"].includes(charlesVoicePresence);
 
   useEffect(() => {
     onChange({
-      voice_mode: voiceMode,
+      voice_mode: directCharlesVoice ? voiceMode : "",
       charles_voice_presence: charlesVoicePresence,
       charles_email_role: charlesRole,
       other_voice_roles: parseList(otherVoices),
@@ -1051,11 +1077,14 @@ function EmailVoiceSampleForm({
       email_to: payloadString(headers.to),
       email_date: payloadString(headers.date),
       authenticity_value: authenticity,
-      voice_density: density,
-      recurring_phrases: parseList(phrases),
+      voice_density: directCharlesVoice ? voiceSignal : "none",
+      charles_voice_signal: directCharlesVoice ? voiceSignal : "none",
+      recurring_phrases: directCharlesVoice ? parseList(evidence) : [],
+      notable_voice_evidence: directCharlesVoice ? parseList(evidence) : [],
       usable_for_voice_context: voiceContext ? "yes" : "no",
-      usable_for_sft: sft ? "yes" : "no",
-      usable_for_dpo: dpo ? "yes" : "no",
+      usable_for_grounded_generation: groundedGeneration ? "yes" : "no",
+      usable_for_sft: directCharlesVoice && sft ? "yes" : "no",
+      usable_for_dpo: directCharlesVoice && dpo ? "yes" : "no",
       why_it_matters: why,
       boundary_rationale: boundaryRationale
     });
@@ -1065,39 +1094,34 @@ function EmailVoiceSampleForm({
     charlesRole,
     charlesVoicePresence,
     contextUse,
-    density,
+    directCharlesVoice,
     dpo,
+    evidence,
+    groundedGeneration,
     headers.date,
     headers.from,
     headers.subject,
     headers.to,
     onChange,
     otherVoices,
-    phrases,
     quotedMaterial,
     sft,
     voiceContext,
     voiceMode,
+    voiceSignal,
     why
   ]);
 
   return (
     <div className="form-grid">
       <FormHint title="Email voice sample">
-        Emails can contain multiple voices. Mark whether Charles is actually speaking, who else is present, and whether the thread is voice material, context, or something to exclude.
+        Emails can contain multiple voices. Start by marking whether Charles is actually speaking; if not, this becomes context for retrieval or future grounded prompt pairs, not direct voice training data.
       </FormHint>
-      <Field label="What mode is Charles speaking in?" hint="Use the closest voice/context mode, even if this is only partial evidence.">
-        <Select
-          value={voiceMode}
-          onChange={setVoiceMode}
-          options={["casual_email", "father_to_adam", "argument", "comic", "grief", "logistics", "other"]}
-        />
-      </Field>
-      <Field label="Is Charles's voice actually present?" hint="Primary for Charles-authored text; context only if others are speaking about him.">
+      <Field label="Is Charles's voice actually present?" hint="This decides whether we treat the email as voice evidence or as source/context.">
         <Select
           value={charlesVoicePresence}
           onChange={setCharlesVoicePresence}
-          options={["primary", "partial", "context_only", "absent", "unknown"]}
+          options={["charles_authored", "charles_quoted", "recipient_only", "mentioned_only", "no_charles_voice", "unclear"]}
         />
       </Field>
       <Field label="Where does Charles appear in the thread?" hint="Sender, recipient, quoted author, mentioned person, mixed, or unknown.">
@@ -1107,6 +1131,23 @@ function EmailVoiceSampleForm({
           options={["sender", "recipient", "quoted_author", "mentioned", "mixed", "unknown"]}
         />
       </Field>
+      {directCharlesVoice ? (
+        <Field label="What mode is Charles speaking in?" hint="Only needed when Charles is actually speaking or quoted.">
+          <Select
+            value={voiceMode}
+            onChange={setVoiceMode}
+            options={[
+              "casual_email",
+              "father_to_adam",
+              "argument",
+              "comic_observation",
+              "grief_memory",
+              "logistical_note",
+              "other"
+            ]}
+          />
+        </Field>
+      ) : null}
       <Field label="Who else is speaking?" hint="Comma-separated people or roles in the email thread.">
         <input value={otherVoices} onChange={(event) => setOtherVoices(event.target.value)} />
       </Field>
@@ -1118,24 +1159,153 @@ function EmailVoiceSampleForm({
         />
       </Field>
       <Rating label="Authenticity" value={authenticity} onChange={setAuthenticity} />
-      <Rating label="Voice density" value={density} onChange={setDensity} />
-      <Field label="Any phrases worth preserving?" hint="Comma-separated turns of phrase, closings, habits, or verbal signatures.">
-        <input value={phrases} onChange={(event) => setPhrases(event.target.value)} />
-      </Field>
+      {directCharlesVoice ? (
+        <>
+          <Field label="Charles voice signal" hint="How strong the direct Charles voice evidence is.">
+            <Select value={voiceSignal} onChange={setVoiceSignal} options={["high", "medium", "low", "none"]} />
+          </Field>
+          <Field label="Notable voice evidence" hint="Optional: closings, habits, exact phrasing, or verbal signatures worth finding again.">
+            <input value={evidence} onChange={(event) => setEvidence(event.target.value)} />
+          </Field>
+        </>
+      ) : (
+        <FormHint title="Context mode">
+          Charles is not speaking here, so focus on who is speaking, what this tells us, how it relates to Charles, and whether it can ground future prompt pairs.
+        </FormHint>
+      )}
       <FormHint title="Downstream use">
-        Decide whether this email can be used as voice context or training material. Quoted/forwarded material marks multi-voice contamination.
+        Decide whether this email can be used as voice context, source context, prompt/response grounding, or training material.
       </FormHint>
       <div className="toggle-grid">
         <Toggle label="quoted_or_forwarded_material" checked={quotedMaterial} onChange={setQuotedMaterial} />
         <Toggle label="usable_for_voice_context" checked={voiceContext} onChange={setVoiceContext} />
-        <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
-        <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
+        <Toggle label="usable_for_grounded_generation" checked={groundedGeneration} onChange={setGroundedGeneration} />
+        {directCharlesVoice ? (
+          <>
+            <Toggle label="usable_for_sft" checked={sft} onChange={setSft} />
+            <Toggle label="usable_for_dpo" checked={dpo} onChange={setDpo} />
+          </>
+        ) : null}
       </div>
       <Field label="Why does Adam think it matters?" hint="Context value, voice value, or why the thread should be handled carefully.">
         <TextArea value={why} onChange={setWhy} />
       </Field>
       <Field label="Why is this boundary/use decision OK?">
         <TextArea value={boundaryRationale} onChange={setBoundaryRationale} />
+      </Field>
+    </div>
+  );
+}
+
+function GroundedPromptPairCandidateForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
+  const payload = task.input_payload;
+  const [promptIntent, setPromptIntent] = useState(decisionString(initialDecisions, "prompt_intent", "grounded_voice_response"));
+  const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", payloadString(payload.voice_training_role, "father_to_adam")));
+  const [truthMode, setTruthMode] = useState(
+    decisionString(initialDecisions, "truth_mode", "adam_expert_reconstruction")
+  );
+  const [targetResponseShape, setTargetResponseShape] = useState(
+    decisionString(initialDecisions, "target_response_shape", "short_voice_response")
+  );
+  const [promptText, setPromptText] = useState(decisionString(initialDecisions, "prompt_text"));
+  const [modelDraft, setModelDraft] = useState(decisionString(initialDecisions, "model_draft"));
+  const [boundaryClearance, setBoundaryClearance] = useState(
+    decisionString(initialDecisions, "boundary_clearance_needed", "review_before_export")
+  );
+  const [factoryNotes, setFactoryNotes] = useState(decisionString(initialDecisions, "factory_notes"));
+
+  useEffect(() => {
+    onChange({
+      prompt_intent: promptIntent,
+      voice_mode: voiceMode,
+      truth_mode: truthMode,
+      target_response_shape: targetResponseShape,
+      prompt_text: promptText,
+      model_draft: modelDraft,
+      boundary_clearance_needed: boundaryClearance,
+      factory_notes: factoryNotes,
+      source_chunks_to_use: Array.isArray(initialDecisions.selected_chunk_ids) ? initialDecisions.selected_chunk_ids : [],
+      no_live_model_call: true
+    });
+  }, [boundaryClearance, factoryNotes, initialDecisions.selected_chunk_ids, modelDraft, onChange, promptIntent, promptText, targetResponseShape, truthMode, voiceMode]);
+
+  return (
+    <div className="form-grid">
+      <FormHint title="Prompt Pair Factory">
+        Turn reviewed source material into an editable prompt/draft task. This creates a stub draft and a gold-edit review task, but does not call a live model.
+      </FormHint>
+      <Field label="What kind of prompt/response pair should this become?">
+        <Select
+          value={promptIntent}
+          onChange={setPromptIntent}
+          options={[
+            "grounded_voice_response",
+            "email_reply_candidate",
+            "memory_scene_candidate",
+            "factual_archive_answer",
+            "style_eval_case",
+            "anti_pattern_probe"
+          ]}
+        />
+      </Field>
+      <Field label="Which voice mode should the draft aim for?">
+        <Select
+          value={voiceMode}
+          onChange={setVoiceMode}
+          options={[
+            "casual_email",
+            "father_to_adam",
+            "memoir_scene",
+            "argument",
+            "comic_observation",
+            "grief_memory",
+            "photography_reflection",
+            "philosophical_fragment",
+            "spoken_interview",
+            "logistical_note"
+          ]}
+        />
+      </Field>
+      <Field label="What truth label should the candidate carry?">
+        <Select
+          value={truthMode}
+          onChange={setTruthMode}
+          options={["adam_expert_reconstruction", "interpretive_synthesis", "model_generated"]}
+        />
+      </Field>
+      <Field label="What shape should the response have?">
+        <Select
+          value={targetResponseShape}
+          onChange={setTargetResponseShape}
+          options={["short_voice_response", "short_email_reply", "longer_letter", "memoir_paragraph", "archive_answer", "eval_prompt"]}
+        />
+      </Field>
+      <Field
+        label="Prompt text"
+        hint="Optional. Leave blank and the backend will create a conservative grounded prompt from the selected source."
+      >
+        <TextArea value={promptText} onChange={setPromptText} rows={5} />
+      </Field>
+      <Field label="Draft rejected/pre-edit side" hint="Optional. Leave blank to create a deterministic stub for Adam to rewrite.">
+        <TextArea value={modelDraft} onChange={setModelDraft} rows={5} />
+      </Field>
+      <Field label="What boundary check is needed before export?">
+        <Select
+          value={boundaryClearance}
+          onChange={setBoundaryClearance}
+          options={["review_before_export", "source_boundary_clear", "needs_redaction", "do_not_export"]}
+        />
+      </Field>
+      <Field label="Factory notes" hint="Why this source should produce prompt pairs, or what Adam should watch for in the gold edit.">
+        <TextArea value={factoryNotes} onChange={setFactoryNotes} rows={4} />
       </Field>
     </div>
   );
@@ -1187,6 +1357,8 @@ function GoldVoiceEditForm({
     anti_pattern: typeof initialExportFlags.anti_pattern === "boolean" ? initialExportFlags.anti_pattern : true,
     style_rule: typeof initialExportFlags.style_rule === "boolean" ? initialExportFlags.style_rule : true
   });
+  const isPromptPairDraft = Boolean(payload.prompt_pair_factory_no_model_call || payload.source_prompt_pair_task_id);
+  const sourceExcerpt = payloadString(payload.source_excerpt);
 
   useEffect(() => {
     onChange({
@@ -1207,39 +1379,52 @@ function GoldVoiceEditForm({
 
   return (
     <div className="gold-grid">
-      <FormHint title="Generated/model output">
-        Compare the model draft against Adam's preferred version: what the model got wrong, what Adam changed, why the preferred version is more authentic, and which failure mode the rejected version shows.
+      <FormHint title={isPromptPairDraft ? "Prompt pair review" : "Generated/model output"}>
+        Compare the draft against Adam's preferred version: what the draft gets wrong, what Adam changes, why the preferred version is more authentic, and which export artifacts should be created.
       </FormHint>
-      <Field label="What was the model asked to do?">
-        <TextArea value={prompt} onChange={setPrompt} rows={3} />
-      </Field>
-      <Field label="Which voice mode was requested?">
-        <Select
-          value={voiceMode}
-          onChange={setVoiceMode}
-          options={[
-            "casual_email",
-            "father_to_adam",
-            "memoir_scene",
-            "argument",
-            "comic_observation",
-            "grief_memory",
-            "photography_reflection",
-            "philosophical_fragment",
-            "spoken_interview",
-            "logistical_note"
-          ]}
-        />
-      </Field>
-      <Field label="What kind of reconstruction is this?">
-        <Select value={truthMode} onChange={setTruthMode} options={["generative_reconstruction", "simulation", "interpretive"]} />
-      </Field>
-      <Field label="What did the model write?" hint="This becomes the rejected side if exported as DPO.">
-        <TextArea value={modelDraft} onChange={setModelDraft} rows={8} />
-      </Field>
-      <Field label="What did Adam change it into?" hint="This is the preferred version and the SFT assistant target.">
-        <TextArea value={goldEdit} onChange={setGoldEdit} rows={10} />
-      </Field>
+      {sourceExcerpt ? (
+        <section className="prompt-pair-source-card">
+          <div>
+            <span>Grounding source</span>
+            <strong>{payloadString(payload.source_title, "Reviewed source")}</strong>
+          </div>
+          <LinePreview text={sourceExcerpt} />
+        </section>
+      ) : null}
+      <div className="prompt-grid">
+        <Field label="What was the model asked to do?">
+          <TextArea value={prompt} onChange={setPrompt} rows={5} />
+        </Field>
+        <Field label="Which voice mode was requested?">
+          <Select
+            value={voiceMode}
+            onChange={setVoiceMode}
+            options={[
+              "casual_email",
+              "father_to_adam",
+              "memoir_scene",
+              "argument",
+              "comic_observation",
+              "grief_memory",
+              "photography_reflection",
+              "philosophical_fragment",
+              "spoken_interview",
+              "logistical_note"
+            ]}
+          />
+        </Field>
+        <Field label="What kind of reconstruction is this?">
+          <Select value={truthMode} onChange={setTruthMode} options={["generative_reconstruction", "simulation", "interpretive", "adam_expert_reconstruction"]} />
+        </Field>
+      </div>
+      <div className="voice-compare-grid">
+        <Field label={isPromptPairDraft ? "Draft candidate" : "What did the model write?"} hint="This becomes the rejected side if exported as DPO.">
+          <TextArea value={modelDraft} onChange={setModelDraft} rows={14} />
+        </Field>
+        <Field label="What did Adam change it into?" hint="This is the preferred version and the SFT assistant target.">
+          <TextArea value={goldEdit} onChange={setGoldEdit} rows={14} />
+        </Field>
+      </div>
       <Field label="Why is the preferred version more authentic?" hint="Name the specific voice, restraint, detail, or truth difference.">
         <TextArea value={authenticityRationale} onChange={setAuthenticityRationale} rows={4} />
       </Field>
@@ -1489,6 +1674,8 @@ export function TaskWorkbench({
         return <BoundaryReviewForm initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "email_voice_sample":
         return <EmailVoiceSampleForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
+      case "grounded_prompt_pair_candidate":
+        return <GroundedPromptPairCandidateForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "gold_voice_edit":
         return <GoldVoiceEditForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       default:
@@ -1509,7 +1696,15 @@ export function TaskWorkbench({
         );
     }
   })();
-  const taskSource = payloadString(task.input_payload.source_filename) || payloadString(task.input_payload.asset_title) || task.target_id;
+  const taskSource =
+    payloadString(task.input_payload.source_filename) ||
+    payloadString(task.input_payload.source_title) ||
+    payloadString(task.input_payload.asset_title) ||
+    task.target_id;
+  const formInCanvas = task.task_type === "gold_voice_edit";
+  const showSourceReviewCanvas = !formInCanvas;
+  const showEditableExtraction =
+    showSourceReviewCanvas && task.task_type !== "grounded_prompt_pair_candidate" && task.task_type !== "photo_context";
 
   return (
     <form className="workbench" onSubmit={handleSubmit}>
@@ -1552,14 +1747,21 @@ export function TaskWorkbench({
         style={{ "--inspector-width": `${inspectorWidth}px` } as React.CSSProperties}
       >
         <section className="review-canvas" aria-label="Source and derived review surface">
-          <SourcePreview task={task} />
-          <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
-          <EditableExtraction
-            task={task}
-            activeChunk={activeChunk}
-            initialCleanedText={decisionString(draftDecisions, "cleaned_text")}
-            onChange={handleTextEditChange}
-          />
+          {formInCanvas ? <section className="canvas-form-panel">{form}</section> : null}
+          {showSourceReviewCanvas ? (
+            <>
+              <SourcePreview task={task} />
+              <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
+              {showEditableExtraction ? (
+                <EditableExtraction
+                  task={task}
+                  activeChunk={activeChunk}
+                  initialCleanedText={decisionString(draftDecisions, "cleaned_text")}
+                  onChange={handleTextEditChange}
+                />
+              ) : null}
+            </>
+          ) : null}
         </section>
 
         <div
@@ -1626,7 +1828,15 @@ export function TaskWorkbench({
                   <p>{task.required_decisions.map(promptFromDecisionKey).join(", ")}</p>
                 </div>
               </section>
-              <section className="decision-surface">{form}</section>
+              <section className="decision-surface">
+                {formInCanvas ? (
+                  <FormHint title="Main editor">
+                    Prompt, rejected draft, preferred version, ratings, and export flags are in the center editor so the comparison has enough room.
+                  </FormHint>
+                ) : (
+                  form
+                )}
+              </section>
             </div>
           ) : null}
 

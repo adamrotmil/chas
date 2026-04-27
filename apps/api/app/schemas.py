@@ -246,6 +246,23 @@ class GoldVoiceExampleCreate(SQLModel):
     approved_by: Optional[str] = "adam"
 
 
+class PromptPairBatchRequest(SQLModel):
+    limit: int = 10
+    queue: str = "grounded_prompt_pairs_needing_drafts"
+    prompt_intent: str = "grounded_voice_response"
+    voice_mode: str = "father_to_adam"
+    truth_mode: str = "adam_expert_reconstruction"
+    target_response_shape: str = "short_voice_response"
+    boundary_clearance_needed: str = "review_before_export"
+
+
+class PromptPairBatchResponse(SQLModel):
+    created_count: int
+    candidate_task_ids: List[str] = Field(default_factory=list)
+    review_task_ids: List[str] = Field(default_factory=list)
+    annotation_ids: List[str] = Field(default_factory=list)
+
+
 class DatasetBuildRequest(SQLModel):
     export_type: str
     version: str = "v0"

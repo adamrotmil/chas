@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  ClipboardList,
   Database,
   Download,
   FileText,
@@ -23,17 +24,27 @@ import {
   Video
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { flagTask, getAssets, getGoldVoiceExamples, getMemories, getTasks, skipTask, submitTask } from "@/lib/api";
+import {
+  createPromptPairBatch,
+  flagTask,
+  getAssets,
+  getGoldVoiceExamples,
+  getMemories,
+  getTasks,
+  skipTask,
+  submitTask
+} from "@/lib/api";
 import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
 
-type NavMode = "intake" | "queue" | "review" | "gold_edits" | "exports" | "models" | "settings";
-type CollectionId = "text_segments" | "voice_samples" | "emails" | "photos" | "videos" | "documents" | "all";
+type NavMode = "intake" | "queue" | "prompt_pairs" | "review" | "gold_edits" | "exports" | "models" | "settings";
+type CollectionId = "text_segments" | "prompt_pairs" | "voice_samples" | "emails" | "photos" | "videos" | "documents" | "all";
 type ShellColumn = "sidebar" | "queue";
 
 const topNav = [
   { id: "queue", label: "Queue", icon: <Inbox size={15} /> },
+  { id: "prompt_pairs", label: "Pair Factory", icon: <ClipboardList size={15} /> },
   { id: "analytics", label: "Analytics", icon: <BarChart3 size={15} /> },
   { id: "sessions", label: "Sessions", icon: <ShieldCheck size={15} /> },
   { id: "exports", label: "Exports", icon: <FileText size={15} /> },
@@ -43,6 +54,7 @@ const topNav = [
 const sideNav: { id: NavMode; label: string; icon: React.ReactNode }[] = [
   { id: "intake", label: "Intake", icon: <Inbox size={15} /> },
   { id: "queue", label: "Queue", icon: <Archive size={15} /> },
+  { id: "prompt_pairs", label: "Prompt Pairs", icon: <ClipboardList size={15} /> },
   { id: "review", label: "Review", icon: <CheckCircle2 size={15} /> },
   { id: "gold_edits", label: "Gold Edits", icon: <Download size={15} /> },
   { id: "exports", label: "Exports", icon: <FolderArchive size={15} /> },
@@ -52,6 +64,7 @@ const sideNav: { id: NavMode; label: string; icon: React.ReactNode }[] = [
 
 const collectionDefs: { id: CollectionId; label: string; icon: React.ReactNode }[] = [
   { id: "text_segments", label: "Text Segments", icon: <FileText size={15} /> },
+  { id: "prompt_pairs", label: "Prompt Pairs", icon: <ClipboardList size={15} /> },
   { id: "voice_samples", label: "Voice Samples", icon: <Sparkles size={15} /> },
   { id: "emails", label: "Emails", icon: <Mail size={15} /> },
   { id: "photos", label: "Photos", icon: <Image size={15} /> },
@@ -84,9 +97,18 @@ function taskTypeLabel(taskType: string): string {
     .join(" ");
 }
 
+function isPromptPairTask(task: Task): boolean {
+  return (
+    task.task_type === "grounded_prompt_pair_candidate" ||
+    task.queue.includes("prompt_pair") ||
+    task.queue.includes("prompt_pairs") ||
+    typeof task.input_payload.source_prompt_pair_task_id === "string"
+  );
+}
+
 function taskTitle(task: Task): string {
   const payload = task.input_payload;
-  for (const key of ["source_filename", "asset_title", "title", "segment_title", "prompt"]) {
+  for (const key of ["source_filename", "source_title", "asset_title", "title", "segment_title", "prompt"]) {
     const value = payload[key];
     if (typeof value === "string" && value.trim()) {
       return value;
@@ -99,6 +121,8 @@ function taskSubtitle(task: Task): string {
   const payload = task.input_payload;
   const parts = [
     typeof payload.preview_text === "string" ? payload.preview_text.slice(0, 88) : null,
+    typeof payload.prompt_intent === "string" ? payload.prompt_intent : null,
+    typeof payload.target_response_shape === "string" ? payload.target_response_shape : null,
     typeof payload.source_type === "string" ? payload.source_type : null,
     typeof payload.extraction_parser === "string" ? payload.extraction_parser : null,
     typeof payload.chunk_count === "number" ? `${payload.chunk_count} chunks` : null,
@@ -128,9 +152,11 @@ function taskMatchesCollection(task: Task, collection: CollectionId): boolean {
   const filename = sourceFilename(task);
   switch (collection) {
     case "text_segments":
-      return task.task_type === "text_segment_review" || ["document", "text", "journal"].includes(type);
+      return !isPromptPairTask(task) && (task.task_type === "text_segment_review" || ["document", "text", "journal"].includes(type));
+    case "prompt_pairs":
+      return isPromptPairTask(task);
     case "voice_samples":
-      return task.task_type === "email_voice_sample" || task.task_type === "gold_voice_edit";
+      return task.task_type === "email_voice_sample" || (task.task_type === "gold_voice_edit" && !isPromptPairTask(task));
     case "emails":
       return task.task_type === "email_voice_sample" || type === "email" || /\.(eml|msg|mbox)$/i.test(filename);
     case "photos":
@@ -138,7 +164,7 @@ function taskMatchesCollection(task: Task, collection: CollectionId): boolean {
     case "videos":
       return task.task_type.includes("video") || type === "video" || /\.(mov|mp4|m4v)$/i.test(filename);
     case "documents":
-      return ["document", "text", "pdf", "scan", "journal"].includes(type) || /\.(doc|docx|txt|rtf|pdf)$/i.test(filename);
+      return !isPromptPairTask(task) && (["document", "text", "pdf", "scan", "journal"].includes(type) || /\.(doc|docx|txt|rtf|pdf)$/i.test(filename));
     default:
       return true;
   }
@@ -148,6 +174,8 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
   switch (mode) {
     case "gold_edits":
       return task.task_type === "gold_voice_edit";
+    case "prompt_pairs":
+      return isPromptPairTask(task);
     case "exports":
       return task.task_type.includes("export") || task.queue.includes("export");
     case "review":
@@ -196,6 +224,7 @@ export default function Home() {
   const [completedThisSession, setCompletedThisSession] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -288,6 +317,22 @@ export default function Home() {
     await load();
   }
 
+  async function handleCreatePromptPairBatch() {
+    setBatchBusy(true);
+    setError(null);
+    try {
+      await createPromptPairBatch(10);
+      setSelectedMode("prompt_pairs");
+      setSelectedCollection("prompt_pairs");
+      setSelectedTaskId(null);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to create prompt pair drafts.");
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   const resizeShellColumn = useCallback((column: ShellColumn, nextWidth: number) => {
     const bounds = shellColumnBounds[column];
     setShellWidths((current) => ({ ...current, [column]: clamp(nextWidth, bounds.min, bounds.max) }));
@@ -353,8 +398,11 @@ export default function Home() {
               className={selectedMode === item.id ? "active" : ""}
               type="button"
               onClick={() => {
-                if (["queue", "exports", "settings"].includes(item.id)) {
+                if (["queue", "prompt_pairs", "exports", "settings"].includes(item.id)) {
                   setSelectedMode(item.id as NavMode);
+                  if (item.id === "prompt_pairs") {
+                    setSelectedCollection("prompt_pairs");
+                  }
                   setSelectedTaskId(null);
                 }
               }}
@@ -385,6 +433,8 @@ export default function Home() {
               const count =
                 item.id === "queue"
                   ? readyTasks.length
+                  : item.id === "prompt_pairs"
+                    ? readyTasks.filter(isPromptPairTask).length
                   : item.id === "gold_edits"
                     ? readyTasks.filter((task) => task.task_type === "gold_voice_edit").length
                     : item.id === "exports"
@@ -397,6 +447,9 @@ export default function Home() {
                   type="button"
                   onClick={() => {
                     setSelectedMode(item.id);
+                    if (item.id === "prompt_pairs") {
+                      setSelectedCollection("prompt_pairs");
+                    }
                     setSelectedTaskId(null);
                   }}
                 >
@@ -418,6 +471,11 @@ export default function Home() {
                   type="button"
                   onClick={() => {
                     setSelectedCollection(collection.id);
+                    if (collection.id === "prompt_pairs") {
+                      setSelectedMode("prompt_pairs");
+                    } else if (selectedMode === "prompt_pairs") {
+                      setSelectedMode("queue");
+                    }
                     setSelectedTaskId(null);
                   }}
                 >
@@ -470,6 +528,19 @@ export default function Home() {
               <button type="button" onClick={() => void load()} aria-label="Refresh workbench data">
                 <RefreshCw size={15} />
               </button>
+              {selectedMode === "prompt_pairs" || selectedCollection === "prompt_pairs" ? (
+                <button
+                  className="wide-tool"
+                  type="button"
+                  onClick={() => void handleCreatePromptPairBatch()}
+                  aria-label="Create stub prompt pair drafts from ready candidates"
+                  title="Create stub drafts"
+                  disabled={batchBusy}
+                >
+                  <Sparkles size={15} />
+                  <span>{batchBusy ? "Creating" : "Create drafts"}</span>
+                </button>
+              ) : null}
             </div>
           </header>
 

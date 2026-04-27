@@ -187,3 +187,10 @@ export interface GoldVoiceExample {
   ratings: JsonRecord;
   failure_modes: string[];
 }
+
+export interface PromptPairBatchResponse {
+  created_count: number;
+  candidate_task_ids: string[];
+  review_task_ids: string[];
+  annotation_ids: string[];
+}

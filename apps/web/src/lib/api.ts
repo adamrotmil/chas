@@ -9,6 +9,7 @@ import type {
   EntityCreate,
   GoldVoiceExample,
   Memory,
+  PromptPairBatchResponse,
   Segment,
   Task,
   TaskDraft
@@ -63,6 +64,13 @@ export function createEntity(payload: EntityCreate): Promise<Entity> {
 
 export function getGoldVoiceExamples(): Promise<GoldVoiceExample[]> {
   return request<GoldVoiceExample[]>("/gold-voice-examples");
+}
+
+export function createPromptPairBatch(limit = 10): Promise<PromptPairBatchResponse> {
+  return request<PromptPairBatchResponse>("/prompt-pairs/batches", {
+    method: "POST",
+    body: JSON.stringify({ limit })
+  });
 }
 
 export function submitTask(

@@ -365,3 +365,94 @@ def test_metadata_profile_endpoint_crud():
     listed = client.get("/api/metadata-profiles?target_type=segment&target_id=seg_test")
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == profile_id
+
+
+def test_prompt_pair_candidate_submission_creates_stub_gold_edit_task():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_PROMPT_PAIR_FACTORY",
+            asset_type="text",
+            title="Prompt pair source",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        segment = Segment(
+            human_id="SEG_PROMPT_PAIR_FACTORY",
+            asset_id=asset.id,
+            segment_type="text_preview",
+            title="Factory source segment",
+            text_content="The house is too quiet now. The cup is still in the sink.",
+        )
+        chunk = Segment(
+            human_id="SEG_PROMPT_PAIR_FACTORY_CHUNK",
+            asset_id=asset.id,
+            segment_type="text_chunk",
+            title="Factory source chunk",
+            text_content="The cup is still in the sink. Call when you get in.",
+            locator={"chunk_index": 1, "char_start": 0, "char_end": 51},
+        )
+        session.add(segment)
+        session.add(chunk)
+        session.flush()
+        task = Task(
+            human_id="TASK_PROMPT_PAIR_FACTORY",
+            task_type="grounded_prompt_pair_candidate",
+            target_type="segment",
+            target_id=segment.id,
+            queue="grounded_prompt_pairs_needing_drafts",
+            input_payload={
+                "segment_id": segment.id,
+                "asset_id": asset.id,
+                "selected_chunk_ids": [chunk.id],
+                "source_review_annotation_id": "ann_source_review",
+            },
+            required_decisions=[
+                "prompt_intent",
+                "source_chunks_to_use",
+                "target_response_shape",
+                "boundary_clearance_needed",
+            ],
+            created_by="source_review",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+        chunk_id = chunk.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "prompt_intent": "email_reply_candidate",
+                "source_chunks_to_use": [chunk_id],
+                "voice_mode": "father_to_adam",
+                "truth_mode": "adam_expert_reconstruction",
+                "target_response_shape": "short_email_reply",
+                "boundary_clearance_needed": "review_before_export",
+            },
+            "notes": "Create a stubbed prompt pair draft.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["annotation_type"] == "grounded_prompt_pair_candidate"
+    assert body["creates_or_updates"]["review_task_id"]
+
+    with Session(engine) as session:
+        factory_task = session.get(Task, task_id)
+        review_task = session.get(Task, body["creates_or_updates"]["review_task_id"])
+        generation = session.get(Generation, body["creates_or_updates"]["generation_id"])
+        prompt = session.get(PromptSpec, body["creates_or_updates"]["prompt_spec_id"])
+
+        assert factory_task.status == "submitted"
+        assert review_task.task_type == "gold_voice_edit"
+        assert review_task.queue == "prompt_pairs_needing_gold_edits"
+        assert review_task.input_payload["prompt_pair_factory_no_model_call"] is True
+        assert review_task.input_payload["source_excerpt"].startswith("The cup is still")
+        assert generation.model_name == "prompt_pair_factory_stub_no_model_call"
+        assert generation.model_parameters["no_live_model_call"] is True
+        assert prompt.prompt_type == "grounded_prompt_pair"

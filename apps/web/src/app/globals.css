@@ -373,6 +373,14 @@ p {
   background: #111924;
 }
 
+.queue-tools .wide-tool {
+  display: inline-flex;
+  width: auto;
+  padding: 0 9px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .queue-tools button:hover,
 .queue-pagination button:hover,
 .queue-stepper button:hover,
@@ -633,9 +641,11 @@ p {
 .source-text,
 .chunk-browser,
 .editable-extraction,
+.canvas-form-panel,
 .preview-band,
 .rating-panel,
 .form-hint,
+.prompt-pair-source-card,
 .entity-context,
 .person-create-panel,
 .history-stack,
@@ -648,6 +658,12 @@ p {
 .source-text {
   display: grid;
   gap: 10px;
+}
+
+.canvas-form-panel {
+  display: grid;
+  min-height: 0;
+  padding: 12px;
 }
 
 .source-text-header,
@@ -818,7 +834,9 @@ p {
 .preview-band,
 .metadata-grid,
 .form-grid,
-.gold-grid {
+.gold-grid,
+.prompt-grid,
+.voice-compare-grid {
   display: grid;
   gap: 10px;
 }
@@ -851,6 +869,55 @@ p {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.prompt-grid {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.voice-compare-grid {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.voice-compare-grid .field,
+.prompt-grid .field {
+  grid-column: auto;
+}
+
+.voice-compare-grid textarea {
+  min-height: 300px;
+  font-family: "SFMono-Regular", "Cascadia Code", ui-monospace, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
+.prompt-pair-source-card {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  padding: 10px;
+}
+
+.prompt-pair-source-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prompt-pair-source-card span {
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-weight: 560;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.prompt-pair-source-card strong {
+  color: var(--ink);
+  font-weight: 520;
+  overflow-wrap: anywhere;
+}
+
 .field {
   display: grid;
   gap: 5px;
@@ -866,6 +933,20 @@ p {
 .toggle-grid,
 .rating-panel,
 .decision-summary {
+  grid-column: 1 / -1;
+}
+
+.voice-compare-grid .field,
+.voice-compare-grid .field:has(textarea),
+.voice-compare-grid .field:last-child,
+.prompt-grid .field,
+.prompt-grid .field:has(textarea),
+.prompt-grid .field:last-child {
+  grid-column: auto;
+}
+
+.prompt-grid .field:first-child,
+.prompt-grid .field:first-child:has(textarea) {
   grid-column: 1 / -1;
 }
 
@@ -1384,6 +1465,8 @@ button:focus-visible {
   .metadata-grid,
   .form-grid,
   .gold-grid,
+  .prompt-grid,
+  .voice-compare-grid,
   .person-create-panel,
   .toggle-grid,
   .drive-import-controls,
