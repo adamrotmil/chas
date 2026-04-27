@@ -35,8 +35,11 @@ import {
   submitTask
 } from "@/lib/api";
 import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
+import { ContextPackBuilderPanel } from "@/components/ContextPackBuilderPanel";
+import { ExportDryRunPanel } from "@/components/ExportDryRunPanel";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
+import { assetIdForTask, readinessBadgesForTask } from "@/lib/readiness";
 
 type NavMode =
   | "intake"
@@ -426,6 +429,8 @@ export default function Home() {
   const selectedCollectionDef = collectionDefs.find((collection) => collection.id === selectedCollection) ?? collectionDefs[0];
   const queueScopeTitle = showCollectionFilters ? selectedCollectionDef.label : modeLabel(selectedMode);
   const selectedTaskIndex = selectedTask ? filteredTasks.findIndex((task) => task.id === selectedTask.id) : -1;
+  const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets]);
+  const selectedTaskAsset = selectedTask ? assetsById.get(assetIdForTask(selectedTask) ?? "") : undefined;
 
   function navigateMode(mode: NavMode) {
     setSelectedMode(mode);
@@ -713,21 +718,34 @@ export default function Home() {
           <div className="task-list" aria-label="Tasks">
             {loading ? <p className="quiet">Loading workbench data...</p> : null}
             {!loading && filteredTasks.length === 0 ? <p className="quiet">No ready tasks in this collection.</p> : null}
-            {filteredTasks.map((task) => (
-              <button
-                key={task.id}
-                className={selectedTask?.id === task.id ? "task-row active" : "task-row"}
-                type="button"
-                onClick={() => setSelectedTaskId(task.id)}
-                {...tooltip(`Open task: ${taskTitle(task)}. ${taskSubtitle(task)}`)}
-              >
-                <span>{taskTypeLabel(task.task_type)}</span>
-                <strong>{taskTitle(task)}</strong>
-                <em>{taskSubtitle(task)}</em>
-                <small>{queueHealthScore(task)}</small>
-                <time>{formatRelativeTime(task.updated_at)}</time>
-              </button>
-            ))}
+            {filteredTasks.map((task) => {
+              const taskAsset = assetsById.get(assetIdForTask(task) ?? "");
+              const readinessBadges = readinessBadgesForTask(task, taskAsset).slice(0, 3);
+              return (
+                <button
+                  key={task.id}
+                  className={selectedTask?.id === task.id ? "task-row active" : "task-row"}
+                  type="button"
+                  onClick={() => setSelectedTaskId(task.id)}
+                  {...tooltip(`Open task: ${taskTitle(task)}. ${taskSubtitle(task)}`)}
+                >
+                  <span>{taskTypeLabel(task.task_type)}</span>
+                  <strong>{taskTitle(task)}</strong>
+                  <em>{taskSubtitle(task)}</em>
+                  {readinessBadges.length > 0 ? (
+                    <div className="queue-readiness-strip" aria-label="Readiness badges">
+                      {readinessBadges.map((badge) => (
+                        <span key={badge.label} data-tone={badge.tone} title={badge.tooltip}>
+                          {badge.label}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <small>{queueHealthScore(task)}</small>
+                  <time>{formatRelativeTime(task.updated_at)}</time>
+                </button>
+              );
+            })}
           </div>
 
           <footer className="queue-pagination">
@@ -756,36 +774,44 @@ export default function Home() {
         />
 
         <section className="workbench-column">
-          {selectedTask ? (
-            <TaskWorkbench
-              key={selectedTask.id}
-              task={selectedTask}
-              queuePosition={selectedTaskIndex + 1}
-              queueTotal={filteredTasks.length}
-              qualityScore={queueHealthScore(selectedTask)}
-              completedThisSession={completedThisSession}
-              memoriesCount={memories.length}
-              goldExamplesCount={goldExamples.length}
-              assetsCount={assets.length}
-              onSubmit={handleSubmit}
-              onSkip={handleSkip}
-              onFlag={handleFlag}
-              onPrevious={() => {
-                if (selectedTaskIndex > 0) {
-                  setSelectedTaskId(filteredTasks[selectedTaskIndex - 1].id);
-                }
-              }}
-              onNext={() => {
-                if (selectedTaskIndex >= 0 && selectedTaskIndex < filteredTasks.length - 1) {
-                  setSelectedTaskId(filteredTasks[selectedTaskIndex + 1].id);
-                }
-              }}
-            />
+          {selectedMode === "exports" ? (
+            <ExportDryRunPanel />
           ) : (
-            <div className="empty-state">
-              <Sparkles size={22} />
-              <strong>Queue clear</strong>
-              <span>Seed data may need to be loaded, or every ready task has been handled.</span>
+            <div className={selectedMode === "prompt_pairs" ? "workbench-stack has-utility" : "workbench-stack"}>
+              {selectedMode === "prompt_pairs" ? <ContextPackBuilderPanel selectedTask={selectedTask} tasks={tasks} /> : null}
+              {selectedTask ? (
+                <TaskWorkbench
+                  key={selectedTask.id}
+                  task={selectedTask}
+                  queuePosition={selectedTaskIndex + 1}
+                  queueTotal={filteredTasks.length}
+                  qualityScore={queueHealthScore(selectedTask)}
+                  completedThisSession={completedThisSession}
+                  memoriesCount={memories.length}
+                  goldExamplesCount={goldExamples.length}
+                  assetsCount={assets.length}
+                  asset={selectedTaskAsset}
+                  onSubmit={handleSubmit}
+                  onSkip={handleSkip}
+                  onFlag={handleFlag}
+                  onPrevious={() => {
+                    if (selectedTaskIndex > 0) {
+                      setSelectedTaskId(filteredTasks[selectedTaskIndex - 1].id);
+                    }
+                  }}
+                  onNext={() => {
+                    if (selectedTaskIndex >= 0 && selectedTaskIndex < filteredTasks.length - 1) {
+                      setSelectedTaskId(filteredTasks[selectedTaskIndex + 1].id);
+                    }
+                  }}
+                />
+              ) : (
+                <div className="empty-state">
+                  <Sparkles size={22} />
+                  <strong>Queue clear</strong>
+                  <span>Seed data may need to be loaded, or every ready task has been handled.</span>
+                </div>
+              )}
             </div>
           )}
         </section>

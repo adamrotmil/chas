@@ -160,6 +160,109 @@ def test_gold_voice_submission_creates_annotation_and_training_artifacts():
     assert "preferred_output" in dpo.text
 
 
+def test_gold_voice_response_b_privacy_issue_blocks_export_readiness():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        prompt = PromptSpec(
+            human_id="PROMPT_PRIVACY",
+            prompt_type="gold_voice_edit",
+            voice_mode="father_to_adam",
+            truth_mode="adam_expert_reconstruction",
+            prompt_text="Write from a private letter.",
+        )
+        context = ContextPack(
+            human_id="CTX_PRIVACY",
+            user_intent="gold_voice_generation",
+            requested_voice_mode="father_to_adam",
+            truth_mode="adam_expert_reconstruction",
+            boundaries_snapshot={"boundary_status": "passed"},
+        )
+        session.add(prompt)
+        session.add(context)
+        session.flush()
+        generation = Generation(
+            prompt_spec_id=prompt.id,
+            context_pack_id=context.id,
+            model_name="manual_test",
+            output_text="A private person was named directly.",
+        )
+        session.add(generation)
+        session.flush()
+        task = Task(
+            human_id="TASK_PRIVACY_GOLD",
+            task_type="gold_voice_edit",
+            target_type="generation",
+            target_id=generation.id,
+            queue="generated_responses_needing_gold_edits",
+            input_payload={
+                "generation_id": generation.id,
+                "prompt_spec_id": prompt.id,
+                "context_pack_id": context.id,
+                "voice_mode": "father_to_adam",
+            },
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "prompt": "Write from a private letter.",
+                "voice_mode": "father_to_adam",
+                "truth_mode": "adam_expert_reconstruction",
+                "model_draft": "A private person was named directly.",
+                "adam_gold_edit": "call me when the street gets quiet.",
+                "response_rubric": {
+                    "response_a": {
+                        "privacy_export_safety": {
+                            "status": "major_issues",
+                            "notes": "The rejected side names a private person.",
+                            "issue_tags": [],
+                        }
+                    },
+                    "response_b": {
+                        "privacy_export_safety": {
+                            "status": "major_issues",
+                            "notes": "Still needs redaction before export.",
+                            "issue_tags": [],
+                        }
+                    },
+                },
+                "rubric_summary": {
+                    "sft_ready": False,
+                    "preferred_export_blocked": True,
+                    "preferred_major_issue_count": 1,
+                },
+                "export_flags": {"sft": True, "dpo": True, "eval": True, "anti_pattern": True, "style_rule": True},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+
+    with Session(engine) as session:
+        gold = session.exec(select(GoldVoiceExample)).first()
+        assert gold
+        assert gold.ratings["derived_quality"]["preferred_export_blocked"] is True
+        assert gold.ratings["derived_quality"]["sft_ready"] is False
+        sft = session.exec(select(SFTCandidate)).first()
+        assert sft
+        assert sft.export_status == "candidate"
+        assert sft.quality_gate["export_ready"] is False
+        dpo_pair = session.exec(select(DPOPair)).first()
+        assert dpo_pair
+        assert dpo_pair.export_status == "candidate"
+
+    dry_run = client.get("/api/dataset-exports/dry-run?export_type=sft&include_candidates=true")
+    assert dry_run.status_code == 200
+    excluded = dry_run.json()["excluded"]
+    assert excluded
+    assert "response_b_privacy_export_safety_block" in excluded[0]["reasons"]
+
+
 def test_task_draft_autosaves_and_is_cleared_on_submit():
     client, engine = build_client()
 

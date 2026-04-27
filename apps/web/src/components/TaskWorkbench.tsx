@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -19,7 +20,8 @@ import {
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createEntity, getAssetPreviewUrl, getAssetTextChunks, getEntities, getTaskDraft, saveTaskDraft } from "@/lib/api";
-import type { Entity, Segment, Task } from "@/lib/types";
+import { maturityLabel, readinessBadgesForTask } from "@/lib/readiness";
+import type { Asset, Entity, Segment, Task } from "@/lib/types";
 
 type Decisions = Record<string, unknown>;
 type RubricIssueStatus = "no_issues" | "minor_issues" | "major_issues" | "not_applicable";
@@ -58,6 +60,7 @@ function sameDecisionRecord(left: Decisions, right: Decisions): boolean {
 
 interface TaskWorkbenchProps {
   task: Task;
+  asset?: Asset;
   queuePosition: number;
   queueTotal: number;
   qualityScore: number;
@@ -2475,6 +2478,7 @@ function GoldVoiceEditForm({
 
 export function TaskWorkbench({
   task,
+  asset,
   queuePosition,
   queueTotal,
   qualityScore,
@@ -2508,6 +2512,7 @@ export function TaskWorkbench({
   const lastSavedDraftRef = useRef("");
   const autosaveReadyRef = useRef(false);
   const descriptor = taskLabels[task.task_type] ?? { label: task.task_type, icon: <Gauge size={18} /> };
+  const readinessBadges = readinessBadgesForTask(task, asset);
 
   useEffect(() => {
     let cancelled = false;
@@ -2766,8 +2771,22 @@ export function TaskWorkbench({
             <span>{descriptor.label}</span>
           </div>
           <h2>{taskDisplayTitle(task)}</h2>
+          {readinessBadges.length > 0 ? (
+            <div className="readiness-strip" aria-label="Maturity and readiness">
+              {readinessBadges.map((badge) => (
+                <span key={badge.label} data-tone={badge.tone} title={badge.tooltip}>
+                  {badge.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="task-meta">
+          {asset ? (
+            <Link className="dossier-action-link" href={`/assets/${asset.id}`} {...tooltip("Built: open the asset dossier with provenance, mirror snapshots, derivatives, boundaries, tasks, and annotations.")}>
+              Dossier
+            </Link>
+          ) : null}
           <div className="quality-score">
             <strong>{qualityScore}</strong>
             <span>Quality score</span>
@@ -2880,6 +2899,9 @@ export function TaskWorkbench({
                   { label: "Collection", value: labelFromKey(task.queue) },
                   { label: "Source", value: taskSource },
                   { label: "Type", value: descriptor.label },
+                  { label: "Maturity", value: maturityLabel(asset?.maturity_level) },
+                  { label: "Import", value: asset?.import_status ? labelFromKey(asset.import_status) : "Unknown" },
+                  { label: "Processing", value: asset?.processing_status ? labelFromKey(asset.processing_status) : "Unknown" },
                   { label: "Confidence", value: "Unreviewed" }
                 ]}
               />

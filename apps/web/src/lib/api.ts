@@ -1,7 +1,13 @@
 import type {
   Annotation,
   Asset,
+  AssetDossier,
   AssetMirrorResponse,
+  ContextPack,
+  ContextPackBuildRequest,
+  ContextPackBuildResponse,
+  DatasetExport,
+  DatasetExportDryRun,
   DriveFileImport,
   DriveImportRecord,
   DriveImportResponse,
@@ -44,6 +50,10 @@ export function getAssetPreviewUrl(assetId: string): string {
   return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview`;
 }
 
+export function getAssetDossier(assetId: string): Promise<AssetDossier> {
+  return request<AssetDossier>(`/assets/${encodeURIComponent(assetId)}/dossier`);
+}
+
 export function getTasks(): Promise<Task[]> {
   return request<Task[]>("/tasks");
 }
@@ -69,6 +79,37 @@ export function createEntity(payload: EntityCreate): Promise<Entity> {
 
 export function getGoldVoiceExamples(): Promise<GoldVoiceExample[]> {
   return request<GoldVoiceExample[]>("/gold-voice-examples");
+}
+
+export function getContextPacks(): Promise<ContextPack[]> {
+  return request<ContextPack[]>("/context-packs");
+}
+
+export function buildContextPack(payload: ContextPackBuildRequest): Promise<ContextPackBuildResponse> {
+  return request<ContextPackBuildResponse>("/context-packs/build", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getDatasetExportDryRun(
+  exportType: "sft" | "dpo",
+  includeCandidates = false
+): Promise<DatasetExportDryRun> {
+  return request<DatasetExportDryRun>(
+    `/dataset-exports/dry-run?export_type=${encodeURIComponent(exportType)}&include_candidates=${includeCandidates}`
+  );
+}
+
+export function buildDatasetExport(exportType: "sft" | "dpo", version = "v0", split = "train"): Promise<DatasetExport> {
+  return request<DatasetExport>("/dataset-exports/build", {
+    method: "POST",
+    body: JSON.stringify({ export_type: exportType, version, split })
+  });
+}
+
+export function getDatasetJsonlUrl(exportType: "sft" | "dpo"): string {
+  return `${API_BASE}/dataset-exports/jsonl?export_type=${encodeURIComponent(exportType)}`;
 }
 
 export function createPromptPairBatch(limit = 10): Promise<PromptPairBatchResponse> {

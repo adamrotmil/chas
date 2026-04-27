@@ -1,14 +1,14 @@
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlmodel import Session, select
 
 from app.config import settings
 from app.db.session import get_session
-from app.models import Asset, AssetSnapshot, ExternalRef, ObjectFile
+from app.models import Annotation, Asset, AssetSnapshot, Boundary, Derivative, ExternalRef, MetadataProfile, ObjectFile, Segment, Task
 from app.schemas import AssetCreate, AssetMirrorResponse, AssetUpdate
 from app.services.asset_mirror import mirror_upload_for_asset
 
@@ -36,6 +36,51 @@ def _drive_thumbnail_link(session: Session, asset_id: str) -> Optional[str]:
     return thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("https://") else None
 
 
+def _dump(model: Any) -> Dict[str, Any]:
+    return model.model_dump(mode="json")
+
+
+def _image_derivative(session: Session, asset_id: str, variant: str) -> Optional[Derivative]:
+    derivatives = session.exec(
+        select(Derivative)
+        .where(Derivative.asset_id == asset_id)
+        .where(Derivative.derivative_type == "image_preview")
+        .where(Derivative.status == "ready")
+    ).all()
+    matches = [item for item in derivatives if item.metadata_json.get("variant") == variant]
+    if not matches:
+        return None
+    return sorted(matches, key=lambda item: item.created_at, reverse=True)[0]
+
+
+def _file_response_for_object(
+    *,
+    object_file: ObjectFile,
+    asset: Asset,
+    filename: str,
+    missing_detail: str,
+) -> Optional[FileResponse]:
+    content_type = object_file.content_type or asset.mime_type or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="Preview object is not an image")
+
+    storage_root = Path(settings.storage_root).resolve()
+    if object_file.storage_provider == "local":
+        preview_path = (storage_root / object_file.object_key).resolve()
+    elif object_file.storage_provider == "gcs":
+        cache_key = object_file.metadata_json.get("local_preview_cache_key")
+        preview_path = (storage_root / cache_key).resolve() if isinstance(cache_key, str) else None
+    else:
+        preview_path = None
+
+    if preview_path is None:
+        return None
+    if not preview_path.is_relative_to(storage_root) or not preview_path.is_file():
+        raise HTTPException(status_code=404, detail=missing_detail)
+
+    return FileResponse(preview_path, media_type=content_type, filename=filename)
+
+
 @router.get("", response_model=List[Asset])
 def list_assets(
     asset_type: Optional[str] = None,
@@ -61,9 +106,102 @@ def get_asset(asset_id: str, session: Session = Depends(get_session)) -> Asset:
     return _asset_or_404(session, asset_id)
 
 
-@router.get("/{asset_id}/preview")
-def preview_asset(asset_id: str, session: Session = Depends(get_session)) -> FileResponse:
+@router.get("/{asset_id}/dossier")
+def get_asset_dossier(asset_id: str, session: Session = Depends(get_session)) -> Dict[str, Any]:
     asset = _asset_or_404(session, asset_id)
+    segments = session.exec(select(Segment).where(Segment.asset_id == asset.id).order_by(Segment.created_at.asc())).all()
+    segment_ids = [segment.id for segment in segments]
+    target_ids = [asset.id, *segment_ids]
+
+    snapshots = session.exec(
+        select(AssetSnapshot).where(AssetSnapshot.asset_id == asset.id).order_by(AssetSnapshot.version.asc())
+    ).all()
+    derivatives = session.exec(
+        select(Derivative).where(Derivative.asset_id == asset.id).order_by(Derivative.created_at.asc())
+    ).all()
+    object_file_ids = {
+        object_file_id
+        for object_file_id in [
+            *(snapshot.object_file_id for snapshot in snapshots),
+            *(derivative.object_file_id for derivative in derivatives),
+        ]
+        if object_file_id
+    }
+    object_files = (
+        session.exec(select(ObjectFile).where(ObjectFile.id.in_(object_file_ids)).order_by(ObjectFile.created_at.asc())).all()
+        if object_file_ids
+        else []
+    )
+    boundaries = session.exec(
+        select(Boundary).where(Boundary.target_id.in_(target_ids)).order_by(Boundary.created_at.asc())
+    ).all()
+    tasks = session.exec(
+        select(Task).where(Task.target_id.in_(target_ids)).order_by(Task.created_at.asc())
+    ).all()
+    task_ids = [task.id for task in tasks]
+    annotations = session.exec(
+        select(Annotation)
+        .where((Annotation.target_id.in_(target_ids)) | (Annotation.task_id.in_(task_ids)))
+        .order_by(Annotation.created_at.asc())
+    ).all()
+    metadata_profiles = session.exec(
+        select(MetadataProfile).where(MetadataProfile.target_id.in_(target_ids)).order_by(MetadataProfile.updated_at.asc())
+    ).all()
+    external_refs = session.exec(
+        select(ExternalRef).where(ExternalRef.asset_id == asset.id).order_by(ExternalRef.created_at.asc())
+    ).all()
+
+    return {
+        "asset": _dump(asset),
+        "external_refs": [_dump(item) for item in external_refs],
+        "snapshots": [_dump(item) for item in snapshots],
+        "object_files": [_dump(item) for item in object_files],
+        "derivatives": [_dump(item) for item in derivatives],
+        "segments": [_dump(item) for item in segments],
+        "boundaries": [_dump(item) for item in boundaries],
+        "tasks": [_dump(item) for item in tasks],
+        "annotations": [_dump(item) for item in annotations],
+        "metadata_profiles": [_dump(item) for item in metadata_profiles],
+        "counts": {
+            "segments": len(segments),
+            "snapshots": len(snapshots),
+            "derivatives": len(derivatives),
+            "tasks": len(tasks),
+            "annotations": len(annotations),
+            "metadata_profiles": len(metadata_profiles),
+            "boundaries": len(boundaries),
+        },
+    }
+
+
+@router.get("/{asset_id}/preview")
+def preview_asset(
+    asset_id: str,
+    variant: str = Query(default="display", pattern="^(thumbnail|display|original)$"),
+    session: Session = Depends(get_session),
+) -> FileResponse:
+    asset = _asset_or_404(session, asset_id)
+    if variant != "original":
+        variant_order = list(dict.fromkeys([variant, "display", "thumbnail"]))
+        for derivative_variant in variant_order:
+            derivative = _image_derivative(session, asset.id, derivative_variant)
+            if derivative and derivative.object_file_id:
+                object_file = session.get(ObjectFile, derivative.object_file_id)
+                if object_file:
+                    filename = (
+                        asset.original_filename
+                        or asset.title
+                        or object_file.object_key.rsplit("/", 1)[-1]
+                    )
+                    response = _file_response_for_object(
+                        object_file=object_file,
+                        asset=asset,
+                        filename=filename,
+                        missing_detail="Preview derivative file is missing",
+                    )
+                    if response:
+                        return response
+
     snapshot = session.exec(
         select(AssetSnapshot)
         .where(AssetSnapshot.asset_id == asset.id)
@@ -79,25 +217,23 @@ def preview_asset(asset_id: str, session: Session = Depends(get_session)) -> Fil
     object_file = session.get(ObjectFile, snapshot.object_file_id)
     if object_file is None:
         raise HTTPException(status_code=404, detail="Mirrored preview file not found")
-    content_type = object_file.content_type or asset.mime_type or ""
-    if not content_type.startswith("image/"):
-        raise HTTPException(status_code=415, detail="Mirrored file is not an image")
-    if object_file.storage_provider != "local":
+    filename = asset.original_filename or asset.title or object_file.object_key.rsplit("/", 1)[-1]
+    response = _file_response_for_object(
+        object_file=object_file,
+        asset=asset,
+        filename=filename,
+        missing_detail="Mirrored preview file is missing",
+    )
+    if response:
+        return response
+
+    if object_file.storage_provider == "gcs":
         thumbnail_link = _drive_thumbnail_link(session, asset.id)
         if thumbnail_link:
             return RedirectResponse(thumbnail_link, status_code=307)
-        raise HTTPException(status_code=404, detail="Preview is only available for local mirrored files")
+        raise HTTPException(status_code=404, detail="No local cache or signed preview is available for this GCS object")
 
-    storage_root = Path(settings.storage_root).resolve()
-    preview_path = (storage_root / object_file.object_key).resolve()
-    if not preview_path.is_relative_to(storage_root) or not preview_path.is_file():
-        raise HTTPException(status_code=404, detail="Mirrored preview file is missing")
-
-    return FileResponse(
-        preview_path,
-        media_type=content_type,
-        filename=asset.original_filename or asset.title or object_file.object_key.rsplit("/", 1)[-1],
-    )
+    raise HTTPException(status_code=404, detail="Mirrored preview file is missing")
 
 
 @router.patch("/{asset_id}", response_model=Asset)

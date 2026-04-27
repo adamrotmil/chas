@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 from app.db.session import get_session
 from app.models import (
     ContextPack,
+    ContextPackItem,
     Generation,
     GenerationReview,
     GoldVoiceExample,
@@ -16,8 +17,11 @@ from app.schemas import (
     GenerationCreate,
     GenerationReviewCreate,
     GoldVoiceExampleCreate,
+    ContextPackBuildRequest,
+    ContextPackBuildResponse,
     PromptSpecCreate,
 )
+from app.services.context_packs import build_context_pack
 
 router = APIRouter(tags=["voice"])
 
@@ -37,6 +41,43 @@ def create_prompt_spec(
     session.commit()
     session.refresh(prompt)
     return prompt
+
+
+@router.get("/context-packs", response_model=List[ContextPack])
+def list_context_packs(session: Session = Depends(get_session)) -> List[ContextPack]:
+    return session.exec(select(ContextPack).order_by(ContextPack.created_at.desc())).all()
+
+
+@router.get("/context-packs/{context_pack_id}/items", response_model=List[ContextPackItem])
+def list_context_pack_items(
+    context_pack_id: str,
+    session: Session = Depends(get_session),
+) -> List[ContextPackItem]:
+    context_pack = session.get(ContextPack, context_pack_id) or session.exec(
+        select(ContextPack).where(ContextPack.human_id == context_pack_id)
+    ).first()
+    if not context_pack:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    return session.exec(
+        select(ContextPackItem).where(ContextPackItem.context_pack_id == context_pack.id).order_by(ContextPackItem.rank.asc())
+    ).all()
+
+
+@router.post("/context-packs/build", response_model=ContextPackBuildResponse)
+def build_context_pack_endpoint(
+    payload: ContextPackBuildRequest,
+    session: Session = Depends(get_session),
+) -> ContextPackBuildResponse:
+    result = build_context_pack(session, payload)
+    session.commit()
+    context_pack = result["context_pack"]
+    return ContextPackBuildResponse(
+        context_pack_id=context_pack.id,
+        human_id=context_pack.human_id,
+        included_count=result["included_count"],
+        excluded_count=result["excluded_count"],
+        warnings=result["warnings"],
+    )
 
 
 @router.get("/context-packs/{context_pack_id}", response_model=ContextPack)

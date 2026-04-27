@@ -22,6 +22,15 @@ SYSTEM_PROMPT = (
     "restraint, and practical endings. Do not claim generated text is archival."
 )
 
+RUBRIC_CRITERIA = [
+    "voice_authenticity",
+    "grounding_truth",
+    "restraint",
+    "concrete_detail",
+    "prompt_fit",
+    "privacy_export_safety",
+]
+
 
 def _human_id(prefix: str, count: int) -> str:
     return f"{prefix}_{count:06d}"
@@ -41,9 +50,85 @@ def _prompt_text(session: Session, generation: Optional[Generation], decisions: 
     return "Manual Charles voice prompt"
 
 
-def _rating_passes(ratings: Dict[str, Any]) -> bool:
+def _rubric_status_score(status: Any) -> int:
+    if status == "major_issues":
+        return 1
+    if status == "minor_issues":
+        return 3
+    if status == "not_applicable":
+        return 0
+    return 5
+
+
+def _rubric_issue_count(rubric: Dict[str, Any], *, status: str | None = None) -> int:
+    count = 0
+    for decision in rubric.values():
+        if not isinstance(decision, dict):
+            continue
+        decision_status = decision.get("status")
+        if status:
+            count += 1 if decision_status == status else 0
+        elif decision_status in {"minor_issues", "major_issues"}:
+            count += 1
+    return count
+
+
+def _rubric_average_score(rubric: Dict[str, Any]) -> float | None:
+    scores: List[int] = []
+    for key in RUBRIC_CRITERIA:
+        decision = rubric.get(key)
+        if isinstance(decision, dict):
+            status = decision.get("status")
+            if status != "not_applicable":
+                scores.append(_rubric_status_score(status))
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 2)
+
+
+def _rubric_privacy_blocked(rubric: Dict[str, Any]) -> bool:
+    decision = rubric.get("privacy_export_safety")
+    return isinstance(decision, dict) and decision.get("status") == "major_issues"
+
+
+def _derive_quality_summary(ratings: Dict[str, Any]) -> Dict[str, Any]:
+    response_rubric = ratings.get("response_rubric")
+    response_a = _rubric_side(response_rubric, "response_a")
+    response_b = _rubric_side(response_rubric, "response_b")
+    stored_summary = ratings.get("rubric_summary") if isinstance(ratings.get("rubric_summary"), dict) else {}
+    response_b_major = _rubric_issue_count(response_b, status="major_issues")
+    response_b_issue_count = _rubric_issue_count(response_b)
+    privacy_blocked = bool(stored_summary.get("preferred_export_blocked")) or _rubric_privacy_blocked(response_b)
+
     required = ["voice_fidelity", "emotional_truth", "restraint", "non_parody"]
-    return all(int(ratings.get(key, 0) or 0) >= 4 for key in required)
+    numeric_gate_passed = all(int(ratings.get(key, 0) or 0) >= 4 for key in required)
+    if response_b:
+        sft_ready = response_b_major == 0 and not privacy_blocked
+    elif "sft_ready" in stored_summary:
+        sft_ready = bool(stored_summary.get("sft_ready"))
+    else:
+        sft_ready = numeric_gate_passed
+
+    return {
+        "response_a_issue_count": _rubric_issue_count(response_a),
+        "response_a_major_issue_count": _rubric_issue_count(response_a, status="major_issues"),
+        "response_a_score": _rubric_average_score(response_a),
+        "response_b_issue_count": response_b_issue_count,
+        "response_b_major_issue_count": response_b_major,
+        "response_b_score": _rubric_average_score(response_b),
+        "preferred_export_blocked": privacy_blocked,
+        "numeric_gate_passed": numeric_gate_passed,
+        "sft_ready": sft_ready,
+        "dpo_reason_count": len([line for line in _rubric_notes(response_a).splitlines() if line.strip()]),
+    }
+
+
+def _rating_passes(ratings: Dict[str, Any]) -> bool:
+    derived = ratings.get("derived_quality")
+    if isinstance(derived, dict):
+        return bool(derived.get("sft_ready")) and not bool(derived.get("preferred_export_blocked"))
+    quality = _derive_quality_summary(ratings)
+    return bool(quality["sft_ready"]) and not bool(quality["preferred_export_blocked"])
 
 
 def _rubric_side(response_rubric: Any, side: str) -> Dict[str, Any]:
@@ -108,6 +193,7 @@ def upsert_gold_voice_artifacts(
         ratings["response_rubric"] = response_rubric
     if rubric_summary:
         ratings["rubric_summary"] = rubric_summary
+    ratings["derived_quality"] = _derive_quality_summary(ratings)
 
     raw_failure_modes = decisions.get("failure_modes") or []
     failure_modes = [str(mode) for mode in raw_failure_modes] if isinstance(raw_failure_modes, list) else []
@@ -167,6 +253,7 @@ def upsert_gold_voice_artifacts(
         session.add(review)
         created["generation_review_id"] = review.id
 
+    quality_summary = ratings["derived_quality"]
     export_status = "approved" if _rating_passes(ratings) else "candidate"
 
     if export_flags.get("sft"):
@@ -184,6 +271,8 @@ def upsert_gold_voice_artifacts(
             "boundaries_checked": True,
             "no_archival_misattribution": True,
             "rubric_summary": rubric_summary or {},
+            "derived_quality": quality_summary,
+            "export_ready": export_status == "approved",
             "source_annotation_id": annotation_id,
         }
         sft.export_status = export_status
@@ -232,6 +321,9 @@ def upsert_gold_voice_artifacts(
             "non_parody_min": 4,
             "must_include": ["concrete object carrying emotion"],
             "must_avoid": failure_modes,
+            "response_b_must_have_no_major_issues": True,
+            "privacy_export_safety_must_pass": True,
+            "derived_quality": quality_summary,
         }
         eval_case.status = export_status
         session.add(eval_case)
@@ -258,6 +350,7 @@ def upsert_gold_voice_artifacts(
             anti.why_wrong = issue_notes
         elif failure_modes:
             anti.why_wrong = ", ".join(failure_modes)
+        anti.status = export_status
         session.add(anti)
         created["anti_pattern_id"] = anti.id
 
@@ -275,6 +368,7 @@ def upsert_gold_voice_artifacts(
             )
             session.add(style_rule)
         style_rule.rationale = "Derived from Adam's gold edit and failure-mode diagnosis."
+        style_rule.status = export_status
         session.add(style_rule)
         created["style_rule_id"] = style_rule.id
 

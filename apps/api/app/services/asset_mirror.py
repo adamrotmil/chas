@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from app.models import Annotation, Asset, AssetSnapshot, ExternalRef, ObjectFile, utcnow
 from app.schemas import AssetMirrorResponse
+from app.services.image_derivatives import create_image_derivatives
 from app.services.text_extraction import extract_text_from_file, persist_text_extraction, should_attempt_text_extraction
 
 
@@ -192,6 +193,7 @@ async def mirror_upload_for_asset(
         temp_path.replace(final_path)
         bucket = None
         uri = f"local://{object_key}"
+        source_preview_path = final_path
     elif provider == "gcs":
         bucket = configured_bucket or ""
         if not bucket:
@@ -208,9 +210,11 @@ async def mirror_upload_for_asset(
                 content_type=content_type,
                 access_token=storage_access_token,
             )
-        finally:
+        except Exception:
             temp_path.unlink(missing_ok=True)
+            raise
         uri = f"gs://{bucket}/{object_key}"
+        source_preview_path = temp_path
     else:
         temp_path.unlink(missing_ok=True)
         raise ValueError(f"Unsupported object storage provider: {storage_provider}")
@@ -255,9 +259,31 @@ async def mirror_upload_for_asset(
     session.add(snapshot)
     session.flush()
 
+    try:
+        image_derivatives = create_image_derivatives(
+            session=session,
+            asset=asset,
+            source_snapshot=snapshot,
+            source_object_file=object_file,
+            source_path=source_preview_path,
+            filename=filename,
+            storage_root=storage_root,
+            storage_provider=provider,
+            gcs_bucket=bucket,
+            gcs_prefix=gcs_prefix,
+            storage_access_token=storage_access_token,
+            upload_to_gcs=_upload_to_gcs,
+        )
+    finally:
+        if provider == "gcs":
+            temp_path.unlink(missing_ok=True)
+
     asset.import_status = "mirrored"
     if asset.maturity_level == "L0_source_seen":
         asset.maturity_level = "L1_mirrored"
+    if image_derivatives:
+        asset.processing_status = "image_preview_ready"
+        asset.maturity_level = "L3_previewable"
     asset.updated_at = utcnow()
     session.add(asset)
 
@@ -306,6 +332,7 @@ async def mirror_upload_for_asset(
             "object_file_id": object_file.id,
             "asset_snapshot_id": snapshot.id,
             "external_ref_id": external_ref.id if external_ref else None,
+            "image_derivatives": image_derivatives,
             "text_extraction": text_extraction_summary,
         },
     )

@@ -218,6 +218,31 @@ class PromptSpecCreate(SQLModel):
     metadata_json: Dict[str, Any] = {}
 
 
+class ContextPackItemCreate(SQLModel):
+    item_type: str
+    item_id: str
+    role: str = "context"
+    rank: int = 0
+
+
+class ContextPackBuildRequest(SQLModel):
+    user_intent: str = "gold_voice_generation"
+    requested_voice_mode: Optional[str] = "father_to_adam"
+    truth_mode: str = "adam_expert_reconstruction"
+    items: List[ContextPackItemCreate] = Field(default_factory=list)
+    allowed_facts: List[str] = Field(default_factory=list)
+    blocked_facts: List[str] = Field(default_factory=list)
+    style_guidance: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextPackBuildResponse(SQLModel):
+    context_pack_id: str
+    human_id: str
+    included_count: int
+    excluded_count: int
+    warnings: List[str] = Field(default_factory=list)
+
+
 class GenerationCreate(SQLModel):
     prompt_spec_id: Optional[str] = None
     context_pack_id: Optional[str] = None

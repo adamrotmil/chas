@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -35,6 +36,13 @@ def build_client(tmp_path: Path):
 
     app.dependency_overrides[get_session] = override_session
     return TestClient(app), engine
+
+
+def image_bytes(format: str = "JPEG", size: tuple[int, int] = (640, 480)) -> bytes:
+    output = BytesIO()
+    image = Image.new("RGB", size, color=(80, 120, 160))
+    image.save(output, format=format)
+    return output.getvalue()
 
 
 def drive_payload() -> dict:
@@ -158,6 +166,75 @@ def test_asset_mirror_upload_creates_local_object_snapshot_and_annotation(tmp_pa
         annotation = session.get(Annotation, body["annotation_id"])
         assert annotation is not None
         assert annotation.annotation_type == "asset_mirrored"
+
+
+def test_image_mirror_upload_creates_preview_derivatives(tmp_path):
+    client, engine = build_client(tmp_path)
+    imported = client.post("/api/imports/drive", json=drive_payload()).json()["imported"][0]
+    original = image_bytes(size=(1200, 800))
+
+    response = client.post(
+        f"/api/assets/{imported['asset_id']}/mirror/upload",
+        data={
+            "source_system": "google_drive",
+            "drive_file_id": "drive-file-123",
+            "drive_mime_type": "image/jpeg",
+            "source_modified_time": "2026-04-02T10:00:00Z",
+        },
+        files={"file": ("Maine porch photo.jpg", original, "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    display = client.get(f"/api/assets/{imported['asset_id']}/preview")
+    thumbnail = client.get(f"/api/assets/{imported['asset_id']}/preview?variant=thumbnail")
+
+    assert display.status_code == 200
+    assert display.headers["content-type"] == "image/jpeg"
+    assert thumbnail.status_code == 200
+    thumbnail_image = Image.open(BytesIO(thumbnail.content))
+    assert thumbnail_image.width <= 320
+    assert thumbnail_image.height <= 320
+
+    with Session(engine) as session:
+        asset = session.get(Asset, imported["asset_id"])
+        assert asset is not None
+        assert asset.processing_status == "image_preview_ready"
+        assert asset.maturity_level == "L3_previewable"
+
+        derivatives = session.exec(select(Derivative).where(Derivative.asset_id == asset.id)).all()
+        assert {derivative.metadata_json["variant"] for derivative in derivatives} == {"display", "thumbnail"}
+        assert all(derivative.derivative_type == "image_preview" for derivative in derivatives)
+        assert all(derivative.object_file_id for derivative in derivatives)
+
+        annotation = session.get(Annotation, response.json()["annotation_id"])
+        assert annotation is not None
+        assert len(annotation.creates_or_updates["image_derivatives"]) == 2
+
+
+def test_asset_dossier_returns_provenance_derivatives_and_audit_records(tmp_path):
+    client, _engine = build_client(tmp_path)
+    imported = client.post("/api/imports/drive", json=drive_payload()).json()["imported"][0]
+    client.post(
+        f"/api/assets/{imported['asset_id']}/mirror/upload",
+        data={
+            "source_system": "google_drive",
+            "drive_file_id": "drive-file-123",
+            "drive_mime_type": "image/jpeg",
+            "source_modified_time": "2026-04-02T10:00:00Z",
+        },
+        files={"file": ("Maine porch photo.jpg", image_bytes(size=(1200, 800)), "image/jpeg")},
+    )
+
+    dossier = client.get(f"/api/assets/{imported['asset_id']}/dossier")
+
+    assert dossier.status_code == 200
+    body = dossier.json()
+    assert body["asset"]["id"] == imported["asset_id"]
+    assert body["counts"]["snapshots"] >= 2
+    assert body["counts"]["derivatives"] == 2
+    assert body["counts"]["annotations"] >= 2
+    assert body["external_refs"][0]["source_system"] == "google_drive"
+    assert {derivative["metadata_json"]["variant"] for derivative in body["derivatives"]} == {"display", "thumbnail"}
 
 
 def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):
@@ -349,3 +426,63 @@ def test_asset_mirror_service_can_record_gcs_object_without_local_final_copy(tmp
     assert result.uri.startswith("gs://charlesops-vault-1030126815863/charlesops/source_mirror/")
     assert uploads[0]["bucket"] == "charlesops-vault-1030126815863"
     assert uploads[0]["object_key"] == result.object_key
+
+
+def test_gcs_image_mirror_creates_cached_preview_derivatives(tmp_path, monkeypatch):
+    client, engine = build_client(tmp_path)
+    settings.object_storage_provider = "gcs"
+    settings.gcs_bucket = "charlesops-vault-1030126815863"
+    settings.gcs_prefix = "charlesops"
+    uploads = []
+
+    def fake_upload_to_gcs(**kwargs):
+        uploads.append(
+            {
+                "bucket": kwargs["bucket"],
+                "object_key": kwargs["object_key"],
+                "content_type": kwargs["content_type"],
+                "byte_size": kwargs["path"].stat().st_size,
+            }
+        )
+        return {"name": kwargs["object_key"], "bucket": kwargs["bucket"]}
+
+    monkeypatch.setattr(asset_mirror, "_upload_to_gcs", fake_upload_to_gcs)
+    imported = client.post("/api/imports/drive", json=drive_payload()).json()["imported"][0]
+
+    response = client.post(
+        f"/api/assets/{imported['asset_id']}/mirror/upload",
+        data={
+            "source_system": "google_drive",
+            "drive_file_id": "drive-file-123",
+            "drive_mime_type": "image/jpeg",
+            "source_modified_time": "2026-04-02T10:00:00Z",
+            "storage_access_token": "fake-token",
+        },
+        files={"file": ("Maine porch photo.jpg", image_bytes(size=(900, 600)), "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["uri"].startswith("gs://charlesops-vault-1030126815863/")
+    assert len(uploads) == 3
+    assert any("/source_mirror/" in upload["object_key"] for upload in uploads)
+    assert {upload["content_type"] for upload in uploads if "/derivatives/images/" in upload["object_key"]} == {
+        "image/jpeg"
+    }
+
+    preview = client.get(f"/api/assets/{imported['asset_id']}/preview?variant=thumbnail")
+    assert preview.status_code == 200
+    preview_image = Image.open(BytesIO(preview.content))
+    assert preview_image.width <= 320
+    assert preview_image.height <= 320
+
+    with Session(engine) as session:
+        derivative_objects = session.exec(
+            select(ObjectFile).where(ObjectFile.storage_provider == "gcs").where(ObjectFile.content_type == "image/jpeg")
+        ).all()
+        derivative_caches = [
+            object_file.metadata_json.get("local_preview_cache_key")
+            for object_file in derivative_objects
+            if object_file.metadata_json.get("derivative_kind") == "image_preview"
+        ]
+        assert len(derivative_caches) == 2
+        assert all((tmp_path / "storage" / cache_key).is_file() for cache_key in derivative_caches)

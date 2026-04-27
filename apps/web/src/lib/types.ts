@@ -90,6 +90,53 @@ export interface AssetMirrorResponse {
   checksum_sha256: string;
 }
 
+export interface ObjectFile {
+  id: string;
+  storage_provider: string;
+  bucket?: string | null;
+  object_key: string;
+  uri: string;
+  content_type?: string | null;
+  byte_size?: number | null;
+  checksum_sha256?: string | null;
+  metadata_json: JsonRecord;
+  created_at: string;
+}
+
+export interface AssetSnapshot {
+  id: string;
+  asset_id: string;
+  snapshot_type: string;
+  version: number;
+  checksum_sha256?: string | null;
+  source_modified_time?: string | null;
+  captured_at: string;
+  object_file_id?: string | null;
+}
+
+export interface Derivative {
+  id: string;
+  asset_id: string;
+  source_snapshot_id?: string | null;
+  derivative_type: string;
+  version: number;
+  object_file_id?: string | null;
+  status: string;
+  metadata_json: JsonRecord;
+  created_at: string;
+}
+
+export interface ExternalRef {
+  id: string;
+  asset_id: string;
+  source_system: string;
+  external_id: string;
+  uri?: string | null;
+  parent_ref?: string | null;
+  metadata_json: JsonRecord;
+  created_at: string;
+}
+
 export interface Task {
   id: string;
   human_id: string;
@@ -106,6 +153,142 @@ export interface Task {
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
+}
+
+export interface Boundary {
+  id: string;
+  target_type: string;
+  target_id: string;
+  privacy_level: string;
+  searchable: boolean;
+  retrievable_in_chat: boolean;
+  quotable: boolean;
+  summarizable: boolean;
+  usable_for_voice_context: boolean;
+  usable_for_sft: boolean;
+  usable_for_dpo: boolean;
+  usable_for_eval: boolean;
+  usable_for_gallery_public: boolean;
+  usable_for_gallery_family: boolean;
+  redaction_required: boolean;
+  notes?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+}
+
+export interface MetadataProfile {
+  id: string;
+  target_type: string;
+  target_id: string;
+  profile_type: string;
+  metadata_status: string;
+  title?: string | null;
+  summary?: string | null;
+  adam_context_note?: string | null;
+  source_genre?: string | null;
+  authorship?: string | null;
+  truth_status?: string | null;
+  voice_presence?: string | null;
+  quality_signals: JsonRecord;
+  embedding_hints: JsonRecord;
+  raw_profile: JsonRecord;
+  source_annotation_id?: string | null;
+  created_by: string;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssetDossier {
+  asset: Asset;
+  external_refs: ExternalRef[];
+  snapshots: AssetSnapshot[];
+  object_files: ObjectFile[];
+  derivatives: Derivative[];
+  segments: Segment[];
+  boundaries: Boundary[];
+  tasks: Task[];
+  annotations: Annotation[];
+  metadata_profiles: MetadataProfile[];
+  counts: JsonRecord;
+}
+
+export interface ContextPack {
+  id: string;
+  human_id: string;
+  user_intent: string;
+  requested_voice_mode?: string | null;
+  truth_mode: string;
+  allowed_facts: string[];
+  boundaries_snapshot: JsonRecord;
+  style_guidance: JsonRecord;
+  created_at: string;
+}
+
+export interface ContextPackItem {
+  context_pack_id: string;
+  item_type: string;
+  item_id: string;
+  role: string;
+  rank: number;
+  included: boolean;
+  exclusion_reason?: string | null;
+}
+
+export interface ContextPackBuildItem {
+  item_type: string;
+  item_id: string;
+  role?: string;
+  rank?: number;
+}
+
+export interface ContextPackBuildRequest {
+  user_intent?: string;
+  requested_voice_mode?: string | null;
+  truth_mode?: string;
+  items: ContextPackBuildItem[];
+  allowed_facts?: string[];
+  blocked_facts?: string[];
+  style_guidance?: JsonRecord;
+}
+
+export interface ContextPackBuildResponse {
+  context_pack_id: string;
+  human_id: string;
+  included_count: number;
+  excluded_count: number;
+  warnings: string[];
+}
+
+export interface DatasetExport {
+  id: string;
+  human_id: string;
+  export_type: string;
+  version: string;
+  status: string;
+  manifest: JsonRecord;
+  object_file_id?: string | null;
+  created_at: string;
+}
+
+export interface DatasetDryRunRow {
+  artifact_type: string;
+  artifact_id: string;
+  source_gold_voice_example_id: string;
+  export_status: string;
+  payload: JsonRecord;
+  reasons?: string[];
+}
+
+export interface DatasetExportDryRun {
+  export_type: "sft" | "dpo";
+  mode: string;
+  included_count: number;
+  excluded_count: number;
+  included: DatasetDryRunRow[];
+  excluded: DatasetDryRunRow[];
 }
 
 export interface TaskDraft {
