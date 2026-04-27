@@ -206,6 +206,10 @@ export default function AssetDossierPage() {
         <CountCard label="Boundaries" value={dossier.counts.boundaries} />
         <CountCard label="Tasks" value={dossier.counts.tasks} />
         <CountCard label="Annotations" value={dossier.counts.annotations} />
+        <CountCard label="Context Packs" value={dossier.counts.context_packs} />
+        <CountCard label="Gold Examples" value={dossier.counts.gold_voice_examples} />
+        <CountCard label="SFT" value={dossier.counts.sft_candidates} />
+        <CountCard label="DPO" value={dossier.counts.dpo_pairs} />
       </section>
 
       <div className="dossier-grid">
@@ -305,6 +309,70 @@ export default function AssetDossierPage() {
                 <span>{labelFromKey(item.metadata_status)}</span>
                 <p>{item.summary || item.adam_context_note || "No summary yet."}</p>
                 <JsonFacts value={item.quality_signals} />
+              </article>
+            );
+          }}
+        />
+        <RecordList
+          title="Context Packs"
+          icon={<Boxes size={15} />}
+          records={dossier.context_packs}
+          render={(record) => {
+            const item = record as AssetDossier["context_packs"][number];
+            const packItems = dossier.context_pack_items.filter((packItem) => packItem.context_pack_id === item.id);
+            return (
+              <article key={item.id} className="dossier-record">
+                <strong>{item.human_id}</strong>
+                <span>{labelFromKey(item.user_intent)}</span>
+                <p>
+                  {packItems.length} linked item{packItems.length === 1 ? "" : "s"} · {item.allowed_facts.length} allowed fact
+                  {item.allowed_facts.length === 1 ? "" : "s"}
+                </p>
+                <JsonFacts value={item.boundaries_snapshot} />
+              </article>
+            );
+          }}
+        />
+        <RecordList
+          title="Gold Voice Examples"
+          icon={<Sparkles size={15} />}
+          records={dossier.gold_voice_examples}
+          render={(record) => {
+            const item = record as AssetDossier["gold_voice_examples"][number];
+            return (
+              <article key={item.id} className="dossier-record">
+                <strong>{item.human_id}</strong>
+                <span>{labelFromKey(item.voice_mode)}</span>
+                <p>{item.adam_gold_edit.slice(0, 220) || "No gold edit text."}</p>
+                <div className="dossier-badge-row compact">
+                  {item.downstream_use?.sft ? <span>SFT requested</span> : null}
+                  {item.downstream_use?.dpo ? <span>DPO requested</span> : null}
+                  {item.approved_by ? <span>Approved</span> : null}
+                </div>
+              </article>
+            );
+          }}
+        />
+        <RecordList
+          title="Export Artifacts"
+          icon={<Database size={15} />}
+          records={[
+            ...dossier.sft_candidates.map((item) => ({ ...item, artifact_kind: "sft_candidate" })),
+            ...dossier.dpo_pairs.map((item) => ({ ...item, artifact_kind: "dpo_pair" })),
+            ...dossier.eval_cases.map((item) => ({ ...item, artifact_kind: "eval_case" })),
+            ...dossier.anti_patterns.map((item) => ({ ...item, artifact_kind: "anti_pattern" })),
+            ...dossier.style_rules.map((item) => ({ ...item, artifact_kind: "style_rule" }))
+          ]}
+          render={(record, index) => {
+            const item = record as JsonRecord;
+            const title = String(item.human_id ?? item.artifact_kind ?? item.id ?? `artifact_${index}`);
+            const status = String(item.export_status ?? item.status ?? "recorded");
+            const body = String(item.prompt ?? item.rule ?? item.name ?? item.why_wrong ?? item.id ?? "No artifact preview.");
+            return (
+              <article key={String(item.id ?? index)} className="dossier-record">
+                <strong>{labelFromKey(title)}</strong>
+                <span>{labelFromKey(status)}</span>
+                <p>{body.slice(0, 220)}</p>
               </article>
             );
           }}

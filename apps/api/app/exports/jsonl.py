@@ -51,6 +51,20 @@ def _context_for(session: Session, gold: GoldVoiceExample | None) -> ContextPack
     return session.get(ContextPack, gold.context_pack_id)
 
 
+def _source_summary(gold: GoldVoiceExample | None, context: ContextPack | None) -> Dict[str, Any]:
+    if not gold:
+        return {}
+    return {
+        "gold_voice_example_id": gold.id,
+        "gold_human_id": gold.human_id,
+        "voice_mode": gold.voice_mode,
+        "truth_status": gold.truth_status,
+        "context_pack_id": context.id if context else gold.context_pack_id,
+        "context_human_id": context.human_id if context else None,
+        "context_boundary_status": context.boundaries_snapshot.get("boundary_status") if context else None,
+    }
+
+
 def _response_b_privacy_blocked(gold: GoldVoiceExample | None) -> bool:
     if not gold:
         return True
@@ -128,6 +142,9 @@ def export_dry_run(session: Session, export_type: str, *, include_candidates: bo
     included: List[Dict[str, Any]] = []
     excluded: List[Dict[str, Any]] = []
     for row in rows:
+        gold = _gold_for(session, str(row["source_gold_voice_example_id"]))
+        context = _context_for(session, gold)
+        row = {**row, "source": _source_summary(gold, context)}
         reasons = _exclusion_reasons(
             session=session,
             export_type=export_type,

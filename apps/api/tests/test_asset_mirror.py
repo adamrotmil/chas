@@ -11,7 +11,20 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.config import settings
 from app.db.session import get_session
 from app.main import app
-from app.models import Annotation, Asset, AssetSnapshot, Derivative, ObjectFile, Segment, Task
+from app.models import (
+    Annotation,
+    Asset,
+    AssetSnapshot,
+    ContextPack,
+    ContextPackItem,
+    DPOPair,
+    Derivative,
+    GoldVoiceExample,
+    ObjectFile,
+    SFTCandidate,
+    Segment,
+    Task,
+)
 from app.services import asset_mirror
 from app.services.asset_mirror import mirror_upload_for_asset
 from app.services.text_extraction import extract_text_from_file
@@ -212,7 +225,7 @@ def test_image_mirror_upload_creates_preview_derivatives(tmp_path):
 
 
 def test_asset_dossier_returns_provenance_derivatives_and_audit_records(tmp_path):
-    client, _engine = build_client(tmp_path)
+    client, engine = build_client(tmp_path)
     imported = client.post("/api/imports/drive", json=drive_payload()).json()["imported"][0]
     client.post(
         f"/api/assets/{imported['asset_id']}/mirror/upload",
@@ -225,6 +238,49 @@ def test_asset_dossier_returns_provenance_derivatives_and_audit_records(tmp_path
         files={"file": ("Maine porch photo.jpg", image_bytes(size=(1200, 800)), "image/jpeg")},
     )
 
+    with Session(engine) as session:
+        context_pack = ContextPack(
+            human_id="CTX_DOSSIER_TEST",
+            user_intent="gold_voice_generation",
+            requested_voice_mode="father_to_adam",
+            truth_mode="adam_expert_reconstruction",
+            allowed_facts=["The photo is a source for a later voice edit."],
+            boundaries_snapshot={"boundary_status": "passed"},
+        )
+        session.add(context_pack)
+        session.flush()
+        session.add(
+            ContextPackItem(
+                context_pack_id=context_pack.id,
+                item_type="asset",
+                item_id=imported["asset_id"],
+                role="source_asset",
+            )
+        )
+        gold = GoldVoiceExample(
+            human_id="GOLD_DOSSIER_TEST",
+            context_pack_id=context_pack.id,
+            voice_mode="father_to_adam",
+            truth_status="adam_expert_reconstruction",
+            adam_gold_edit="call when you get in",
+            downstream_use={"sft": True, "dpo": True},
+            approved_by="adam",
+        )
+        session.add(gold)
+        session.flush()
+        session.add(SFTCandidate(source_gold_voice_example_id=gold.id, export_status="approved"))
+        session.add(
+            DPOPair(
+                source_gold_voice_example_id=gold.id,
+                prompt="Write a note.",
+                chosen="call when you get in",
+                rejected="Dear Adam, I cherish our bond.",
+                reason=["too polished"],
+                export_status="approved",
+            )
+        )
+        session.commit()
+
     dossier = client.get(f"/api/assets/{imported['asset_id']}/dossier")
 
     assert dossier.status_code == 200
@@ -233,8 +289,16 @@ def test_asset_dossier_returns_provenance_derivatives_and_audit_records(tmp_path
     assert body["counts"]["snapshots"] >= 2
     assert body["counts"]["derivatives"] == 2
     assert body["counts"]["annotations"] >= 2
+    assert body["counts"]["context_packs"] == 1
+    assert body["counts"]["gold_voice_examples"] == 1
+    assert body["counts"]["sft_candidates"] == 1
+    assert body["counts"]["dpo_pairs"] == 1
     assert body["external_refs"][0]["source_system"] == "google_drive"
     assert {derivative["metadata_json"]["variant"] for derivative in body["derivatives"]} == {"display", "thumbnail"}
+    assert body["context_packs"][0]["human_id"] == "CTX_DOSSIER_TEST"
+    assert body["gold_voice_examples"][0]["human_id"] == "GOLD_DOSSIER_TEST"
+    assert body["sft_candidates"][0]["export_status"] == "approved"
+    assert body["dpo_pairs"][0]["reason"] == ["too polished"]
 
 
 def test_text_mirror_upload_extracts_preview_segments_and_review_task(tmp_path):

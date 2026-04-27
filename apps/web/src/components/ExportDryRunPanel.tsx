@@ -15,7 +15,8 @@ function titleCase(value: string): string {
 }
 
 function rowLabel(row: DatasetDryRunRow): string {
-  return `${titleCase(row.artifact_type)} ${row.artifact_id.slice(0, 8)}`;
+  const sourceName = typeof row.source?.gold_human_id === "string" ? row.source.gold_human_id : "";
+  return sourceName || `${titleCase(row.artifact_type)} ${row.artifact_id.slice(0, 8)}`;
 }
 
 function firstPayloadPreview(row: DatasetDryRunRow): string {
@@ -48,6 +49,13 @@ function DryRunRows({ rows, kind }: { rows: DatasetDryRunRow[]; kind: "included"
             <strong>{rowLabel(row)}</strong>
             <span>{row.export_status}</span>
           </header>
+          <div className="dry-run-source">
+            <span>{titleCase(row.artifact_type)}</span>
+            {typeof row.source?.voice_mode === "string" ? <span>{titleCase(row.source.voice_mode)}</span> : null}
+            {typeof row.source?.context_boundary_status === "string" ? (
+              <span>{titleCase(row.source.context_boundary_status)}</span>
+            ) : null}
+          </div>
           <p>{firstPayloadPreview(row)}</p>
           {kind === "excluded" && row.reasons?.length ? (
             <div className="reason-strip">

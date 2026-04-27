@@ -77,6 +77,8 @@ def test_export_dry_run_excludes_boundary_blocked_and_candidate_items():
     body = dry_run.json()
     assert body["included_count"] == 1
     assert body["excluded_count"] == 2
+    assert body["included"][0]["source"]["gold_human_id"] == "GOLD_APPROVED"
+    assert body["included"][0]["source"]["context_boundary_status"] == "passed"
     reasons = [reason for item in body["excluded"] for reason in item["reasons"]]
     assert "context_pack_boundary_blocked" in reasons
     assert "artifact_status_is_candidate" in reasons

@@ -212,6 +212,14 @@ export interface AssetDossier {
   tasks: Task[];
   annotations: Annotation[];
   metadata_profiles: MetadataProfile[];
+  context_packs: ContextPack[];
+  context_pack_items: ContextPackItem[];
+  gold_voice_examples: GoldVoiceExample[];
+  sft_candidates: SFTCandidate[];
+  dpo_pairs: DPOPair[];
+  eval_cases: EvalCase[];
+  anti_patterns: AntiPattern[];
+  style_rules: StyleRule[];
   counts: JsonRecord;
 }
 
@@ -279,6 +287,7 @@ export interface DatasetDryRunRow {
   source_gold_voice_example_id: string;
   export_status: string;
   payload: JsonRecord;
+  source?: JsonRecord;
   reasons?: string[];
 }
 
@@ -364,11 +373,73 @@ export interface Annotation {
 export interface GoldVoiceExample {
   id: string;
   human_id: string;
+  generation_id?: string | null;
+  prompt_spec_id?: string | null;
+  context_pack_id?: string | null;
   voice_mode: string;
   truth_status: string;
   adam_gold_edit: string;
   ratings: JsonRecord;
   failure_modes: string[];
+  downstream_use?: JsonRecord;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  created_at?: string;
+}
+
+export interface SFTCandidate {
+  id: string;
+  source_gold_voice_example_id: string;
+  messages: Array<Record<string, string>>;
+  quality_gate: JsonRecord;
+  export_status: string;
+  created_at: string;
+}
+
+export interface DPOPair {
+  id: string;
+  source_gold_voice_example_id: string;
+  prompt: string;
+  chosen: string;
+  rejected: string;
+  reason: string[];
+  export_status: string;
+  created_at: string;
+}
+
+export interface EvalCase {
+  id: string;
+  human_id: string;
+  prompt: string;
+  voice_mode?: string | null;
+  truth_mode?: string | null;
+  success_criteria: JsonRecord;
+  gold_reference_id?: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface AntiPattern {
+  id: string;
+  human_id: string;
+  name: string;
+  voice_mode?: string | null;
+  examples: string[];
+  why_wrong: string;
+  source_gold_voice_example_id?: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface StyleRule {
+  id: string;
+  human_id: string;
+  voice_mode?: string | null;
+  rule: string;
+  rationale?: string | null;
+  source_gold_voice_example_id?: string | null;
+  status: string;
+  created_at: string;
 }
 
 export interface PromptPairBatchResponse {

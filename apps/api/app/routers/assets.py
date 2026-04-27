@@ -8,7 +8,26 @@ from sqlmodel import Session, select
 
 from app.config import settings
 from app.db.session import get_session
-from app.models import Annotation, Asset, AssetSnapshot, Boundary, Derivative, ExternalRef, MetadataProfile, ObjectFile, Segment, Task
+from app.models import (
+    Annotation,
+    AntiPattern,
+    Asset,
+    AssetSnapshot,
+    Boundary,
+    ContextPack,
+    ContextPackItem,
+    DPOPair,
+    Derivative,
+    EvalCase,
+    ExternalRef,
+    GoldVoiceExample,
+    MetadataProfile,
+    ObjectFile,
+    Segment,
+    SFTCandidate,
+    StyleRule,
+    Task,
+)
 from app.schemas import AssetCreate, AssetMirrorResponse, AssetUpdate
 from app.services.asset_mirror import mirror_upload_for_asset
 
@@ -150,6 +169,66 @@ def get_asset_dossier(asset_id: str, session: Session = Depends(get_session)) ->
     external_refs = session.exec(
         select(ExternalRef).where(ExternalRef.asset_id == asset.id).order_by(ExternalRef.created_at.asc())
     ).all()
+    context_pack_items = session.exec(
+        select(ContextPackItem).where(ContextPackItem.item_id.in_(target_ids)).order_by(ContextPackItem.rank.asc())
+    ).all()
+    context_pack_ids = {item.context_pack_id for item in context_pack_items}
+    context_packs = (
+        session.exec(select(ContextPack).where(ContextPack.id.in_(context_pack_ids)).order_by(ContextPack.created_at.asc())).all()
+        if context_pack_ids
+        else []
+    )
+    gold_examples = (
+        session.exec(
+            select(GoldVoiceExample)
+            .where(GoldVoiceExample.context_pack_id.in_(context_pack_ids))
+            .order_by(GoldVoiceExample.created_at.asc())
+        ).all()
+        if context_pack_ids
+        else []
+    )
+    gold_ids = {gold.id for gold in gold_examples}
+    sft_candidates = (
+        session.exec(
+            select(SFTCandidate)
+            .where(SFTCandidate.source_gold_voice_example_id.in_(gold_ids))
+            .order_by(SFTCandidate.created_at.asc())
+        ).all()
+        if gold_ids
+        else []
+    )
+    dpo_pairs = (
+        session.exec(
+            select(DPOPair)
+            .where(DPOPair.source_gold_voice_example_id.in_(gold_ids))
+            .order_by(DPOPair.created_at.asc())
+        ).all()
+        if gold_ids
+        else []
+    )
+    eval_cases = (
+        session.exec(select(EvalCase).where(EvalCase.gold_reference_id.in_(gold_ids)).order_by(EvalCase.created_at.asc())).all()
+        if gold_ids
+        else []
+    )
+    anti_patterns = (
+        session.exec(
+            select(AntiPattern)
+            .where(AntiPattern.source_gold_voice_example_id.in_(gold_ids))
+            .order_by(AntiPattern.created_at.asc())
+        ).all()
+        if gold_ids
+        else []
+    )
+    style_rules = (
+        session.exec(
+            select(StyleRule)
+            .where(StyleRule.source_gold_voice_example_id.in_(gold_ids))
+            .order_by(StyleRule.created_at.asc())
+        ).all()
+        if gold_ids
+        else []
+    )
 
     return {
         "asset": _dump(asset),
@@ -162,6 +241,14 @@ def get_asset_dossier(asset_id: str, session: Session = Depends(get_session)) ->
         "tasks": [_dump(item) for item in tasks],
         "annotations": [_dump(item) for item in annotations],
         "metadata_profiles": [_dump(item) for item in metadata_profiles],
+        "context_packs": [_dump(item) for item in context_packs],
+        "context_pack_items": [_dump(item) for item in context_pack_items],
+        "gold_voice_examples": [_dump(item) for item in gold_examples],
+        "sft_candidates": [_dump(item) for item in sft_candidates],
+        "dpo_pairs": [_dump(item) for item in dpo_pairs],
+        "eval_cases": [_dump(item) for item in eval_cases],
+        "anti_patterns": [_dump(item) for item in anti_patterns],
+        "style_rules": [_dump(item) for item in style_rules],
         "counts": {
             "segments": len(segments),
             "snapshots": len(snapshots),
@@ -170,6 +257,13 @@ def get_asset_dossier(asset_id: str, session: Session = Depends(get_session)) ->
             "annotations": len(annotations),
             "metadata_profiles": len(metadata_profiles),
             "boundaries": len(boundaries),
+            "context_packs": len(context_packs),
+            "gold_voice_examples": len(gold_examples),
+            "sft_candidates": len(sft_candidates),
+            "dpo_pairs": len(dpo_pairs),
+            "eval_cases": len(eval_cases),
+            "anti_patterns": len(anti_patterns),
+            "style_rules": len(style_rules),
         },
     }
 

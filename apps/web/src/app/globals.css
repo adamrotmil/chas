@@ -1993,6 +1993,20 @@ button:focus-visible {
   font-size: 0.68rem;
 }
 
+.dry-run-source {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.dry-run-source span {
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
 .dry-run-row p {
   color: var(--muted);
   font-size: 0.76rem;
