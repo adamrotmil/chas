@@ -98,7 +98,27 @@ def test_gold_voice_submission_creates_annotation_and_training_artifacts():
                     "restraint": 5,
                     "non_parody": 5,
                 },
-                "failure_modes": ["too_generic", "too_therapy_like"],
+                "response_rubric": {
+                    "response_a": {
+                        "restraint": {
+                            "status": "minor_issues",
+                            "notes": "The rejected draft is too polished.",
+                            "issue_tags": [],
+                        }
+                    },
+                    "response_b": {
+                        "restraint": {
+                            "status": "no_issues",
+                            "notes": "",
+                            "issue_tags": [],
+                        }
+                    },
+                },
+                "rubric_summary": {
+                    "rejected_issue_count": 1,
+                    "preferred_issue_count": 0,
+                    "sft_ready": True,
+                },
                 "export_flags": {
                     "sft": True,
                     "dpo": True,
@@ -119,10 +139,18 @@ def test_gold_voice_submission_creates_annotation_and_training_artifacts():
     with Session(engine) as session:
         task = session.get(Task, task_id)
         assert task.status == "submitted"
-        assert session.exec(select(GoldVoiceExample)).first()
+        gold = session.exec(select(GoldVoiceExample)).first()
+        assert gold
+        assert gold.ratings["response_rubric"]["response_a"]["restraint"]["issue_tags"] == []
+        assert gold.ratings["response_rubric"]["response_b"]["restraint"]["status"] == "no_issues"
+        assert gold.ratings["rubric_summary"]["sft_ready"] is True
         assert session.exec(select(SFTCandidate)).first().export_status == "approved"
-        assert session.exec(select(DPOPair)).first().export_status == "approved"
-        assert session.exec(select(AntiPattern)).first()
+        dpo_pair = session.exec(select(DPOPair)).first()
+        assert dpo_pair.export_status == "approved"
+        assert dpo_pair.reason == ["restraint: The rejected draft is too polished."]
+        anti_pattern = session.exec(select(AntiPattern)).first()
+        assert anti_pattern
+        assert anti_pattern.why_wrong == "restraint: The rejected draft is too polished."
 
     sft = client.get("/api/dataset-exports/jsonl?export_type=sft")
     dpo = client.get("/api/dataset-exports/jsonl?export_type=dpo")
@@ -209,7 +237,7 @@ def test_task_draft_autosaves_and_is_cleared_on_submit():
         assert session.exec(select(TaskDraft)).first() is None
 
 
-def test_text_source_review_submission_updates_segment_boundary_and_candidate_task():
+def test_text_source_review_submission_creates_processing_task_then_prompt_candidate():
     client, engine = build_client()
 
     with Session(engine) as session:
@@ -278,15 +306,14 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
                 "truth_status": "archival_source",
                 "voice_presence": "context_only",
                 "adam_context_note": "Third-party source Charles kept; useful as context but not as Charles voice.",
-                "prompt_pair_potential": "high",
+                "ready_for_processing": "yes",
+                "privacy_level": "family_private",
                 "usable_for_voice_context": "yes",
                 "usable_for_grounded_generation": "yes",
-                "selected_chunk_ids": [chunk_id],
-                "chunk_scope": "selected_chunks",
                 "cleaned_text": "Reviewed cleaned text for annotation storage.",
                 "cleaned_text_scope": "active_chunk",
                 "cleaned_text_chunk_id": chunk_id,
-                "boundary_rationale": "Safe for local source review.",
+                "privacy_notes": "Safe for local source review.",
             },
             "notes": "Good source candidate.",
         },
@@ -295,23 +322,25 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
     assert response.status_code == 200
     body = response.json()
     assert body["creates_or_updates"]["reviewed_segment_id"] == preview_id
-    assert body["creates_or_updates"]["reviewed_chunk_ids"] == [chunk_id]
-    assert body["creates_or_updates"]["prompt_pair_candidate_task_id"]
+    assert body["creates_or_updates"]["reviewed_chunk_ids"] == []
+    assert body["creates_or_updates"]["segment_boundary_review_task_id"]
 
     with Session(engine) as session:
         preview = session.get(Segment, preview_id)
         chunk = session.get(Segment, chunk_id)
         boundary = session.exec(select(Boundary).where(Boundary.target_id == preview_id)).first()
-        candidate = session.get(Task, body["creates_or_updates"]["prompt_pair_candidate_task_id"])
+        boundary_task = session.get(Task, body["creates_or_updates"]["segment_boundary_review_task_id"])
         profile = session.get(MetadataProfile, body["creates_or_updates"]["metadata_profile_id"])
 
         assert preview.maturity_level == "L3_reviewed"
         assert preview.metadata_json["latest_source_review"]["source_genre"] == "novel_draft"
-        assert chunk.metadata_json["selected_for_grounded_generation"] is True
+        assert "selected_for_grounded_generation" not in chunk.metadata_json
         assert boundary is not None
         assert boundary.usable_for_voice_context is True
-        assert candidate is not None
-        assert candidate.task_type == "grounded_prompt_pair_candidate"
+        assert boundary_task is not None
+        assert boundary_task.task_type == "text_segment_boundary_review"
+        assert boundary_task.queue == "text_segments_needing_boundary_review"
+        assert boundary_task.input_payload["source_review_annotation_id"] == body["id"]
         assert profile is not None
         assert profile.profile_type == "novel_draft"
         assert profile.metadata_status == "adam_reviewed"
@@ -322,9 +351,127 @@ def test_text_source_review_submission_updates_segment_boundary_and_candidate_ta
         assert profile.voice_presence == "context_only"
         assert profile.adam_context_note == "Third-party source Charles kept; useful as context but not as Charles voice."
         assert profile.themes == []
-        assert profile.embedding_hints["selected_chunk_ids"] == [chunk_id]
+        assert profile.embedding_hints.get("selected_chunk_ids", []) == []
         assert profile.raw_profile["cleaned_text"] == "[stored on annotation only]"
         assert boundary.notes == "Safe for local source review."
+
+    boundary_task_id = body["creates_or_updates"]["segment_boundary_review_task_id"]
+    boundary_response = client.post(
+        f"/api/tasks/{boundary_task_id}/submit",
+        json={
+            "decisions": {
+                "segment_boundary_status": "approved_chunks",
+                "selected_chunk_ids": [chunk_id],
+                "chunk_scope": "selected_chunks",
+                "source_use_modes": ["verbatim_preferred", "grounded_synthesis_allowed"],
+                "source_use_mode": "grounded_synthesis_allowed",
+                "prompt_pair_decision": "yes",
+                "prompt_pair_potential": "high",
+                "quote_policy": "source_quote_allowed_after_boundary_review",
+                "privacy_clearance": "ok_for_local_generation",
+                "privacy_notes": "Use locally; review before export.",
+            },
+            "notes": "Boundaries look usable.",
+        },
+    )
+
+    assert boundary_response.status_code == 200
+    boundary_body = boundary_response.json()
+    assert boundary_body["creates_or_updates"]["reviewed_chunk_ids"] == [chunk_id]
+    assert boundary_body["creates_or_updates"]["prompt_pair_candidate_task_id"]
+
+    with Session(engine) as session:
+        chunk = session.get(Segment, chunk_id)
+        candidate = session.get(Task, boundary_body["creates_or_updates"]["prompt_pair_candidate_task_id"])
+        preview = session.get(Segment, preview_id)
+        boundary = session.exec(select(Boundary).where(Boundary.target_id == preview_id)).first()
+
+        assert preview.maturity_level == "L4_boundary_reviewed"
+        assert chunk.metadata_json["selected_for_grounded_generation"] is True
+        assert chunk.metadata_json["source_use_modes"] == ["verbatim_preferred", "grounded_synthesis_allowed"]
+        assert boundary.quotable is True
+        assert candidate is not None
+        assert candidate.task_type == "grounded_prompt_pair_candidate"
+        assert candidate.input_payload["segment_boundary_review_annotation_id"] == boundary_body["id"]
+        assert candidate.input_payload["source_use_modes"] == ["verbatim_preferred", "grounded_synthesis_allowed"]
+
+
+def test_boundary_review_needs_split_does_not_create_prompt_candidate():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_BOUNDARY_SPLIT",
+            asset_type="text",
+            title="Long draft",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        preview = Segment(
+            human_id="SEG_BOUNDARY_SPLIT_PREVIEW",
+            asset_id=asset.id,
+            segment_type="text_preview",
+            title="Long draft preview",
+            text_content="A preview that needs cleaner segmentation.",
+        )
+        chunk = Segment(
+            human_id="SEG_BOUNDARY_SPLIT_CHUNK",
+            asset_id=asset.id,
+            segment_type="text_chunk",
+            title="Long draft chunk",
+            text_content="This chunk contains several moments and should be split before prompt work.",
+            locator={"chunk_index": 1, "char_start": 0, "char_end": 72},
+        )
+        session.add(preview)
+        session.add(chunk)
+        session.flush()
+        task = Task(
+            human_id="TASK_BOUNDARY_SPLIT",
+            task_type="text_segment_boundary_review",
+            target_type="segment",
+            target_id=preview.id,
+            queue="text_segments_needing_boundary_review",
+            input_payload={"asset_id": asset.id, "segment_id": preview.id},
+            created_by="source_review",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+        chunk_id = chunk.id
+        preview_id = preview.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "segment_boundary_status": "needs_split",
+                "selected_chunk_ids": [chunk_id],
+                "chunk_scope": "selected_chunks",
+                "source_use_mode": "grounded_synthesis_allowed",
+                "prompt_pair_potential": "high",
+                "privacy_clearance": "ok_for_local_generation",
+                "segmentation_notes": "This chunk contains multiple scenes; split before using it.",
+                "privacy_notes": "Local only until cleaner boundaries exist.",
+            },
+            "notes": "Needs another segmentation pass.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["creates_or_updates"]["reviewed_chunk_ids"] == [chunk_id]
+    assert body["creates_or_updates"]["prompt_pair_candidate_task_id"] is None
+
+    with Session(engine) as session:
+        preview = session.get(Segment, preview_id)
+        chunk = session.get(Segment, chunk_id)
+        candidates = session.exec(select(Task).where(Task.task_type == "grounded_prompt_pair_candidate")).all()
+
+        assert candidates == []
+        assert chunk.metadata_json["selected_for_grounded_generation"] is False
+        assert preview.metadata_json["latest_segment_boundary_review"]["ready_for_prompt_pair_factory"] == "no"
+        assert preview.metadata_json["latest_segment_boundary_review"]["segmentation_notes"].startswith("This chunk")
 
 
 def test_metadata_profile_endpoint_crud():

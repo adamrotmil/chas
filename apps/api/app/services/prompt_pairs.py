@@ -91,6 +91,14 @@ def create_prompt_pair_review_task(
     target_response_shape = _string(decisions.get("target_response_shape"), "short_voice_response")
     source_text = _segment_source_text(session, candidate_task, decisions)
     source_title = _source_title(session, candidate_task)
+    source_policy = {
+        "source_use_modes": decisions.get("source_use_modes") or candidate_task.input_payload.get("source_use_modes", []),
+        "source_use_mode": decisions.get("source_use_mode") or candidate_task.input_payload.get("source_use_mode"),
+        "quote_policy": decisions.get("quote_policy") or candidate_task.input_payload.get("quote_policy"),
+        "privacy_clearance": decisions.get("privacy_clearance") or candidate_task.input_payload.get("privacy_clearance"),
+        "redaction_instructions": decisions.get("redaction_instructions")
+        or candidate_task.input_payload.get("redaction_instructions"),
+    }
     prompt_text = _string(decisions.get("prompt_text")) or (
         "Using the reviewed source material as grounding, draft a Charles-style response "
         f"in {voice_mode.replace('_', ' ')} mode. Keep source facts distinct from generated voice. "
@@ -115,6 +123,7 @@ def create_prompt_pair_review_task(
             "source_review_annotation_id": candidate_task.input_payload.get("source_review_annotation_id"),
             "factory_annotation_id": annotation_id,
             "no_live_model_call": True,
+            **source_policy,
         },
     )
     session.add(prompt_spec)
@@ -129,8 +138,9 @@ def create_prompt_pair_review_task(
         boundaries_snapshot={
             "source_prompt_pair_task_id": candidate_task.id,
             "boundary_clearance_needed": decisions.get("boundary_clearance_needed", "review_before_export"),
-            "quote_source_text": False,
+            "quote_source_text": source_policy.get("quote_policy") == "source_quote_allowed_after_boundary_review",
             "disclose_generated": True,
+            **source_policy,
         },
         style_guidance={
             "voice_mode": voice_mode,
@@ -178,6 +188,7 @@ def create_prompt_pair_review_task(
             "source_review_annotation_id": candidate_task.input_payload.get("source_review_annotation_id"),
             "factory_annotation_id": annotation_id,
             "prompt_pair_factory_no_model_call": True,
+            **source_policy,
             "target_response_shape": target_response_shape,
             "prompt_intent": prompt_intent,
             "failure_modes": ["stub_needs_adam_rewrite"],
@@ -191,7 +202,7 @@ def create_prompt_pair_review_task(
                 "grounding": 4,
             },
         },
-        required_decisions=["adam_gold_edit", "ratings", "failure_modes", "export_flags"],
+        required_decisions=["adam_gold_edit", "response_rubric", "export_flags"],
         created_by="prompt_pair_factory",
     )
     session.add(review_task)

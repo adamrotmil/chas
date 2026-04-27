@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     object_storage_provider: str = "local"
     gcs_bucket: str = ""
     gcs_prefix: str = "charlesops"
+    openai_api_key: str = ""
+    openai_project_id: str = ""
+    vision_model: str = "gpt-4.1-mini"
+    vision_live_calls_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

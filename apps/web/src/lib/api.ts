@@ -12,7 +12,8 @@ import type {
   PromptPairBatchResponse,
   Segment,
   Task,
-  TaskDraft
+  TaskDraft,
+  VisionDraftBatchResponse
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
@@ -37,6 +38,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getAssets(): Promise<Asset[]> {
   return request<Asset[]>("/assets");
+}
+
+export function getAssetPreviewUrl(assetId: string): string {
+  return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview`;
 }
 
 export function getTasks(): Promise<Task[]> {
@@ -70,6 +75,13 @@ export function createPromptPairBatch(limit = 10): Promise<PromptPairBatchRespon
   return request<PromptPairBatchResponse>("/prompt-pairs/batches", {
     method: "POST",
     body: JSON.stringify({ limit })
+  });
+}
+
+export function createVisionDraftBatch(limit = 10): Promise<VisionDraftBatchResponse> {
+  return request<VisionDraftBatchResponse>("/vision/drafts/batches", {
+    method: "POST",
+    body: JSON.stringify({ limit, no_live_model_call: true })
   });
 }
 

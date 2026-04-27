@@ -9,7 +9,8 @@ from app.models import Annotation, Task, TaskDraft
 from app.schemas import TaskDraftUpsert, TaskStatusUpdate, TaskSubmit
 from app.services.gold_voice import upsert_gold_voice_artifacts
 from app.services.prompt_pairs import create_prompt_pair_review_task
-from app.services.source_review import upsert_source_review_artifacts
+from app.services.source_review import upsert_segment_boundary_review_artifacts, upsert_source_review_artifacts
+from app.services.vision import upsert_vision_review_artifacts
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -141,10 +142,26 @@ def submit_task(
             annotation_id=annotation.id,
         )
         annotation.creates_or_updates = creates_or_updates
+    elif task.task_type == "text_segment_boundary_review":
+        creates_or_updates = upsert_segment_boundary_review_artifacts(
+            session=session,
+            task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+        )
+        annotation.creates_or_updates = creates_or_updates
     elif task.task_type == "grounded_prompt_pair_candidate":
         creates_or_updates = create_prompt_pair_review_task(
             session=session,
             candidate_task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+        )
+        annotation.creates_or_updates = creates_or_updates
+    elif task.task_type == "vision_draft_review":
+        creates_or_updates = upsert_vision_review_artifacts(
+            session=session,
+            task=task,
             decisions=payload.decisions,
             annotation_id=annotation.id,
         )

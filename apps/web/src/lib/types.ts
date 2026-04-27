@@ -194,3 +194,11 @@ export interface PromptPairBatchResponse {
   review_task_ids: string[];
   annotation_ids: string[];
 }
+
+export interface VisionDraftBatchResponse {
+  created_count: number;
+  skipped_count: number;
+  metadata_profile_ids: string[];
+  review_task_ids: string[];
+  skipped_asset_ids: string[];
+}

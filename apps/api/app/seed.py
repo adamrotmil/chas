@@ -481,6 +481,7 @@ def seed_tasks(session: Session, assets: Dict[str, Asset], graph: Dict[str, Any]
             "queue": "photos_needing_context",
             "reason_created": "Photo needs people, place, date, invisible context, and gallery eligibility.",
             "input_payload": {
+                "asset_id": assets["photo"].id,
                 "title": assets["photo"].title,
                 "machine_guess_people": ["Charles?", "Adam?"],
                 "machine_guess_place": "Maine?",
@@ -495,13 +496,14 @@ def seed_tasks(session: Session, assets: Dict[str, Asset], graph: Dict[str, Any]
             "target_id": graph["segment"].id,
             "priority": 70,
             "queue": "text_segments_needing_review",
-            "reason_created": "Email body segment needs source status, Adam context, and boundary rationale.",
+            "reason_created": "Email body segment needs source status, Adam context, and privacy review.",
             "input_payload": {
+                "asset_id": graph["segment"].asset_id,
                 "segment_title": graph["segment"].title,
                 "text": graph["segment"].text_content,
+                "source_type": "document",
             },
             "required_decisions": [
-                "segment_boundary_good",
                 "segment_title",
                 "source_genre",
                 "authorship",
@@ -511,7 +513,9 @@ def seed_tasks(session: Session, assets: Dict[str, Asset], graph: Dict[str, Any]
                 "truth_status",
                 "voice_presence",
                 "adam_context_note",
-                "boundary_rationale",
+                "privacy_level",
+                "privacy_notes",
+                "ready_for_processing",
             ],
         },
         {
@@ -546,7 +550,7 @@ def seed_tasks(session: Session, assets: Dict[str, Asset], graph: Dict[str, Any]
                 "context_use",
                 "authenticity_value",
                 "voice_density",
-                "boundary_rationale",
+                "privacy_notes",
                 "usable_for_voice_context",
             ],
         },
@@ -570,7 +574,7 @@ def seed_tasks(session: Session, assets: Dict[str, Asset], graph: Dict[str, Any]
                 "ratings": voice["gold"].ratings,
                 "failure_modes": voice["gold"].failure_modes,
             },
-            "required_decisions": ["adam_gold_edit", "ratings", "failure_modes", "export_flags"],
+            "required_decisions": ["adam_gold_edit", "response_rubric", "export_flags"],
         },
     ]
 

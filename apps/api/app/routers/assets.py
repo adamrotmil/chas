@@ -3,11 +3,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlmodel import Session, select
 
 from app.config import settings
 from app.db.session import get_session
-from app.models import Asset
+from app.models import Asset, AssetSnapshot, ExternalRef, ObjectFile
 from app.schemas import AssetCreate, AssetMirrorResponse, AssetUpdate
 from app.services.asset_mirror import mirror_upload_for_asset
 
@@ -21,6 +22,18 @@ def _asset_or_404(session: Session, asset_id: str) -> Asset:
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     return asset
+
+
+def _drive_thumbnail_link(session: Session, asset_id: str) -> Optional[str]:
+    external_ref = session.exec(
+        select(ExternalRef)
+        .where(ExternalRef.asset_id == asset_id)
+        .where(ExternalRef.source_system == "google_drive")
+    ).first()
+    if not external_ref:
+        return None
+    thumbnail = external_ref.metadata_json.get("drive_thumbnail_link")
+    return thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("https://") else None
 
 
 @router.get("", response_model=List[Asset])
@@ -46,6 +59,45 @@ def create_asset(payload: AssetCreate, session: Session = Depends(get_session)) 
 @router.get("/{asset_id}", response_model=Asset)
 def get_asset(asset_id: str, session: Session = Depends(get_session)) -> Asset:
     return _asset_or_404(session, asset_id)
+
+
+@router.get("/{asset_id}/preview")
+def preview_asset(asset_id: str, session: Session = Depends(get_session)) -> FileResponse:
+    asset = _asset_or_404(session, asset_id)
+    snapshot = session.exec(
+        select(AssetSnapshot)
+        .where(AssetSnapshot.asset_id == asset.id)
+        .where(AssetSnapshot.snapshot_type == "source_mirror")
+        .order_by(AssetSnapshot.version.desc())
+    ).first()
+    if snapshot is None or snapshot.object_file_id is None:
+        thumbnail_link = _drive_thumbnail_link(session, asset.id)
+        if thumbnail_link:
+            return RedirectResponse(thumbnail_link, status_code=307)
+        raise HTTPException(status_code=404, detail="No mirrored preview file found")
+
+    object_file = session.get(ObjectFile, snapshot.object_file_id)
+    if object_file is None:
+        raise HTTPException(status_code=404, detail="Mirrored preview file not found")
+    content_type = object_file.content_type or asset.mime_type or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="Mirrored file is not an image")
+    if object_file.storage_provider != "local":
+        thumbnail_link = _drive_thumbnail_link(session, asset.id)
+        if thumbnail_link:
+            return RedirectResponse(thumbnail_link, status_code=307)
+        raise HTTPException(status_code=404, detail="Preview is only available for local mirrored files")
+
+    storage_root = Path(settings.storage_root).resolve()
+    preview_path = (storage_root / object_file.object_key).resolve()
+    if not preview_path.is_relative_to(storage_root) or not preview_path.is_file():
+        raise HTTPException(status_code=404, detail="Mirrored preview file is missing")
+
+    return FileResponse(
+        preview_path,
+        media_type=content_type,
+        filename=asset.original_filename or asset.title or object_file.object_key.rsplit("/", 1)[-1],
+    )
 
 
 @router.patch("/{asset_id}", response_model=Asset)

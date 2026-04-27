@@ -110,6 +110,22 @@ def _find_or_create_triage_task(session: Session, asset: Asset, metadata: Dict[s
         .where(Task.status.in_(["ready", "sensitive_hold"]))
     ).first()
     if task:
+        task.input_payload = {
+            **task.input_payload,
+            "title": asset.title,
+            "asset_id": asset.id,
+            "asset_type": asset.asset_type,
+            "source_type": asset.asset_type,
+            "source_filename": asset.original_filename or asset.title,
+            "source_system": SOURCE_SYSTEM,
+            "drive_file_id": metadata["drive_file_id"],
+            "drive_mime_type": metadata["drive_mime_type"],
+            "drive_web_view_link": metadata["drive_web_view_link"],
+            "drive_thumbnail_link": metadata["drive_thumbnail_link"],
+            "mirror_status": metadata["mirror_status"],
+        }
+        session.add(task)
+        session.flush()
         return task
 
     task = Task(
@@ -122,11 +138,15 @@ def _find_or_create_triage_task(session: Session, asset: Asset, metadata: Dict[s
         reason_created="Google Drive asset was selected for CharlesOps intake and needs initial triage.",
         input_payload={
             "title": asset.title,
+            "asset_id": asset.id,
             "asset_type": asset.asset_type,
+            "source_type": asset.asset_type,
+            "source_filename": asset.original_filename or asset.title,
             "source_system": SOURCE_SYSTEM,
             "drive_file_id": metadata["drive_file_id"],
             "drive_mime_type": metadata["drive_mime_type"],
             "drive_web_view_link": metadata["drive_web_view_link"],
+            "drive_thumbnail_link": metadata["drive_thumbnail_link"],
             "mirror_status": metadata["mirror_status"],
         },
         required_decisions=["source_type", "importance", "initial_privacy_level", "process_next"],

@@ -2,7 +2,6 @@
 
 import {
   Archive,
-  BarChart3,
   Box,
   Brain,
   CheckCircle2,
@@ -26,6 +25,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createPromptPairBatch,
+  createVisionDraftBatch,
   flagTask,
   getAssets,
   getGoldVoiceExamples,
@@ -38,39 +38,103 @@ import type { Asset, GoldVoiceExample, Memory, Task } from "@/lib/types";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
 
-type NavMode = "intake" | "queue" | "prompt_pairs" | "review" | "gold_edits" | "exports" | "models" | "settings";
-type CollectionId = "text_segments" | "prompt_pairs" | "voice_samples" | "emails" | "photos" | "videos" | "documents" | "all";
+type NavMode =
+  | "intake"
+  | "queue"
+  | "source_review"
+  | "segmentation"
+  | "prompt_pairs"
+  | "vision_drafts"
+  | "gold_edits"
+  | "privacy"
+  | "exports"
+  | "models"
+  | "settings";
+type CollectionId = "all" | "text_segments" | "voice_samples" | "emails" | "photos" | "videos" | "documents";
 type ShellColumn = "sidebar" | "queue";
 
-const topNav = [
-  { id: "queue", label: "Queue", icon: <Inbox size={15} /> },
-  { id: "prompt_pairs", label: "Pair Factory", icon: <ClipboardList size={15} /> },
-  { id: "analytics", label: "Analytics", icon: <BarChart3 size={15} /> },
-  { id: "sessions", label: "Sessions", icon: <ShieldCheck size={15} /> },
-  { id: "exports", label: "Exports", icon: <FileText size={15} /> },
-  { id: "settings", label: "Settings", icon: <Settings size={15} /> }
+type NavItem = { id: NavMode; label: string; icon: React.ReactNode; tooltip: string };
+type CollectionItem = { id: CollectionId; label: string; icon: React.ReactNode; tooltip: string };
+
+const topNav: NavItem[] = [
+  { id: "queue", label: "Queue", icon: <Inbox size={15} />, tooltip: "Built: browse and work through ready review tasks." },
+  {
+    id: "prompt_pairs",
+    label: "Pair Factory",
+    icon: <ClipboardList size={15} />,
+    tooltip: "Built: configure grounded prompt-pair drafts from approved source chunks. No live model call yet."
+  },
+  {
+    id: "exports",
+    label: "Exports",
+    icon: <FileText size={15} />,
+    tooltip: "Partially built: JSONL export exists in the API; richer export review UI is planned."
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    icon: <Settings size={15} />,
+    tooltip: "Planned: project, account, storage, model, and pipeline settings."
+  }
 ];
 
-const sideNav: { id: NavMode; label: string; icon: React.ReactNode }[] = [
-  { id: "intake", label: "Intake", icon: <Inbox size={15} /> },
-  { id: "queue", label: "Queue", icon: <Archive size={15} /> },
-  { id: "prompt_pairs", label: "Prompt Pairs", icon: <ClipboardList size={15} /> },
-  { id: "review", label: "Review", icon: <CheckCircle2 size={15} /> },
-  { id: "gold_edits", label: "Gold Edits", icon: <Download size={15} /> },
-  { id: "exports", label: "Exports", icon: <FolderArchive size={15} /> },
-  { id: "models", label: "Models", icon: <Brain size={15} /> },
-  { id: "settings", label: "Settings", icon: <Settings size={15} /> }
+const sideNav: NavItem[] = [
+  { id: "intake", label: "Intake", icon: <Inbox size={15} />, tooltip: "Built: import Drive metadata and start mirror/intake work." },
+  { id: "queue", label: "All Queue", icon: <Archive size={15} />, tooltip: "Built: all ready tasks, with source filters below." },
+  {
+    id: "source_review",
+    label: "Source Review",
+    icon: <CheckCircle2 size={15} />,
+    tooltip: "Built: label raw source material, authorship, truth status, privacy, and processing readiness."
+  },
+  {
+    id: "segmentation",
+    label: "Segmentation",
+    icon: <FileText size={15} />,
+    tooltip: "Built: review extracted chunks, split/merge intent, allowed uses, and privacy clearance."
+  },
+  {
+    id: "prompt_pairs",
+    label: "Pair Factory",
+    icon: <ClipboardList size={15} />,
+    tooltip: "Built: create draft prompt-pair review tasks from approved chunks. Generation is still stubbed."
+  },
+  {
+    id: "vision_drafts",
+    label: "Vision Drafts",
+    icon: <Image size={15} />,
+    tooltip: "Groundwork built: creates no-call vision review tasks. Live vision model calls are gated off."
+  },
+  {
+    id: "gold_edits",
+    label: "Gold Edits",
+    icon: <Download size={15} />,
+    tooltip: "Built: compare draft vs Adam edit and create SFT, DPO, eval, style, and anti-pattern records."
+  },
+  {
+    id: "privacy",
+    label: "Privacy",
+    icon: <ShieldCheck size={15} />,
+    tooltip: "Built in records: boundary/privacy decisions gate downstream use; dedicated UI is still minimal."
+  },
+  {
+    id: "exports",
+    label: "Exports",
+    icon: <FolderArchive size={15} />,
+    tooltip: "Partially built: API export stubs and JSONL output exist; full export dashboard is planned."
+  },
+  { id: "models", label: "Models", icon: <Brain size={15} />, tooltip: "Planned: model connections, eval runs, and fine-tune readiness controls." },
+  { id: "settings", label: "Settings", icon: <Settings size={15} />, tooltip: "Planned: project, account, storage, and pipeline configuration." }
 ];
 
-const collectionDefs: { id: CollectionId; label: string; icon: React.ReactNode }[] = [
-  { id: "text_segments", label: "Text Segments", icon: <FileText size={15} /> },
-  { id: "prompt_pairs", label: "Prompt Pairs", icon: <ClipboardList size={15} /> },
-  { id: "voice_samples", label: "Voice Samples", icon: <Sparkles size={15} /> },
-  { id: "emails", label: "Emails", icon: <Mail size={15} /> },
-  { id: "photos", label: "Photos", icon: <Image size={15} /> },
-  { id: "videos", label: "Videos", icon: <Video size={15} /> },
-  { id: "documents", label: "Documents", icon: <Box size={15} /> },
-  { id: "all", label: "All Items", icon: <Database size={15} /> }
+const collectionDefs: CollectionItem[] = [
+  { id: "all", label: "All Sources", icon: <Database size={15} />, tooltip: "Built: show all ready source tasks in this workstream." },
+  { id: "text_segments", label: "Text Segments", icon: <FileText size={15} />, tooltip: "Built: text/document review and segmentation tasks." },
+  { id: "voice_samples", label: "Voice Samples", icon: <Sparkles size={15} />, tooltip: "Built: direct or contextual Charles voice review tasks." },
+  { id: "emails", label: "Emails", icon: <Mail size={15} />, tooltip: "Built: email voice/context review tasks." },
+  { id: "photos", label: "Photos", icon: <Image size={15} />, tooltip: "Partially built: photo intake/vision review; local/GCS preview support is still being expanded." },
+  { id: "videos", label: "Videos", icon: <Video size={15} />, tooltip: "Planned: video-specific preview, transcript, and scene annotation workflows." },
+  { id: "documents", label: "Documents", icon: <Box size={15} />, tooltip: "Built: document/text extraction and review tasks where mirrored text is available." }
 ];
 
 const RESIZE_STEP = 16;
@@ -91,10 +155,28 @@ function queueLabel(queue: string): string {
 }
 
 function taskTypeLabel(taskType: string): string {
+  const labels: Record<string, string> = {
+    text_segment_review: "Source Review",
+    text_segment_boundary_review: "Segment Boundary Review",
+    boundary_review: "Privacy Review",
+    grounded_prompt_pair_candidate: "Prompt Pair Factory",
+    gold_voice_edit: "Gold Voice Edit",
+    vision_draft_review: "Vision Draft Review",
+    email_voice_sample: "Email Voice Sample",
+    photo_context: "Photo Context"
+  };
+  if (labels[taskType]) {
+    return labels[taskType];
+  }
   return taskType
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function modeLabel(mode: NavMode): string {
+  const found = sideNav.find((item) => item.id === mode) ?? topNav.find((item) => item.id === mode);
+  return found?.label ?? queueLabel(mode);
 }
 
 function isPromptPairTask(task: Task): boolean {
@@ -136,11 +218,28 @@ function taskSortRank(task: Task): number {
 }
 
 function sourceType(task: Task): string {
-  return typeof task.input_payload.source_type === "string" ? task.input_payload.source_type : "";
+  const payload = task.input_payload;
+  if (typeof payload.source_type === "string") {
+    return payload.source_type;
+  }
+  if (typeof payload.asset_type === "string") {
+    return payload.asset_type;
+  }
+  if (typeof payload.drive_candidate_kind === "string") {
+    return payload.drive_candidate_kind;
+  }
+  return "";
 }
 
 function sourceFilename(task: Task): string {
-  return typeof task.input_payload.source_filename === "string" ? task.input_payload.source_filename.toLowerCase() : "";
+  const payload = task.input_payload;
+  for (const key of ["source_filename", "drive_name", "title", "asset_title"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.toLowerCase();
+    }
+  }
+  return "";
 }
 
 function taskMatchesCollection(task: Task, collection: CollectionId): boolean {
@@ -152,9 +251,11 @@ function taskMatchesCollection(task: Task, collection: CollectionId): boolean {
   const filename = sourceFilename(task);
   switch (collection) {
     case "text_segments":
-      return !isPromptPairTask(task) && (task.task_type === "text_segment_review" || ["document", "text", "journal"].includes(type));
-    case "prompt_pairs":
-      return isPromptPairTask(task);
+      return (
+        !isPromptPairTask(task) &&
+        (["text_segment_review", "text_segment_boundary_review"].includes(task.task_type) ||
+          ["document", "text", "journal"].includes(type))
+      );
     case "voice_samples":
       return task.task_type === "email_voice_sample" || (task.task_type === "gold_voice_edit" && !isPromptPairTask(task));
     case "emails":
@@ -172,19 +273,40 @@ function taskMatchesCollection(task: Task, collection: CollectionId): boolean {
 
 function taskMatchesMode(task: Task, mode: NavMode): boolean {
   switch (mode) {
+    case "source_review":
+      return ["text_segment_review", "email_voice_sample", "photo_context"].includes(task.task_type);
+    case "vision_drafts":
+      return task.task_type === "vision_draft_review";
+    case "segmentation":
+      return task.task_type === "text_segment_boundary_review";
     case "gold_edits":
       return task.task_type === "gold_voice_edit";
     case "prompt_pairs":
       return isPromptPairTask(task);
+    case "privacy":
+      return task.task_type === "boundary_review" || task.queue.includes("boundary") || task.queue.includes("privacy");
     case "exports":
       return task.task_type.includes("export") || task.queue.includes("export");
-    case "review":
-      return task.queue.includes("review") || task.task_type.includes("review");
     case "intake":
       return task.task_type === "asset_triage";
     default:
       return true;
   }
+}
+
+function modeUsesCollectionFilter(mode: NavMode): boolean {
+  return mode === "queue" || mode === "source_review";
+}
+
+function defaultCollectionForMode(mode: NavMode): CollectionId {
+  if (mode === "queue" || mode === "source_review") {
+    return "all";
+  }
+  return "all";
+}
+
+function tooltip(text: string): { title: string } {
+  return { title: text };
 }
 
 function queueHealthScore(task: Task): number {
@@ -219,12 +341,13 @@ export default function Home() {
   const [goldExamples, setGoldExamples] = useState<GoldVoiceExample[]>([]);
   const [shellWidths, setShellWidths] = useState<Record<ShellColumn, number>>({ sidebar: 212, queue: 326 });
   const [selectedMode, setSelectedMode] = useState<NavMode>("queue");
-  const [selectedCollection, setSelectedCollection] = useState<CollectionId>("text_segments");
+  const [selectedCollection, setSelectedCollection] = useState<CollectionId>("all");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [completedThisSession, setCompletedThisSession] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [batchBusy, setBatchBusy] = useState(false);
+  const [visionBatchBusy, setVisionBatchBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -267,8 +390,11 @@ export default function Home() {
     [readyTasks, selectedMode]
   );
   const filteredTasks = useMemo(
-    () => modeTasks.filter((task) => taskMatchesCollection(task, selectedCollection)),
-    [modeTasks, selectedCollection]
+    () =>
+      modeUsesCollectionFilter(selectedMode)
+        ? modeTasks.filter((task) => taskMatchesCollection(task, selectedCollection))
+        : modeTasks,
+    [modeTasks, selectedCollection, selectedMode]
   );
   const selectedTask = useMemo(() => {
     if (selectedTaskId) {
@@ -289,8 +415,23 @@ export default function Home() {
       ) as Record<CollectionId, number>,
     [readyTasks]
   );
+  const modeCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        sideNav.map((item) => [item.id, readyTasks.filter((task) => taskMatchesMode(task, item.id)).length])
+      ) as Record<NavMode, number>,
+    [readyTasks]
+  );
+  const showCollectionFilters = modeUsesCollectionFilter(selectedMode);
   const selectedCollectionDef = collectionDefs.find((collection) => collection.id === selectedCollection) ?? collectionDefs[0];
+  const queueScopeTitle = showCollectionFilters ? selectedCollectionDef.label : modeLabel(selectedMode);
   const selectedTaskIndex = selectedTask ? filteredTasks.findIndex((task) => task.id === selectedTask.id) : -1;
+
+  function navigateMode(mode: NavMode) {
+    setSelectedMode(mode);
+    setSelectedCollection(defaultCollectionForMode(mode));
+    setSelectedTaskId(null);
+  }
 
   async function handleSubmit(decisions: Record<string, unknown>, notes?: string) {
     if (!selectedTask) {
@@ -322,14 +463,28 @@ export default function Home() {
     setError(null);
     try {
       await createPromptPairBatch(10);
-      setSelectedMode("prompt_pairs");
-      setSelectedCollection("prompt_pairs");
+      navigateMode("prompt_pairs");
       setSelectedTaskId(null);
       await load();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to create prompt pair drafts.");
     } finally {
       setBatchBusy(false);
+    }
+  }
+
+  async function handleCreateVisionDraftBatch() {
+    setVisionBatchBusy(true);
+    setError(null);
+    try {
+      await createVisionDraftBatch(10);
+      navigateMode("vision_drafts");
+      setSelectedTaskId(null);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to create vision draft tasks.");
+    } finally {
+      setVisionBatchBusy(false);
     }
   }
 
@@ -372,21 +527,26 @@ export default function Home() {
     <main className="app-shell">
       <header className="global-chrome">
         <div className="brand">
-          <button className="chrome-back" type="button" aria-label="Back to CharlesOps workspace">
+          <button
+            className="chrome-back"
+            type="button"
+            aria-label="Back to CharlesOps workspace"
+            {...tooltip("Planned: return to a broader CharlesOps workspace/home view.")}
+          >
             CO
           </button>
           <div>
-            <strong>Human-in-the-loop Workbench</strong>
+            <strong>Workbench</strong>
             <span>CharlesOps source review and annotation</span>
           </div>
         </div>
 
-        <div className="branch-pill">
+        <div className="branch-pill" {...tooltip("Planned: workspace/environment selector. Currently showing the local main workspace.")}>
           <Database size={14} />
           <span>main</span>
           <ChevronDown size={13} />
         </div>
-        <div className="sync-pill">
+        <div className="sync-pill" {...tooltip("Status: task drafts autosave locally through the API. Future work can add live sync conflict details.")}>
           <CheckCircle2 size={14} />
           <span>Synced</span>
         </div>
@@ -397,15 +557,8 @@ export default function Home() {
               key={item.id}
               className={selectedMode === item.id ? "active" : ""}
               type="button"
-              onClick={() => {
-                if (["queue", "prompt_pairs", "exports", "settings"].includes(item.id)) {
-                  setSelectedMode(item.id as NavMode);
-                  if (item.id === "prompt_pairs") {
-                    setSelectedCollection("prompt_pairs");
-                  }
-                  setSelectedTaskId(null);
-                }
-              }}
+              onClick={() => navigateMode(item.id)}
+              {...tooltip(item.tooltip)}
             >
               {item.icon}
               <span>{item.label}</span>
@@ -413,7 +566,12 @@ export default function Home() {
           ))}
         </nav>
 
-        <button className="avatar-button" type="button" aria-label="Adam workspace profile">
+        <button
+          className="avatar-button"
+          type="button"
+          aria-label="Adam workspace profile"
+          {...tooltip("Planned: Adam workspace profile, account, and project menu.")}
+        >
           CO
         </button>
       </header>
@@ -430,69 +588,59 @@ export default function Home() {
         <aside className="sidebar">
           <nav className="primary-rail" aria-label="Workbench navigation">
             {sideNav.map((item) => {
-              const count =
-                item.id === "queue"
-                  ? readyTasks.length
-                  : item.id === "prompt_pairs"
-                    ? readyTasks.filter(isPromptPairTask).length
-                  : item.id === "gold_edits"
-                    ? readyTasks.filter((task) => task.task_type === "gold_voice_edit").length
-                    : item.id === "exports"
-                      ? readyTasks.filter((task) => task.task_type.includes("export") || task.queue.includes("export")).length
-                      : null;
+              const showCount = !["models", "settings"].includes(item.id);
               return (
                 <button
                   key={item.id}
                   className={selectedMode === item.id ? "active" : ""}
                   type="button"
-                  onClick={() => {
-                    setSelectedMode(item.id);
-                    if (item.id === "prompt_pairs") {
-                      setSelectedCollection("prompt_pairs");
-                    }
-                    setSelectedTaskId(null);
-                  }}
+                  onClick={() => navigateMode(item.id)}
+                  {...tooltip(item.tooltip)}
                 >
                   {item.icon}
                   <span>{item.label}</span>
-                  {count !== null ? <em>{count}</em> : null}
+                  {showCount ? <em>{modeCounts[item.id]}</em> : null}
                 </button>
               );
             })}
           </nav>
 
-          <div className="collection-block">
-            <span className="rail-heading">Collections</span>
-            <nav className="collection-nav" aria-label="Source collections">
-              {collectionDefs.map((collection) => (
-                <button
-                  key={collection.id}
-                  className={selectedCollection === collection.id ? "active" : ""}
-                  type="button"
-                  onClick={() => {
-                    setSelectedCollection(collection.id);
-                    if (collection.id === "prompt_pairs") {
-                      setSelectedMode("prompt_pairs");
-                    } else if (selectedMode === "prompt_pairs") {
-                      setSelectedMode("queue");
-                    }
-                    setSelectedTaskId(null);
-                  }}
-                >
-                  {collection.icon}
-                  <span>{collection.label}</span>
-                  <em>{collectionCounts[collection.id]}</em>
-                </button>
-              ))}
-            </nav>
-          </div>
+          {showCollectionFilters ? (
+            <div className="collection-block">
+              <span className="rail-heading">Source filters</span>
+              <nav className="collection-nav" aria-label="Source filters">
+                {collectionDefs.map((collection) => (
+                  <button
+                    key={collection.id}
+                    className={selectedCollection === collection.id ? "active" : ""}
+                    type="button"
+                    onClick={() => {
+                      setSelectedCollection(collection.id);
+                      setSelectedTaskId(null);
+                    }}
+                    {...tooltip(collection.tooltip)}
+                  >
+                    {collection.icon}
+                    <span>{collection.label}</span>
+                    <em>{collectionCounts[collection.id]}</em>
+                  </button>
+                ))}
+              </nav>
+            </div>
+          ) : (
+            <div className="mode-context">
+              <span className="rail-heading">Current scope</span>
+              <strong>{modeLabel(selectedMode)}</strong>
+              <p>Source filters are hidden because this workstream has a dedicated queue.</p>
+            </div>
+          )}
 
           <div className="rail-status">
-            <span>
+            <span {...tooltip("Status: workbench is idle and ready for the next action.")}>
               <Clock3 size={13} />
               Ready
             </span>
-            <span>
+            <span {...tooltip("Status: API calls are succeeding. Future work can replace this with live health polling.")}>
               <CheckCircle2 size={13} />
               API: Healthy
             </span>
@@ -510,35 +658,49 @@ export default function Home() {
           tabIndex={0}
           onPointerDown={(event) => startShellResize("sidebar", event)}
           onKeyDown={(event) => handleShellResizeKey("sidebar", event)}
+          {...tooltip("Built: drag or use arrow keys to resize the navigation column.")}
         />
 
         <section className="queue-panel" aria-label="Task queue">
           <header className="queue-panel-header">
             <div>
-              <h1>{selectedCollectionDef.label}</h1>
+              <h1>{queueScopeTitle}</h1>
               <span>{filteredTasks.length} items</span>
             </div>
             <div className="queue-tools">
-              <button type="button" aria-label="Filter queue">
+              <button type="button" aria-label="Filter queue" {...tooltip("Planned: advanced queue filters beyond the left source filters.")}>
                 <Archive size={15} />
               </button>
-              <button type="button" aria-label="Search queue">
+              <button type="button" aria-label="Search queue" {...tooltip("Planned: search task titles, source filenames, and metadata.")}>
                 <Search size={15} />
               </button>
-              <button type="button" onClick={() => void load()} aria-label="Refresh workbench data">
+              <button type="button" onClick={() => void load()} aria-label="Refresh workbench data" {...tooltip("Built: reload assets, tasks, memories, and gold examples from the API.")}>
                 <RefreshCw size={15} />
               </button>
-              {selectedMode === "prompt_pairs" || selectedCollection === "prompt_pairs" ? (
+              {selectedMode === "prompt_pairs" ? (
                 <button
                   className="wide-tool"
                   type="button"
                   onClick={() => void handleCreatePromptPairBatch()}
                   aria-label="Create stub prompt pair drafts from ready candidates"
-                  title="Create stub drafts"
                   disabled={batchBusy}
+                  {...tooltip("Built: create up to 10 no-live-model prompt-pair draft review tasks from ready candidates.")}
                 >
                   <Sparkles size={15} />
                   <span>{batchBusy ? "Creating" : "Create drafts"}</span>
+                </button>
+              ) : null}
+              {selectedMode === "vision_drafts" ? (
+                <button
+                  className="wide-tool"
+                  type="button"
+                  onClick={() => void handleCreateVisionDraftBatch()}
+                  aria-label="Create no-call vision draft review tasks from photo assets"
+                  disabled={visionBatchBusy}
+                  {...tooltip("Built as a safe stub: create no-call vision review tasks. Live vision model calls remain gated.")}
+                >
+                  <Image size={15} />
+                  <span>{visionBatchBusy ? "Creating" : "Create drafts"}</span>
                 </button>
               ) : null}
             </div>
@@ -557,6 +719,7 @@ export default function Home() {
                 className={selectedTask?.id === task.id ? "task-row active" : "task-row"}
                 type="button"
                 onClick={() => setSelectedTaskId(task.id)}
+                {...tooltip(`Open task: ${taskTitle(task)}. ${taskSubtitle(task)}`)}
               >
                 <span>{taskTypeLabel(task.task_type)}</span>
                 <strong>{taskTitle(task)}</strong>
@@ -568,11 +731,11 @@ export default function Home() {
           </div>
 
           <footer className="queue-pagination">
-            <button type="button" aria-label="Previous page">
+            <button type="button" aria-label="Previous page" {...tooltip("Planned: paginate longer task lists. Current queue is shown as one scrolling list.")}>
               ‹
             </button>
             <span>1 of {Math.max(1, Math.ceil(filteredTasks.length / 10))}</span>
-            <button type="button" aria-label="Next page">
+            <button type="button" aria-label="Next page" {...tooltip("Planned: paginate longer task lists. Current queue is shown as one scrolling list.")}>
               ›
             </button>
           </footer>
@@ -589,6 +752,7 @@ export default function Home() {
           tabIndex={0}
           onPointerDown={(event) => startShellResize("queue", event)}
           onKeyDown={(event) => handleShellResizeKey("queue", event)}
+          {...tooltip("Built: drag or use arrow keys to resize the queue column.")}
         />
 
         <section className="workbench-column">

@@ -46,6 +46,27 @@ def _rating_passes(ratings: Dict[str, Any]) -> bool:
     return all(int(ratings.get(key, 0) or 0) >= 4 for key in required)
 
 
+def _rubric_side(response_rubric: Any, side: str) -> Dict[str, Any]:
+    if not isinstance(response_rubric, dict):
+        return {}
+    value = response_rubric.get(side)
+    return value if isinstance(value, dict) else {}
+
+
+def _rubric_notes(rubric: Any) -> str:
+    if not isinstance(rubric, dict):
+        return ""
+    notes: List[str] = []
+    for key, decision in rubric.items():
+        if not isinstance(decision, dict):
+            continue
+        status = decision.get("status")
+        note = str(decision.get("notes") or "").strip()
+        if status in {"minor_issues", "major_issues"} and note:
+            notes.append(f"{key}: {note}")
+    return "\n".join(notes)
+
+
 def _first_or_none(session: Session, statement: Any) -> Any:
     return session.exec(statement).first()
 
@@ -78,8 +99,21 @@ def upsert_gold_voice_artifacts(
     gold_text = decisions.get("adam_gold_edit") or decisions.get("gold_edit") or ""
     voice_mode = decisions.get("voice_mode") or task.input_payload.get("voice_mode") or "father_to_adam"
     truth_mode = decisions.get("truth_mode") or task.input_payload.get("truth_mode") or "generative_reconstruction"
-    ratings = decisions.get("ratings") or {}
-    failure_modes = decisions.get("failure_modes") or []
+    raw_ratings = decisions.get("ratings") or {}
+    ratings = dict(raw_ratings) if isinstance(raw_ratings, dict) else {}
+    response_rubric = decisions.get("response_rubric") or ratings.get("response_rubric")
+    response_a_rubric = _rubric_side(response_rubric, "response_a")
+    rubric_summary = decisions.get("rubric_summary") or ratings.get("rubric_summary")
+    if response_rubric:
+        ratings["response_rubric"] = response_rubric
+    if rubric_summary:
+        ratings["rubric_summary"] = rubric_summary
+
+    raw_failure_modes = decisions.get("failure_modes") or []
+    failure_modes = [str(mode) for mode in raw_failure_modes] if isinstance(raw_failure_modes, list) else []
+    issue_notes = _rubric_notes(response_a_rubric)
+    if not failure_modes and issue_notes:
+        failure_modes = [note for note in issue_notes.splitlines() if note.strip()]
     export_flags = decisions.get("export_flags") or {
         "sft": True,
         "dpo": True,
@@ -149,6 +183,7 @@ def upsert_gold_voice_artifacts(
             "min_voice_fidelity_met": _rating_passes(ratings),
             "boundaries_checked": True,
             "no_archival_misattribution": True,
+            "rubric_summary": rubric_summary or {},
             "source_annotation_id": annotation_id,
         }
         sft.export_status = export_status
@@ -203,6 +238,7 @@ def upsert_gold_voice_artifacts(
         created["eval_case_id"] = eval_case.id
 
     if export_flags.get("anti_pattern"):
+        anti_name = "reviewer_described_issue" if issue_notes else failure_modes[0] if failure_modes else "near_miss_draft"
         anti = _first_or_none(
             session,
             select(AntiPattern).where(AntiPattern.source_gold_voice_example_id == gold.id),
@@ -210,15 +246,18 @@ def upsert_gold_voice_artifacts(
         if not anti:
             anti = AntiPattern(
                 human_id=_human_id("ANTI", _count(session, AntiPattern)),
-                name=failure_modes[0] if failure_modes else "near_miss_draft",
+                name=anti_name,
                 why_wrong="Adam marked this draft as a useful example of what to avoid.",
                 source_gold_voice_example_id=gold.id,
             )
             session.add(anti)
-        anti.name = failure_modes[0] if failure_modes else anti.name
+        anti.name = anti_name
         anti.voice_mode = voice_mode
         anti.examples = [model_draft] if model_draft else []
-        anti.why_wrong = ", ".join(failure_modes) if failure_modes else anti.why_wrong
+        if issue_notes:
+            anti.why_wrong = issue_notes
+        elif failure_modes:
+            anti.why_wrong = ", ".join(failure_modes)
         session.add(anti)
         created["anti_pattern_id"] = anti.id
 

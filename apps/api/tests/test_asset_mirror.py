@@ -45,6 +45,7 @@ def drive_payload() -> dict:
                 "name": "Maine porch photo.jpg",
                 "mime_type": "image/jpeg",
                 "web_view_link": "https://drive.google.com/file/d/drive-file-123/view",
+                "thumbnail_link": "https://lh3.googleusercontent.com/drive-thumbnail-test=s220",
                 "size_bytes": 2048,
                 "md5_checksum": "abc123",
                 "created_time": "2026-04-01T10:00:00Z",
@@ -108,6 +109,10 @@ def test_asset_mirror_upload_creates_local_object_snapshot_and_annotation(tmp_pa
     client, engine = build_client(tmp_path)
     imported = client.post("/api/imports/drive", json=drive_payload()).json()["imported"][0]
 
+    metadata_preview = client.get(f"/api/assets/{imported['asset_id']}/preview", follow_redirects=False)
+    assert metadata_preview.status_code == 307
+    assert metadata_preview.headers["location"] == "https://lh3.googleusercontent.com/drive-thumbnail-test=s220"
+
     response = client.post(
         f"/api/assets/{imported['asset_id']}/mirror/upload",
         data={
@@ -125,6 +130,11 @@ def test_asset_mirror_upload_creates_local_object_snapshot_and_annotation(tmp_pa
     assert body["created"] is True
     assert body["byte_size"] == len(b"hello mirror")
     assert body["object_key"].startswith("source_mirror/google_drive/")
+
+    preview = client.get(f"/api/assets/{imported['asset_id']}/preview")
+    assert preview.status_code == 200
+    assert preview.content == b"hello mirror"
+    assert preview.headers["content-type"] == "image/jpeg"
 
     mirrored_path = tmp_path / "storage" / body["object_key"]
     assert mirrored_path.read_bytes() == b"hello mirror"
@@ -239,7 +249,7 @@ def test_email_mirror_upload_creates_multi_voice_review_task(tmp_path):
         assert task.input_payload["email_headers"]["subject"] == "Re: visit"
         assert "charles_voice_presence" in task.required_decisions
         assert "context_use" in task.required_decisions
-        assert "boundary_rationale" in task.required_decisions
+        assert "privacy_notes" in task.required_decisions
 
 
 def test_html_email_text_extraction_preserves_inline_spacing(tmp_path):

@@ -283,10 +283,9 @@ def _required_decisions_for_source(source_type: str) -> List[str]:
             "charles_email_role",
             "other_voice_roles",
             "context_use",
-            "boundary_rationale",
+            "privacy_notes",
             "usable_for_voice_context",
-            "usable_for_sft",
-            "usable_for_dpo",
+            "usable_for_grounded_generation",
         ]
     return [
         "source_genre",
@@ -297,9 +296,9 @@ def _required_decisions_for_source(source_type: str) -> List[str]:
         "truth_status",
         "voice_presence",
         "adam_context_note",
-        "boundary_rationale",
-        "usable_for_voice_context",
-        "usable_for_grounded_generation",
+        "privacy_level",
+        "privacy_notes",
+        "ready_for_processing",
     ]
 
 

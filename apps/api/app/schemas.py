@@ -263,6 +263,24 @@ class PromptPairBatchResponse(SQLModel):
     annotation_ids: List[str] = Field(default_factory=list)
 
 
+class VisionDraftBatchRequest(SQLModel):
+    limit: int = 10
+    asset_ids: List[str] = Field(default_factory=list)
+    queue: str = "vision_drafts_needing_review"
+    draft_type: str = "photo_metadata"
+    model_name: str = "gpt-4.1-mini"
+    input_detail: str = "low"
+    no_live_model_call: bool = True
+
+
+class VisionDraftBatchResponse(SQLModel):
+    created_count: int
+    skipped_count: int = 0
+    metadata_profile_ids: List[str] = Field(default_factory=list)
+    review_task_ids: List[str] = Field(default_factory=list)
+    skipped_asset_ids: List[str] = Field(default_factory=list)
+
+
 class DatasetBuildRequest(SQLModel):
     export_type: str
     version: str = "v0"

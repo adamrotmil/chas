@@ -73,6 +73,31 @@ curl "http://localhost:8000/api/dataset-exports/jsonl?export_type=sft"
 curl "http://localhost:8000/api/dataset-exports/jsonl?export_type=dpo"
 ```
 
+## Vision Draft Pipeline
+
+The vision pipeline is scaffolded but does not call live model APIs by default. It creates review tasks and `system_inference` draft metadata for photos/scans so Adam can validate, correct, and promote useful fields.
+
+```bash
+# Create no-call vision review tasks for up to 10 photo/scan assets
+curl -X POST http://localhost:8000/api/vision/drafts/batches \
+  -H "Content-Type: application/json" \
+  -d '{"limit":10,"no_live_model_call":true}'
+
+# Inspect the planned structured output schema
+curl http://localhost:8000/api/vision/schema
+```
+
+Future live vision calls should stay disabled until explicitly approved:
+
+```bash
+VISION_LIVE_CALLS_ENABLED=false
+VISION_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+OPENAI_PROJECT_ID=...
+```
+
+See [`docs/vision_pipeline_notes.md`](docs/vision_pipeline_notes.md) for provenance and review rules.
+
 ## Google Drive Setup
 
 The local Google Cloud project currently used for development is:

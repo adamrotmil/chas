@@ -14,6 +14,7 @@ from app.routers import (
     prompt_pairs,
     segments,
     tasks,
+    vision,
     voice,
 )
 
@@ -50,3 +51,4 @@ app.include_router(imports.router, prefix="/api")
 app.include_router(segments.router, prefix="/api")
 app.include_router(metadata_profiles.router, prefix="/api")
 app.include_router(prompt_pairs.router, prefix="/api")
+app.include_router(vision.router, prefix="/api")
