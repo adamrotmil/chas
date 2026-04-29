@@ -266,6 +266,66 @@ class Annotation(IdMixin, table=True):
     )
 
 
+class SourceSpanAnnotation(IdMixin, table=True):
+    __tablename__ = "source_span_annotations"
+
+    task_id: str = Field(foreign_key="tasks.id", index=True)
+    annotation_id: Optional[str] = Field(default=None, foreign_key="annotations.id", index=True)
+    target_type: str = Field(index=True)
+    target_id: str = Field(index=True)
+    source_asset_id: Optional[str] = Field(default=None, foreign_key="assets.id", index=True)
+    source_segment_id: Optional[str] = Field(default=None, foreign_key="segments.id", index=True)
+    start_char: int = Field(index=True)
+    end_char: int = Field(index=True)
+    selected_text: str = Field(sa_column=text_column(nullable=False))
+    span_type: str = Field(default="context", index=True)
+    speaker: Optional[str] = Field(default=None, index=True)
+    code: Optional[str] = Field(default=None, sa_column=text_column())
+    notes: Optional[str] = Field(default=None, sa_column=text_column())
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    created_by: str = Field(default="adam", index=True)
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class TaskReceipt(IdMixin, table=True):
+    __tablename__ = "task_receipts"
+
+    human_id: str = Field(index=True)
+    task_id: str = Field(foreign_key="tasks.id", index=True)
+    annotation_id: str = Field(foreign_key="annotations.id", index=True)
+    task_type: str = Field(index=True)
+    target_type: str = Field(index=True)
+    target_id: str = Field(index=True)
+    created_or_updated: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    downstream_status: str = Field(default="recorded", index=True)
+    boundary_status: str = Field(default="unknown", index=True)
+    blocked_reasons: List[str] = Field(default_factory=list, sa_column=json_column())
+    next_action_label: Optional[str] = None
+    next_queue: Optional[str] = Field(default=None, index=True)
+    summary: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class VoiceMode(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "voice_modes"
+    __table_args__ = (UniqueConstraint("slug", name="uq_voice_modes_slug"),)
+
+    slug: str = Field(index=True)
+    label: str = Field(index=True)
+    description: Optional[str] = Field(default=None, sa_column=text_column())
+    default_system_prompt: str = Field(default="You are Charles Rotmil. Write naturally in his voice.")
+    family: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    created_by: str = Field(default="system", index=True)
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+
+
 class MetadataProfile(IdMixin, TimestampMixin, table=True):
     __tablename__ = "metadata_profiles"
 
@@ -394,6 +454,60 @@ class GoldVoiceExample(IdMixin, table=True):
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
     created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class VoiceReferenceExample(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "voice_reference_examples"
+
+    human_id: str = Field(index=True)
+    source_segment_id: str = Field(foreign_key="segments.id", index=True)
+    source_asset_id: str = Field(foreign_key="assets.id", index=True)
+    source_annotation_id: Optional[str] = Field(default=None, foreign_key="annotations.id", index=True)
+    source_task_id: Optional[str] = Field(default=None, foreign_key="tasks.id", index=True)
+    source_title: Optional[str] = None
+    source_chunk_index: Optional[int] = Field(default=None, index=True)
+    system_prompt: str = Field(default="You are Charles Rotmil.", sa_column=text_column(nullable=False))
+    user_prompt: str = Field(sa_column=text_column(nullable=False))
+    assistant_response: str = Field(sa_column=text_column(nullable=False))
+    messages: List[Dict[str, str]] = Field(default_factory=list, sa_column=json_column())
+    voice_mode: str = Field(default="father_to_adam", index=True)
+    conversation_family: str = Field(default="adam_prompted_memory", index=True)
+    truth_status: str = Field(default="interpretive_synthesis", index=True)
+    quality_status: str = Field(default="reference_ready", index=True)
+    boundary_snapshot: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    tags: List[str] = Field(default_factory=list, sa_column=json_column())
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    status: str = Field(default="active", index=True)
+    created_by: str = Field(default="source_review", index=True)
+
+
+class EmbeddingRecord(IdMixin, table=True):
+    __tablename__ = "embedding_records"
+
+    target_type: str = Field(index=True)
+    target_id: str = Field(index=True)
+    embedding_type: str = Field(default="retrieval_text", index=True)
+    modality: str = Field(default="text", index=True)
+    model_name: str = Field(default="pending", index=True)
+    input_checksum: str = Field(index=True)
+    input_text: str = Field(sa_column=text_column(nullable=False))
+    input_preview: Optional[str] = Field(default=None, sa_column=text_column())
+    vector_dims: Optional[int] = None
+    vector_uri: Optional[str] = None
+    provider_record_id: Optional[str] = None
+    status: str = Field(default="ready_for_embedding", index=True)
+    truth_status: Optional[str] = Field(default=None, index=True)
+    boundary_snapshot: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    created_by: str = Field(default="system", index=True)
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )

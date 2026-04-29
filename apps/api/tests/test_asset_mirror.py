@@ -15,6 +15,7 @@ from app.models import (
     Annotation,
     Asset,
     AssetSnapshot,
+    Boundary,
     ContextPack,
     ContextPackItem,
     DPOPair,
@@ -179,6 +180,113 @@ def test_asset_mirror_upload_creates_local_object_snapshot_and_annotation(tmp_pa
         annotation = session.get(Annotation, body["annotation_id"])
         assert annotation is not None
         assert annotation.annotation_type == "asset_mirrored"
+
+
+def test_direct_artifact_upload_creates_asset_boundary_and_text_review_task(tmp_path):
+    client, engine = build_client(tmp_path)
+
+    response = client.post(
+        "/api/assets/upload",
+        data={"source_system": "local_upload"},
+        files={"file": ("dad-note.txt", b"Hi Adam\n\ncall when you get in\n\ndad", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["human_id"].startswith("UPL_DAD_NOTE_")
+    assert body["asset_type"] == "text"
+    assert body["mirror"]["created"] is True
+    assert body["mirror"]["filename"] == "dad-note.txt"
+    assert body["segment_ids"]
+    assert body["review_task_ids"]
+
+    with Session(engine) as session:
+        asset = session.get(Asset, body["asset_id"])
+        assert asset is not None
+        assert asset.source_system == "local_upload"
+        assert asset.import_status == "mirrored"
+        assert asset.processing_status == "text_extracted"
+
+        boundary = session.get(Boundary, body["boundary_id"])
+        assert boundary is not None
+        assert boundary.privacy_level == "unreviewed"
+
+        review_task = session.get(Task, body["review_task_ids"][0])
+        assert review_task is not None
+        assert review_task.task_type == "text_segment_review"
+        assert review_task.queue == "text_segments_needing_review"
+        assert review_task.input_payload["source_filename"] == "dad-note.txt"
+
+
+def test_direct_yaml_upload_creates_text_review_task(tmp_path):
+    client, engine = build_client(tmp_path)
+    yaml_body = b"""- messages:
+  - role: system
+    content: You are Charles Rotmil.
+  - role: user
+    content: Hi Dad
+  - role: assistant
+    content: |
+      hi adam
+      good to hear from you
+- messages:
+  - role: system
+    content: You are Charles Rotmil.
+  - role: user
+    content: "How is Portland?" -- asked from the road
+  - role: assistant
+    content: |
+      gray here...
+      light rain
+"""
+
+    response = client.post(
+        "/api/assets/upload",
+        data={"source_system": "local_upload"},
+        files={"file": ("charles_sft.yaml", yaml_body, "application/x-yaml")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["asset_type"] == "text"
+    assert len(body["segment_ids"]) == 3
+    assert body["review_task_ids"]
+
+    with Session(engine) as session:
+        asset = session.get(Asset, body["asset_id"])
+        assert asset is not None
+        assert asset.processing_status == "text_extracted"
+
+        chunks = session.exec(
+            select(Segment)
+            .where(Segment.asset_id == asset.id)
+            .where(Segment.segment_type == "text_chunk")
+        ).all()
+        chunks = sorted(chunks, key=lambda chunk: chunk.locator["chunk_index"])
+        assert len(chunks) == 2
+        assert chunks[0].locator["kind"] == "prompt_pair_example"
+        assert chunks[0].metadata_json["chunking_strategy"] == "prompt_pair_yaml"
+        assert chunks[0].metadata_json["role_sequence"] == ["system", "user", "assistant"]
+        assert "Hi Dad" in chunks[0].text_content
+        assert "How is Portland?" not in chunks[0].text_content
+        assert "How is Portland?" in chunks[1].text_content
+
+        derivative = session.exec(
+            select(Derivative)
+            .where(Derivative.asset_id == asset.id)
+            .where(Derivative.derivative_type == "text_extraction")
+        ).first()
+        assert derivative is not None
+        assert derivative.metadata_json["parser"] == "prompt_pair_yaml"
+        assert derivative.metadata_json["prompt_pair_example_count"] == 2
+        assert derivative.metadata_json["prompt_pair_parse_mode"] == "line_block_fallback"
+
+        review_task = session.get(Task, body["review_task_ids"][0])
+        assert review_task is not None
+        assert review_task.task_type == "text_segment_review"
+        assert review_task.input_payload["source_filename"] == "charles_sft.yaml"
+        assert review_task.input_payload["chunk_count"] == 2
+        assert review_task.input_payload["chunking_strategy"] == "prompt_pair_yaml"
 
 
 def test_image_mirror_upload_creates_preview_derivatives(tmp_path):

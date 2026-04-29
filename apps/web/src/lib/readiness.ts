@@ -23,6 +23,14 @@ export function assetIdForTask(task: Task): string | null {
   if (payloadAssetId) {
     return payloadAssetId;
   }
+  const sourcePhotoId = payloadString(task, "source_photo_id");
+  if (sourcePhotoId) {
+    return sourcePhotoId;
+  }
+  const groundingAssetId = payloadString(task, "grounding_asset_id");
+  if (groundingAssetId) {
+    return groundingAssetId;
+  }
   return task.target_type === "asset" ? task.target_id : null;
 }
 
@@ -122,10 +130,13 @@ export function readinessBadgesForTask(task: Task, asset?: Asset): ReadinessBadg
     badges.push({ label: "Export blocked", tone: "danger", tooltip: "This source or artifact is blocked from downstream export." });
   }
   if (task.task_type === "grounded_prompt_pair_candidate") {
-    badges.push({ label: "Pair candidate", tone: "accent", tooltip: "This task can create a no-live-model Prompt Lab review draft." });
+    badges.push({ label: "Pair candidate", tone: "accent", tooltip: "This task can create a natural prompt-pair review draft." });
   }
   if (task.task_type === "gold_voice_edit") {
-    badges.push({ label: "Gold loop", tone: "accent", tooltip: "Adam's edit can become gold voice, DPO, SFT, eval, style-rule, and anti-pattern candidates." });
+    const artifactMode = payloadString(task, "artifact_mode").toUpperCase();
+    if (artifactMode) {
+      badges.push({ label: artifactMode, tone: "accent", tooltip: `Prompt pair artifact mode: ${artifactMode}` });
+    }
   }
   if (task.input_payload.no_live_model_call || task.input_payload.prompt_pair_factory_no_model_call) {
     badges.push({ label: "No model call", tone: "neutral", tooltip: "This draft was scaffolded without sending private source material to a model provider." });

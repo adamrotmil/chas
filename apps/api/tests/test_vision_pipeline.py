@@ -4,7 +4,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.session import get_session
 from app.main import app
-from app.models import Annotation, Asset, Boundary, MetadataProfile, Segment, Task
+from app.models import Annotation, Asset, Boundary, EmbeddingRecord, GalleryItem, Memory, MetadataProfile, Segment, Task, TaskReceipt
 
 
 def build_client():
@@ -147,19 +147,33 @@ def test_vision_review_submission_promotes_profile_and_creates_ocr_segment():
     assert body["annotation_type"] == "vision_draft_review"
     assert body["creates_or_updates"]["metadata_profile_id"]
     assert body["creates_or_updates"]["ocr_segment_id"]
+    assert body["creates_or_updates"]["embedding_record_id"]
+    assert body["creates_or_updates"]["memory_id"]
+    assert body["creates_or_updates"]["memory_embedding_record_id"]
+    assert body["creates_or_updates"]["task_receipt_id"]
+    assert body["creates_or_updates"]["receipt"]["boundary_status"] == "blocked"
+    assert "privacy_level=private_sensitive" in body["creates_or_updates"]["receipt"]["blocked_reasons"]
 
     with Session(engine) as session:
         annotation = session.get(Annotation, body["id"])
         profile = session.get(MetadataProfile, body["creates_or_updates"]["metadata_profile_id"])
         ocr_segment = session.get(Segment, body["creates_or_updates"]["ocr_segment_id"])
+        memory = session.get(Memory, body["creates_or_updates"]["memory_id"])
+        receipt = session.get(TaskReceipt, body["creates_or_updates"]["task_receipt_id"])
+        embedding = session.get(EmbeddingRecord, body["creates_or_updates"]["embedding_record_id"])
+        memory_embedding = session.get(EmbeddingRecord, body["creates_or_updates"]["memory_embedding_record_id"])
 
         assert annotation is not None
         assert profile is not None
         assert profile.metadata_status == "adam_reviewed"
         assert profile.summary == "A handwritten journal page on lined paper."
-        assert profile.adam_context_note == "Potential journal source; needs careful transcription."
+        assert profile.truth_status == "adam_memory"
+        assert "Potential journal source; needs careful transcription." in profile.adam_context_note
+        assert "Question: Who is visible or directly represented here?" in profile.adam_context_note
+        assert "Keep private until journal context is reviewed." in profile.adam_context_note
         assert profile.quality_signals["vision_accuracy"] == "minor_issues"
         assert profile.embedding_hints["question_answers"]["privacy"] == "Keep private until journal context is reviewed."
+        assert profile.raw_profile["adam_review"]["answered_questions"][0]["id"] == "who_is_visible"
         assert profile.raw_profile["rejected_system_inferences"] == ["wrong_person_guess"]
         assert profile.source_annotation_id == annotation.id
         boundary = session.exec(select(Boundary).where(Boundary.target_type == "asset").where(Boundary.target_id == photo_id)).first()
@@ -178,3 +192,95 @@ def test_vision_review_submission_promotes_profile_and_creates_ocr_segment():
         assert ocr_segment.segment_type == "vision_ocr_text"
         assert ocr_segment.source_truth_status == "adam_expert_reconstruction"
         assert "first corrected line" in (ocr_segment.text_content or "")
+        assert memory is not None
+        assert memory.truth_status == "adam_memory"
+        assert "handwritten journal page" in memory.summary
+        assert embedding is not None
+        assert embedding.status == "ready_for_embedding"
+        assert embedding.embedding_type == "retrieval_text"
+        assert memory_embedding is not None
+        assert memory_embedding.embedding_type == "memory_text"
+        assert receipt is not None
+        assert receipt.downstream_status == "blocked"
+
+
+def test_photo_context_submission_creates_memory_gallery_and_receipt():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        photo = Asset(
+            human_id="ASSET_PHOTO_CONTEXT",
+            asset_type="photo",
+            title="Market Street breakfast",
+            original_filename="market-breakfast.jpg",
+            mime_type="image/jpeg",
+        )
+        session.add(photo)
+        session.flush()
+        task = Task(
+            human_id="TASK_PHOTO_CONTEXT",
+            task_type="photo_context",
+            target_type="asset",
+            target_id=photo.id,
+            queue="photo_assets_needing_context",
+            input_payload={"asset_id": photo.id, "asset_title": photo.title, "asset_type": "photo"},
+            required_decisions=["visible_people", "place", "invisible_context_note", "privacy_level", "ready_for_downstream"],
+            created_by="test",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "visible_people": ["Adam", "Charles"],
+                "absent_but_relevant_people": ["Cathryn"],
+                "place": "Market Street, Portland",
+                "date_or_range": "1980s",
+                "date_confidence": "decade",
+                "event": "breakfast",
+                "visual_description_correction": "Breakfast on the white table at Market Street.",
+                "invisible_context_note": "The brie stayed out all weekend; the food was a ceremony.",
+                "memory_potential": 5,
+                "privacy_sensitivity": 2,
+                "gallery_eligibility": "family_private",
+                "privacy_level": "family_private",
+                "privacy_notes": "Family-memory safe, not public.",
+                "ready_for_downstream": "yes",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    created = body["creates_or_updates"]
+    assert created["metadata_profile_id"]
+    assert created["boundary_id"]
+    assert created["memory_id"]
+    assert created["gallery_item_id"]
+    assert created["embedding_record_id"]
+    assert created["memory_embedding_record_id"]
+    assert created["receipt"]["boundary_status"] == "passed"
+
+    with Session(engine) as session:
+        profile = session.get(MetadataProfile, created["metadata_profile_id"])
+        boundary = session.get(Boundary, created["boundary_id"])
+        memory = session.get(Memory, created["memory_id"])
+        gallery_item = session.get(GalleryItem, created["gallery_item_id"])
+        receipt = session.get(TaskReceipt, created["task_receipt_id"])
+
+        assert profile is not None
+        assert profile.profile_type == "photo_memory"
+        assert profile.truth_status == "adam_memory"
+        assert "Cathryn" in profile.people
+        assert boundary is not None
+        assert boundary.retrievable_in_chat is True
+        assert boundary.usable_for_gallery_family is True
+        assert memory is not None
+        assert memory.maturity_level == "L3_reviewed"
+        assert gallery_item is not None
+        assert gallery_item.gallery_scope == "family_private"
+        assert receipt is not None
+        assert receipt.next_action_label == "Use photo metadata in retrieval/context packs"

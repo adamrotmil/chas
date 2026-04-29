@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, Optional, Type, TypeVar
 
 from sqlmodel import Session, select
@@ -616,6 +617,9 @@ def seed_gallery(session: Session, assets: Dict[str, Asset], graph: Dict[str, An
 
 
 def seed() -> None:
+    seed_demo = os.getenv("CHARLESOPS_SEED_DEMO_DATA", "false").strip().lower() in {"1", "true", "yes", "on"}
+    if not seed_demo:
+        return
     with Session(engine) as session:
         assets = seed_assets(session)
         graph = seed_memory_graph(session, assets)

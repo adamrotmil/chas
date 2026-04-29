@@ -3,11 +3,29 @@ import type {
   Asset,
   AssetDossier,
   AssetMirrorResponse,
+  PhotoReviewInventory,
+  PhotoContextReviewPack,
+  PhotoContextReviewSession,
+  PhotoContextReviewSessionPlan,
+  PhotoContextRetrievalGapFieldWorklist,
+  PhotoContextRetrievalGapPayoffPreview,
+  PhotoContextSessionProgress,
+  PhotoContextSubmitProjection,
+  PhotoContextTopSlice,
+  PhotoReviewPrioritySummary,
+  AssetUploadResponse,
   ContextPack,
   ContextPackBuildRequest,
   ContextPackBuildResponse,
   DatasetExport,
   DatasetExportDryRun,
+  DemoGenerationBatchResponse,
+  DemoGenerationReadiness,
+  DpoRejectedReasonRepairPacket,
+  DpoRejectedReasonRepairProjection,
+  DownstreamArtifactAudit,
+  DownstreamArtifactManifest,
+  DownstreamBottleneckQueue,
   DriveFileImport,
   DriveImportRecord,
   DriveImportResponse,
@@ -15,10 +33,31 @@ import type {
   EntityCreate,
   GoldVoiceExample,
   Memory,
+  ModelStatus,
+  MorningHandoff,
+  PhotoContextTaskCreateResponse,
+  PhotoMemoryCorpusResponse,
+  PhotoMemoryDraftResponse,
+  ReviewedPhotoMemoryDemoReadiness,
+  PhotoMemoryVectorHandoffExport,
+  PhotoPromptPairCandidateResponse,
+  PromptPairAudit,
+  PromptPairAuditPack,
+  PromptPairHeldCandidatePack,
+  PromptPairPreflightExportGate,
+  PromptPairReferencePack,
+  PromptPairReviewProgress,
+  PromptPairTopBlockerReviewSessionPlan,
+  PromptPairTopBlockerSlice,
   PromptPairBatchResponse,
+  RetrievalGapReviewSlice,
+  RetrievalSearchResponse,
+  ReviewedPhotoGalleryResponse,
   Segment,
+  SourcePairGenerationPreview,
   Task,
   TaskDraft,
+  VoiceMode,
   VisionDraftBatchResponse
 } from "./types";
 
@@ -46,6 +85,236 @@ export function getAssets(): Promise<Asset[]> {
   return request<Asset[]>("/assets");
 }
 
+export function getPhotoReviewInventory(limit = 100): Promise<PhotoReviewInventory> {
+  return request<PhotoReviewInventory>(`/assets/photo-review-inventory?limit=${limit}`);
+}
+
+export function getPhotoContextReviewPack(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100
+): Promise<PhotoContextReviewPack> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<PhotoContextReviewPack>(`/assets/photo-context-review-pack?${params.toString()}`);
+}
+
+export function getPhotoContextTopSlice(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 5
+): Promise<PhotoContextTopSlice> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<PhotoContextTopSlice>(`/assets/photo-context-review-pack/top-context-slice?${params.toString()}`);
+}
+
+export function getPhotoContextReviewSessionPlan(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 5,
+  sourceQuery = "airplane in Maine"
+): Promise<PhotoContextReviewSessionPlan> {
+  const params = new URLSearchParams({ scope, limit: String(limit), source_query: sourceQuery });
+  return request<PhotoContextReviewSessionPlan>(`/assets/photo-context-review-pack/review-session-plan?${params.toString()}`);
+}
+
+export function getPhotoContextReviewSessionPlanYamlUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 5,
+  sourceQuery = "airplane in Maine"
+): string {
+  const params = new URLSearchParams({ scope, limit: String(limit), source_query: sourceQuery });
+  return `${API_BASE}/assets/photo-context-review-pack/review-session-plan/yaml?${params.toString()}`;
+}
+
+export function createPhotoContextReviewSession(limit = 5, dryRun = true, sourceQuery = "airplane in Maine"): Promise<PhotoContextReviewSession> {
+  const params = new URLSearchParams({
+    scope: "family_private",
+    limit: String(limit),
+    dry_run: String(dryRun),
+    source_query: sourceQuery
+  });
+  return request<PhotoContextReviewSession>(`/assets/photo-context-review-pack/review-session?${params.toString()}`, {
+    method: "POST"
+  });
+}
+
+export function previewPhotoContextSubmitProjection(
+  taskId: string,
+  decisions: Record<string, unknown>
+): Promise<PhotoContextSubmitProjection> {
+  return request<PhotoContextSubmitProjection>(`/tasks/${taskId}/photo-context/projection`, {
+    method: "POST",
+    body: JSON.stringify({ decisions })
+  });
+}
+
+export function previewSourcePairGeneration(
+  taskId: string,
+  decisions: Record<string, unknown>
+): Promise<SourcePairGenerationPreview> {
+  return request<SourcePairGenerationPreview>(`/tasks/${taskId}/pair-generation/preview`, {
+    method: "POST",
+    body: JSON.stringify({ decisions })
+  });
+}
+
+export function getPhotoContextSessionProgress(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100
+): Promise<PhotoContextSessionProgress> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<PhotoContextSessionProgress>(`/assets/photo-context-review-pack/session-progress?${params.toString()}`);
+}
+
+export function getPhotoContextSessionProgressUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100
+): string {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return `${API_BASE}/assets/photo-context-review-pack/session-progress/artifact?${params.toString()}`;
+}
+
+export function getPhotoContextRetrievalGapFieldWorklist(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100
+): Promise<PhotoContextRetrievalGapFieldWorklist> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<PhotoContextRetrievalGapFieldWorklist>(
+    `/assets/photo-context-review-pack/retrieval-gap-field-worklist?${params.toString()}`
+  );
+}
+
+export function getPhotoContextRetrievalGapFieldWorklistYamlUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100
+): string {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return `${API_BASE}/assets/photo-context-review-pack/retrieval-gap-field-worklist/yaml?${params.toString()}`;
+}
+
+export function getPhotoContextRetrievalGapPayoffPreview(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 10
+): Promise<PhotoContextRetrievalGapPayoffPreview> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<PhotoContextRetrievalGapPayoffPreview>(
+    `/assets/photo-context-review-pack/retrieval-gap-payoff-preview?${params.toString()}`
+  );
+}
+
+export function getPhotoContextRetrievalGapPayoffPreviewYamlUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 10
+): string {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return `${API_BASE}/assets/photo-context-review-pack/retrieval-gap-payoff-preview/yaml?${params.toString()}`;
+}
+
+export function getPhotoReviewPriority(
+  focus: "all" | "fastest_vector" = "fastest_vector",
+  limit = 50
+): Promise<PhotoReviewPrioritySummary> {
+  const params = new URLSearchParams({ focus, limit: String(limit) });
+  return request<PhotoReviewPrioritySummary>(`/assets/photo-review-priority?${params.toString()}`);
+}
+
+export function getDownstreamBottlenecks(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 4
+): Promise<DownstreamBottleneckQueue> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<DownstreamBottleneckQueue>(`/downstream-readiness/bottlenecks?${params.toString()}`);
+}
+
+export function getDownstreamArtifactManifest(
+  scope: "public" | "family_private" | "private" = "family_private",
+  promptSampleLimit = 200,
+  vectorLimit = 20
+): Promise<DownstreamArtifactManifest> {
+  const params = new URLSearchParams({
+    scope,
+    prompt_sample_limit: String(promptSampleLimit),
+    vector_limit: String(vectorLimit)
+  });
+  return request<DownstreamArtifactManifest>(`/downstream-readiness/artifact-manifest?${params.toString()}`);
+}
+
+export function getDownstreamArtifactManifestUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  promptSampleLimit = 200,
+  vectorLimit = 20
+): string {
+  const params = new URLSearchParams({
+    scope,
+    prompt_sample_limit: String(promptSampleLimit),
+    vector_limit: String(vectorLimit)
+  });
+  return `${API_BASE}/downstream-readiness/artifact-manifest?${params.toString()}`;
+}
+
+export function getDownstreamArtifactAudit(
+  scope: "public" | "family_private" | "private" = "family_private",
+  promptSampleLimit = 200,
+  vectorLimit = 20
+): Promise<DownstreamArtifactAudit> {
+  const params = new URLSearchParams({
+    scope,
+    prompt_sample_limit: String(promptSampleLimit),
+    vector_limit: String(vectorLimit)
+  });
+  return request<DownstreamArtifactAudit>(`/downstream-readiness/artifact-audit?${params.toString()}`);
+}
+
+export function getMorningHandoff(
+  scope: "public" | "family_private" | "private" = "family_private",
+  promptSampleLimit = 200,
+  vectorLimit = 20,
+  bottleneckLimit = 4,
+  retrievalGapQuery = "airplane in Maine"
+): Promise<MorningHandoff> {
+  const params = new URLSearchParams({
+    scope,
+    prompt_sample_limit: String(promptSampleLimit),
+    vector_limit: String(vectorLimit),
+    bottleneck_limit: String(bottleneckLimit),
+    retrieval_gap_query: retrievalGapQuery
+  });
+  return request<MorningHandoff>(`/downstream-readiness/morning-handoff?${params.toString()}`);
+}
+
+export function getMorningHandoffYamlUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  promptSampleLimit = 200,
+  vectorLimit = 20,
+  bottleneckLimit = 4,
+  retrievalGapQuery = "airplane in Maine"
+): string {
+  const params = new URLSearchParams({
+    scope,
+    prompt_sample_limit: String(promptSampleLimit),
+    vector_limit: String(vectorLimit),
+    bottleneck_limit: String(bottleneckLimit),
+    retrieval_gap_query: retrievalGapQuery
+  });
+  return `${API_BASE}/downstream-readiness/morning-handoff.yaml?${params.toString()}`;
+}
+
+export function createPhotoContextTaskFromInventory(payload: {
+  asset_id?: string;
+  group_key?: string;
+  use_canonical?: boolean;
+  source_query?: string;
+  candidate_match_quality?: string;
+  candidate_selection_reason?: string;
+  session_sequence_number?: number;
+  session_selected_count?: number;
+  session_plan_content_sha256?: string;
+  session_completion_signal?: string;
+  session_review_policy?: string;
+}): Promise<PhotoContextTaskCreateResponse> {
+  return request<PhotoContextTaskCreateResponse>("/assets/photo-review-inventory/context-task", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getAssetPreviewUrl(assetId: string, variant: "thumbnail" | "display" | "original" = "display"): string {
   return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview?variant=${encodeURIComponent(variant)}`;
 }
@@ -54,12 +323,42 @@ export function getAssetDossier(assetId: string): Promise<AssetDossier> {
   return request<AssetDossier>(`/assets/${encodeURIComponent(assetId)}/dossier`);
 }
 
+export async function uploadArtifact(file: File, title?: string): Promise<AssetUploadResponse> {
+  const formData = new FormData();
+  formData.set("file", file, file.name || "uploaded_artifact");
+  formData.set("source_system", "local_upload");
+  if (title?.trim()) {
+    formData.set("title", title.trim());
+  }
+
+  const response = await fetch(`${API_BASE}/assets/upload`, {
+    method: "POST",
+    body: formData,
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Request failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<AssetUploadResponse>;
+}
+
 export function getTasks(): Promise<Task[]> {
   return request<Task[]>("/tasks");
 }
 
-export function getAssetTextChunks(assetId: string): Promise<Segment[]> {
-  return request<Segment[]>(`/segments?asset_id=${encodeURIComponent(assetId)}&segment_type=text_chunk&limit=500`);
+export function getAssetTextChunks(assetId: string, textExtractionDerivativeId?: string): Promise<Segment[]> {
+  const params = new URLSearchParams({
+    asset_id: assetId,
+    segment_type: "text_chunk",
+    limit: "1000"
+  });
+  if (textExtractionDerivativeId) {
+    params.set("text_extraction_derivative_id", textExtractionDerivativeId);
+  }
+  return request<Segment[]>(`/segments?${params.toString()}`);
 }
 
 export function getMemories(): Promise<Memory[]> {
@@ -79,6 +378,23 @@ export function createEntity(payload: EntityCreate): Promise<Entity> {
 
 export function getGoldVoiceExamples(): Promise<GoldVoiceExample[]> {
   return request<GoldVoiceExample[]>("/gold-voice-examples");
+}
+
+export function getVoiceModes(): Promise<VoiceMode[]> {
+  return request<VoiceMode[]>("/voice-modes");
+}
+
+export function createVoiceMode(payload: {
+  label: string;
+  slug?: string;
+  description?: string;
+  default_system_prompt?: string;
+  family?: string;
+}): Promise<VoiceMode> {
+  return request<VoiceMode>("/voice-modes", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function getContextPacks(): Promise<ContextPack[]> {
@@ -112,6 +428,172 @@ export function getDatasetJsonlUrl(exportType: "sft" | "dpo"): string {
   return `${API_BASE}/dataset-exports/jsonl?export_type=${encodeURIComponent(exportType)}`;
 }
 
+export function getModelStatus(): Promise<ModelStatus> {
+  return request<ModelStatus>("/model-status");
+}
+
+export function getDemoGenerationReadiness(limit = 5): Promise<DemoGenerationReadiness> {
+  return request<DemoGenerationReadiness>(`/model-status/demo-readiness?limit=${limit}`);
+}
+
+export function createDemoGenerations(limit = 5): Promise<DemoGenerationBatchResponse> {
+  return request<DemoGenerationBatchResponse>("/model-status/demo-generations", {
+    method: "POST",
+    body: JSON.stringify({ limit })
+  });
+}
+
+export function getPromptPairAudit(sampleLimit = 20): Promise<PromptPairAudit> {
+  return request<PromptPairAudit>(`/prompt-pairs/audit?sample_limit=${sampleLimit}`);
+}
+
+export function getPromptPairReviewProgress(): Promise<PromptPairReviewProgress> {
+  return request<PromptPairReviewProgress>("/prompt-pairs/review-progress");
+}
+
+export function getPromptPairAuditPack(sampleLimit = 20): Promise<PromptPairAuditPack> {
+  return request<PromptPairAuditPack>(`/prompt-pairs/audit-pack?sample_limit=${sampleLimit}`);
+}
+
+export function getPromptPairHeldCandidates(limit = 30): Promise<PromptPairHeldCandidatePack> {
+  return request<PromptPairHeldCandidatePack>(`/prompt-pairs/held-candidates?limit=${limit}`);
+}
+
+export function getPromptPairTopBlockerSlice(limit = 5): Promise<PromptPairTopBlockerSlice> {
+  return request<PromptPairTopBlockerSlice>(`/prompt-pairs/top-blocker-slice?limit=${limit}`);
+}
+
+export function getPromptPairTopBlockerReviewSessionPlan(limit = 5): Promise<PromptPairTopBlockerReviewSessionPlan> {
+  return request<PromptPairTopBlockerReviewSessionPlan>(`/prompt-pairs/top-blocker-review-session-plan?limit=${limit}`);
+}
+
+export function getDpoRejectedReasonRepairPacket(limit = 25): Promise<DpoRejectedReasonRepairPacket> {
+  return request<DpoRejectedReasonRepairPacket>(`/prompt-pairs/dpo-rejected-reason-repair-pack?limit=${limit}`);
+}
+
+export function getDpoRejectedReasonRepairPacketYamlUrl(limit = 25): string {
+  return `${API_BASE}/prompt-pairs/dpo-rejected-reason-repair-pack/yaml?limit=${encodeURIComponent(String(limit))}`;
+}
+
+export function getDpoRejectedReasonRepairProjection(taskId?: string): Promise<DpoRejectedReasonRepairProjection> {
+  const params = new URLSearchParams();
+  if (taskId) {
+    params.set("task_id", taskId);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return request<DpoRejectedReasonRepairProjection>(`/prompt-pairs/dpo-rejected-reason-repair-projection${suffix}`);
+}
+
+export function getPromptPairAuditPackMarkdownUrl(sampleLimit = 200): string {
+  return `${API_BASE}/prompt-pairs/audit-pack/markdown?sample_limit=${encodeURIComponent(String(sampleLimit))}`;
+}
+
+export function preflightPromptPairExportGate(payload: Record<string, unknown>): Promise<PromptPairPreflightExportGate> {
+  return request<PromptPairPreflightExportGate>("/prompt-pairs/preflight-export-gate", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getPromptPairReferencePack(sampleLimit = 200): Promise<PromptPairReferencePack> {
+  return request<PromptPairReferencePack>(`/prompt-pairs/reference-pack?sample_limit=${sampleLimit}`);
+}
+
+export function getPromptPairReferencePackJsonlUrl(sampleLimit = 200): string {
+  return `${API_BASE}/prompt-pairs/reference-pack/jsonl?sample_limit=${encodeURIComponent(String(sampleLimit))}`;
+}
+
+export function getPromptPairReferencePackMarkdownUrl(sampleLimit = 200): string {
+  return `${API_BASE}/prompt-pairs/reference-pack/markdown?sample_limit=${encodeURIComponent(String(sampleLimit))}`;
+}
+
+export function searchRetrieval(
+  query: string,
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 3
+): Promise<RetrievalSearchResponse> {
+  const params = new URLSearchParams({ q: query, scope, limit: String(limit) });
+  return request<RetrievalSearchResponse>(`/retrieval/search?${params.toString()}`);
+}
+
+export function getRetrievalGapReviewSlice(
+  query: string,
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 5
+): Promise<RetrievalGapReviewSlice> {
+  const params = new URLSearchParams({ q: query, scope, limit: String(limit) });
+  return request<RetrievalGapReviewSlice>(`/retrieval/gap-review-slice?${params.toString()}`);
+}
+
+export function getPhotoMemoryCorpus(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100,
+  includeMachineDrafts = false
+): Promise<PhotoMemoryCorpusResponse> {
+  const params = new URLSearchParams({ scope, limit: String(limit), include_machine_drafts: String(includeMachineDrafts) });
+  return request<PhotoMemoryCorpusResponse>(`/retrieval/photo-memory-corpus?${params.toString()}`);
+}
+
+export function getPhotoMemoryVectorHandoff(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100,
+  includeMachineDrafts = false
+): Promise<PhotoMemoryVectorHandoffExport> {
+  const params = new URLSearchParams({ scope, limit: String(limit), include_machine_drafts: String(includeMachineDrafts) });
+  return request<PhotoMemoryVectorHandoffExport>(`/retrieval/photo-memory-corpus/export?${params.toString()}`);
+}
+
+export function getPhotoMemoryVectorHandoffJsonlUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100,
+  includeMachineDrafts = false
+): string {
+  const params = new URLSearchParams({ scope, limit: String(limit), include_machine_drafts: String(includeMachineDrafts) });
+  return `${API_BASE}/retrieval/photo-memory-corpus/export.jsonl?${params.toString()}`;
+}
+
+export function getPhotoMemoryVectorHandoffManifestUrl(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100,
+  includeMachineDrafts = false
+): string {
+  const params = new URLSearchParams({ scope, limit: String(limit), include_machine_drafts: String(includeMachineDrafts) });
+  return `${API_BASE}/retrieval/photo-memory-corpus/export.manifest?${params.toString()}`;
+}
+
+export function getReviewedPhotoMemoryDemoReadiness(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 5
+): Promise<ReviewedPhotoMemoryDemoReadiness> {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  return request<ReviewedPhotoMemoryDemoReadiness>(
+    `/retrieval/photo-memory-corpus/reviewed-demo-readiness?${params.toString()}`
+  );
+}
+
+export function getReviewedPhotoGallery(
+  scope: "public" | "family_private" = "family_private",
+  limit = 24,
+  includeDrafts = false
+): Promise<ReviewedPhotoGalleryResponse> {
+  const params = new URLSearchParams({ scope, limit: String(limit), include_drafts: String(includeDrafts) });
+  return request<ReviewedPhotoGalleryResponse>(`/gallery/reviewed-photos?${params.toString()}`);
+}
+
+export function createPhotoMemoryDrafts(limit = 5, dryRun = true): Promise<PhotoMemoryDraftResponse> {
+  return request<PhotoMemoryDraftResponse>(
+    `/photo-memory-drafts?limit=${limit}&dry_run=${dryRun}`,
+    { method: "POST" }
+  );
+}
+
+export function createPhotoPromptPairCandidates(limit = 5, dryRun = true): Promise<PhotoPromptPairCandidateResponse> {
+  return request<PhotoPromptPairCandidateResponse>(
+    `/photo-memory-drafts/prompt-pair-candidates?limit=${limit}&dry_run=${dryRun}`,
+    { method: "POST" }
+  );
+}
+
 export interface PromptPairBatchOptions {
   limit?: number;
   queue?: string;
@@ -120,6 +602,9 @@ export interface PromptPairBatchOptions {
   truth_mode?: string;
   target_response_shape?: string;
   boundary_clearance_needed?: string;
+  conversation_family?: string;
+  system_prompt?: string;
+  no_live_model_call?: boolean;
 }
 
 export function createPromptPairBatch(options: PromptPairBatchOptions | number = 10): Promise<PromptPairBatchResponse> {

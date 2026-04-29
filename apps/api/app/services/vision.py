@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from app.models import Asset, Boundary, MetadataProfile, Segment, Task, utcnow
+from app.services.photo_memory import promote_photo_profile_downstream
 
 
 VISION_DRAFT_SCHEMA: Dict[str, Any] = {
@@ -114,6 +115,56 @@ def _string_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _suggested_questions(task: Task) -> List[Dict[str, Any]]:
+    questions = task.input_payload.get("suggested_questions")
+    if not isinstance(questions, list):
+        return []
+    return [question for question in questions if isinstance(question, dict)]
+
+
+def _question_answer_rows(task: Task, decisions: Dict[str, Any]) -> List[Dict[str, str]]:
+    answers = decisions.get("question_answers")
+    if not isinstance(answers, dict):
+        return []
+    question_by_id = {
+        str(question.get("id") or f"question_{index + 1}"): str(question.get("question") or f"Question {index + 1}")
+        for index, question in enumerate(_suggested_questions(task))
+    }
+    rows: List[Dict[str, str]] = []
+    for key, value in answers.items():
+        answer = str(value or "").strip()
+        if not answer:
+            continue
+        question_id = str(key)
+        rows.append(
+            {
+                "id": question_id,
+                "question": question_by_id.get(question_id, question_id),
+                "answer": answer,
+            }
+        )
+    return rows
+
+
+def _question_answer_context(rows: List[Dict[str, str]]) -> str:
+    return "\n\n".join(
+        f"Question: {row['question']}\nAnswer: {row['answer']}"
+        for row in rows
+        if row.get("question") and row.get("answer")
+    )
+
+
+def _derive_reviewed_truth_status(decisions: Dict[str, Any], *, adam_context: str, description: str) -> str:
+    explicit = _string(decisions.get("truth_status"))
+    if explicit and explicit not in {"system_inference", "model_generated"}:
+        return explicit
+    if adam_context.strip():
+        return "adam_memory"
+    if description.strip() and _string(decisions.get("vision_accuracy"), "not_applicable") != "rejected":
+        return "adam_inference"
+    return explicit or "system_inference"
 
 
 def _truthy(value: Any) -> bool:
@@ -345,17 +396,33 @@ def upsert_vision_review_artifacts(
 
     raw_profile = dict(profile.raw_profile or {})
     question_answers = decisions.get("question_answers") if isinstance(decisions.get("question_answers"), dict) else {}
+    question_answer_rows = _question_answer_rows(task, decisions)
+    question_answer_context = _question_answer_context(question_answer_rows)
     accepted_tags = _string_list(decisions.get("accepted_tags"))
     rejected_inferences = _string_list(decisions.get("rejected_system_inferences"))
     corrected_ocr = _string(decisions.get("corrected_ocr_text"))
     ocr_review_status = _string(decisions.get("ocr_review_status"), "not_present")
     ocr_truth_status = _string(decisions.get("ocr_truth_status"), "system_inference")
+    description = _string(decisions.get("accepted_visual_description"), profile.summary or "")
+    adam_context = "\n\n".join(
+        part
+        for part in [
+            _string(decisions.get("adam_context_note")) or _string(decisions.get("invisible_context_note")),
+            question_answer_context,
+        ]
+        if part
+    )
+    ocr_context = (
+        f"Vision OCR/handwriting ({ocr_review_status}):\n{corrected_ocr}"
+        if corrected_ocr and ocr_review_status != "not_present"
+        else ""
+    )
 
     profile.metadata_status = "adam_reviewed"
     profile.title = _string(decisions.get("title"), profile.title or task.human_id)
-    profile.summary = _string(decisions.get("accepted_visual_description"), profile.summary or "")
-    profile.adam_context_note = _string(decisions.get("adam_context_note"))
-    profile.truth_status = _string(decisions.get("truth_status"), "system_inference")
+    profile.summary = description
+    profile.adam_context_note = adam_context
+    profile.truth_status = _derive_reviewed_truth_status(decisions, adam_context=adam_context, description=description)
     profile.source_genre = _string(decisions.get("source_genre"), profile.source_genre or "photo")
     profile.voice_presence = _string(decisions.get("voice_presence"), "absent")
     profile.date_label = _string(decisions.get("date_or_range"))
@@ -365,7 +432,11 @@ def upsert_vision_review_artifacts(
     profile.themes = _string_list(decisions.get("themes")) or accepted_tags
     profile.concrete_objects = _string_list(decisions.get("concrete_objects"))
     profile.open_questions = _string_list(decisions.get("remaining_questions"))
-    profile.retrieval_notes = _string(decisions.get("retrieval_notes")) or _string(decisions.get("adam_context_note"))
+    profile.retrieval_notes = "\n\n".join(
+        part
+        for part in [_string(decisions.get("retrieval_notes")), adam_context, ocr_context]
+        if part
+    )
     profile.training_notes = "Vision metadata is review/context material, not voice training text by itself."
     profile.quality_signals = {
         **(profile.quality_signals or {}),
@@ -386,6 +457,8 @@ def upsert_vision_review_artifacts(
             **decisions,
             "source_annotation_id": annotation_id,
             "question_answers": question_answers,
+            "answered_questions": question_answer_rows,
+            "question_answer_context": question_answer_context,
         },
         "rejected_system_inferences": rejected_inferences,
     }
@@ -433,6 +506,18 @@ def upsert_vision_review_artifacts(
         asset.maturity_level = "L3_reviewed" if ready_for_downstream and not redaction_required else "L2_needs_review"
         asset.updated_at = utcnow()
         session.add(asset)
+
+    downstream = promote_photo_profile_downstream(
+        session=session,
+        profile=profile,
+        asset=asset,
+        boundary=boundary,
+        annotation_id=annotation_id,
+        ready_for_downstream=ready_for_downstream,
+    )
+    creates.update({key: value for key, value in downstream.items() if value})
+    for key in ["vector_handoff_status", "vector_handoff_reason", "vector_handoff_record_id"]:
+        creates[key] = downstream.get(key)
 
     if corrected_ocr and ocr_review_status != "not_present":
         candidate_segments = session.exec(

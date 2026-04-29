@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 from sqlmodel import Session, select
 
 from app.models import Boundary, MetadataProfile, Segment, Task, utcnow
+from app.services.embeddings import upsert_profile_embedding
+from app.services.voice_references import upsert_voice_reference_examples_for_chunks
 
 
 def _truthy(value: Any) -> bool:
@@ -51,6 +53,32 @@ def _locator_sort_value(segment: Segment, key: str, fallback: int) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return fallback
+
+
+def _parse_chunk_index_ranges(value: Any) -> List[tuple[int, int]]:
+    if not isinstance(value, str):
+        return []
+    ranges: List[tuple[int, int]] = []
+    for part in value.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "-" in item:
+            start_text, end_text = item.split("-", 1)
+        else:
+            start_text = end_text = item
+        if not start_text.strip().isdigit() or not end_text.strip().isdigit():
+            continue
+        start = int(start_text.strip())
+        end = int(end_text.strip())
+        if start <= 0 or end <= 0:
+            continue
+        ranges.append((min(start, end), max(start, end)))
+    return ranges
+
+
+def _chunk_index_in_ranges(chunk_index: int, ranges: List[tuple[int, int]]) -> bool:
+    return any(start <= chunk_index <= end for start, end in ranges)
 
 
 def _safe_decision_profile(decisions: Dict[str, Any]) -> Dict[str, Any]:
@@ -261,6 +289,22 @@ def _default_selected_chunk_ids(session: Session, segment: Segment) -> List[str]
         .where(Segment.asset_id == segment.asset_id)
         .where(Segment.segment_type == "text_chunk")
     ).all()
+    segment_metadata = segment.metadata_json if isinstance(segment.metadata_json, dict) else {}
+    segment_locator = segment.locator if isinstance(segment.locator, dict) else {}
+    extraction_derivative_id = segment_metadata.get("text_extraction_derivative_id") or segment_locator.get(
+        "text_extraction_derivative_id"
+    )
+    if extraction_derivative_id:
+        scoped_chunks = []
+        for chunk in chunks:
+            chunk_metadata = chunk.metadata_json if isinstance(chunk.metadata_json, dict) else {}
+            chunk_locator = chunk.locator if isinstance(chunk.locator, dict) else {}
+            if (
+                chunk_metadata.get("text_extraction_derivative_id") == extraction_derivative_id
+                or chunk_locator.get("text_extraction_derivative_id") == extraction_derivative_id
+            ):
+                scoped_chunks.append(chunk)
+        chunks = scoped_chunks
     chunks = sorted(
         chunks,
         key=lambda chunk: (_locator_sort_value(chunk, "chunk_index", 0), chunk.created_at, chunk.id),
@@ -307,7 +351,24 @@ def _create_prompt_pair_candidate_task(
             "segment_boundary_task_id": source_task.id,
             "asset_id": segment.asset_id,
             "segment_id": segment.id,
+            "source_title": source_task.input_payload.get("source_title") or source_task.input_payload.get("asset_title"),
+            "source_filename": source_task.input_payload.get("source_filename"),
+            "source_mime_type": source_task.input_payload.get("source_mime_type"),
+            "chunk_count": source_task.input_payload.get("chunk_count"),
+            "chunking_strategy": source_task.input_payload.get("chunking_strategy"),
+            "extraction_parser": source_task.input_payload.get("extraction_parser"),
+            "text_extraction_derivative_id": source_task.input_payload.get("text_extraction_derivative_id"),
             "selected_chunk_ids": selected_chunk_ids,
+            "pairing_ready_chunk_ids": decisions.get("pairing_ready_chunk_ids", []),
+            "needs_adam_edit_chunk_ids": decisions.get("needs_adam_edit_chunk_ids", []),
+            "chunk_quality_profile": decisions.get("chunk_quality_profile"),
+            "ready_reference_chunk_range": decisions.get("ready_reference_chunk_range")
+            or decisions.get("pairing_ready_chunk_range"),
+            "needs_adam_edit_chunk_range": decisions.get("needs_adam_edit_chunk_range"),
+            "ready_reference_truth_status": decisions.get("ready_reference_truth_status"),
+            "needs_adam_edit_truth_status": decisions.get("needs_adam_edit_truth_status"),
+            "chunk_quality_notes": decisions.get("chunk_quality_notes"),
+            "pairing_gate": decisions.get("pairing_gate"),
             "source_genre": decisions.get("source_genre"),
             "authorship": decisions.get("authorship"),
             "creator_entity_ids": decisions.get("creator_entity_ids", []),
@@ -371,6 +432,8 @@ def _create_segment_boundary_review_task(
         "source_type": payload.get("source_type"),
         "source_mime_type": payload.get("source_mime_type"),
         "chunk_count": payload.get("chunk_count"),
+        "chunking_strategy": payload.get("chunking_strategy"),
+        "text_extraction_derivative_id": payload.get("text_extraction_derivative_id"),
         "total_chars": payload.get("total_chars"),
         "source_genre": decisions.get("source_genre"),
         "authorship": decisions.get("authorship"),
@@ -468,6 +531,13 @@ def upsert_source_review_artifacts(
         selected_chunk_ids=selected_chunk_ids,
         chunk_scope=chunk_scope,
     )
+    embedding = upsert_profile_embedding(
+        session=session,
+        profile=metadata_profile,
+        target_boundary_type="segment",
+        target_boundary_id=segment.id,
+        metadata={"source": "source_review"},
+    )
     boundary_review_task = _create_segment_boundary_review_task(
         session,
         source_task=task,
@@ -483,6 +553,7 @@ def upsert_source_review_artifacts(
         "reviewed_chunk_ids": [],
         "boundary_id": boundary.id,
         "metadata_profile_id": metadata_profile.id,
+        "embedding_record_id": embedding.id if embedding else None,
         "segment_boundary_review_task_id": boundary_review_task.id if boundary_review_task else None,
     }
 
@@ -547,6 +618,15 @@ def upsert_segment_boundary_review_artifacts(
             merged_decisions["chunk_selection_defaulted"] = "yes"
 
     reviewed_chunk_ids: List[str] = []
+    pairing_ready_chunk_ids: List[str] = []
+    needs_adam_edit_chunk_ids: List[str] = []
+    ready_ranges = _parse_chunk_index_ranges(
+        decisions.get("ready_reference_chunk_range") or decisions.get("pairing_ready_chunk_range")
+    )
+    edit_ranges = _parse_chunk_index_ranges(decisions.get("needs_adam_edit_chunk_range"))
+    ready_truth_status = _string(decisions.get("ready_reference_truth_status"), segment.source_truth_status)
+    edit_truth_status = _string(decisions.get("needs_adam_edit_truth_status"), "model_generated")
+    chunk_quality_profile = _string(decisions.get("chunk_quality_profile"))
     if selected_chunk_ids:
         chunks = session.exec(select(Segment).where(Segment.id.in_(selected_chunk_ids))).all()
         chunks_by_id = {chunk.id: chunk for chunk in chunks}
@@ -556,6 +636,24 @@ def upsert_segment_boundary_review_artifacts(
                 continue
             if chunk.asset_id != segment.asset_id:
                 continue
+            chunk_index = _locator_sort_value(chunk, "chunk_index", 0)
+            is_ready_reference = bool(ready_ranges) and _chunk_index_in_ranges(chunk_index, ready_ranges)
+            needs_adam_edit = bool(edit_ranges) and _chunk_index_in_ranges(chunk_index, edit_ranges)
+            quality_status = (
+                "needs_adam_edit"
+                if needs_adam_edit
+                else "pairing_ready_reference"
+                if is_ready_reference
+                else "reviewed_selected"
+            )
+            if is_ready_reference:
+                pairing_ready_chunk_ids.append(chunk.id)
+            if needs_adam_edit:
+                needs_adam_edit_chunk_ids.append(chunk.id)
+            if is_ready_reference and ready_truth_status:
+                chunk.source_truth_status = ready_truth_status
+            if needs_adam_edit and edit_truth_status:
+                chunk.source_truth_status = edit_truth_status
             chunk.metadata_json = {
                 **dict(chunk.metadata_json),
                 "selected_for_grounded_generation": usable_for_grounded_generation,
@@ -567,10 +665,46 @@ def upsert_segment_boundary_review_artifacts(
                 "quote_policy": decisions.get("quote_policy"),
                 "privacy_clearance": privacy_clearance,
                 "redaction_instructions": decisions.get("redaction_instructions"),
+                "chunk_quality_profile": chunk_quality_profile,
+                "chunk_quality_status": quality_status,
+                "pairing_gate": "requires_adam_edit_before_pairing"
+                if needs_adam_edit
+                else "ready_for_pairing"
+                if is_ready_reference
+                else "reviewed_selected",
+                "ready_reference_chunk_range": decisions.get("ready_reference_chunk_range")
+                or decisions.get("pairing_ready_chunk_range"),
+                "needs_adam_edit_chunk_range": decisions.get("needs_adam_edit_chunk_range"),
+                "chunk_quality_notes": decisions.get("chunk_quality_notes"),
             }
             chunk.maturity_level = "L4_boundary_reviewed"
             session.add(chunk)
             reviewed_chunk_ids.append(chunk.id)
+
+    if ready_ranges and not pairing_ready_chunk_ids:
+        pairing_ready_chunk_ids = reviewed_chunk_ids
+    elif not ready_ranges and not edit_ranges:
+        pairing_ready_chunk_ids = reviewed_chunk_ids
+
+    merged_decisions["pairing_ready_chunk_ids"] = pairing_ready_chunk_ids
+    merged_decisions["needs_adam_edit_chunk_ids"] = needs_adam_edit_chunk_ids
+    merged_decisions["chunk_quality_profile"] = chunk_quality_profile
+    merged_decisions["ready_reference_chunk_range"] = decisions.get("ready_reference_chunk_range") or decisions.get(
+        "pairing_ready_chunk_range"
+    )
+    merged_decisions["needs_adam_edit_chunk_range"] = decisions.get("needs_adam_edit_chunk_range")
+    merged_decisions["ready_reference_truth_status"] = ready_truth_status
+    merged_decisions["needs_adam_edit_truth_status"] = edit_truth_status
+    merged_decisions["chunk_quality_notes"] = decisions.get("chunk_quality_notes")
+    merged_decisions["pairing_gate"] = (
+        "route_ready_chunks_only_hold_needs_edit"
+        if needs_adam_edit_chunk_ids and pairing_ready_chunk_ids
+        else "requires_adam_edit_before_pairing"
+        if needs_adam_edit_chunk_ids
+        else "ready_for_pairing"
+        if pairing_ready_chunk_ids
+        else None
+    )
 
     candidate_task = _create_prompt_pair_candidate_task(
         session,
@@ -599,6 +733,16 @@ def upsert_segment_boundary_review_artifacts(
         "segmentation_notes": decisions.get("segmentation_notes"),
         "whole_source_context_mode": decisions.get("whole_source_context_mode"),
         "selected_chunk_ids": reviewed_chunk_ids,
+        "pairing_ready_chunk_ids": pairing_ready_chunk_ids,
+        "needs_adam_edit_chunk_ids": needs_adam_edit_chunk_ids,
+        "chunk_quality_profile": chunk_quality_profile,
+        "ready_reference_chunk_range": decisions.get("ready_reference_chunk_range")
+        or decisions.get("pairing_ready_chunk_range"),
+        "needs_adam_edit_chunk_range": decisions.get("needs_adam_edit_chunk_range"),
+        "ready_reference_truth_status": ready_truth_status,
+        "needs_adam_edit_truth_status": edit_truth_status,
+        "chunk_quality_notes": decisions.get("chunk_quality_notes"),
+        "pairing_gate": merged_decisions.get("pairing_gate"),
         "chunk_scope": chunk_scope,
         "chunk_selection_defaulted": "yes" if selection_defaulted else "no",
     }
@@ -619,6 +763,24 @@ def upsert_segment_boundary_review_artifacts(
         selected_chunk_ids=reviewed_chunk_ids,
         chunk_scope=chunk_scope,
     )
+    embedding = upsert_profile_embedding(
+        session=session,
+        profile=metadata_profile,
+        target_boundary_type="segment",
+        target_boundary_id=segment.id,
+        metadata={"source": "segment_boundary_review"},
+    )
+    voice_reference_result = (
+        upsert_voice_reference_examples_for_chunks(
+            session=session,
+            chunk_ids=pairing_ready_chunk_ids,
+            annotation_id=annotation_id,
+            source_task_id=task.id,
+            source_title=task.input_payload.get("source_title") or task.input_payload.get("source_filename"),
+        )
+        if pairing_ready_chunk_ids and task.input_payload.get("chunking_strategy") == "prompt_pair_yaml"
+        else {}
+    )
 
     session.flush()
     return {
@@ -627,5 +789,7 @@ def upsert_segment_boundary_review_artifacts(
         "reviewed_chunk_ids": reviewed_chunk_ids,
         "boundary_id": boundary.id,
         "metadata_profile_id": metadata_profile.id,
+        "embedding_record_id": embedding.id if embedding else None,
+        **voice_reference_result,
         "prompt_pair_candidate_task_id": candidate_task.id if candidate_task else None,
     }

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from xml.etree import ElementTree
 
+import yaml
 from sqlmodel import Session, select
 
 from app.models import Annotation, Asset, AssetSnapshot, Derivative, ExternalRef, ObjectFile, Segment, Task, utcnow
@@ -20,6 +21,7 @@ MAX_EXTRACTED_CHARS = 2_000_000
 CHUNK_CHARS = 6_000
 MAX_CHUNKS = 400
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+YAML_MIME_TYPES = {"application/x-yaml", "application/yaml", "text/yaml"}
 TEXT_MIME_TYPES = {
     "application/rtf",
     "application/vnd.google-apps.document",
@@ -28,10 +30,19 @@ TEXT_MIME_TYPES = {
     "text/html",
     "text/markdown",
     "text/plain",
+    *YAML_MIME_TYPES,
 }
-TEXT_EXTENSIONS = {".docx", ".eml", ".htm", ".html", ".md", ".rtf", ".txt"}
+TEXT_EXTENSIONS = {".docx", ".eml", ".htm", ".html", ".md", ".rtf", ".txt", ".yaml", ".yml"}
 LEGACY_DOC_MIME_TYPES = {"application/msword"}
 LEGACY_DOC_EXTENSIONS = {".doc"}
+
+
+@dataclass
+class StructuredTextChunk:
+    text: str
+    title: str = ""
+    locator: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -40,6 +51,7 @@ class TextExtractionResult:
     parser: str
     text: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    structured_chunks: List[StructuredTextChunk] = field(default_factory=list)
     warning: Optional[str] = None
 
     @property
@@ -128,6 +140,10 @@ def _normalize_text(value: str) -> str:
     return normalized.strip()
 
 
+def _normalize_line_endings(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def _cap_text(value: str) -> tuple[str, bool]:
     if len(value) <= MAX_EXTRACTED_CHARS:
         return value, False
@@ -198,6 +214,313 @@ def _extract_eml(raw: bytes) -> tuple[str, Dict[str, Any]]:
     return _normalize_text(f"{header_text}\n\n{body_text}" if header_text else body_text), headers
 
 
+def _is_yaml_source(filename: str, content_type: Optional[str]) -> bool:
+    mime = (content_type or "").split(";")[0].strip().lower()
+    suffix = Path(filename).suffix.lower()
+    return mime in YAML_MIME_TYPES or suffix in {".yaml", ".yml"}
+
+
+def _text_from_yaml_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _normalize_line_endings(value)
+    return yaml.safe_dump(value, allow_unicode=True, sort_keys=False).strip()
+
+
+def _prompt_pair_record_messages(record: Any) -> Optional[List[Dict[str, str]]]:
+    if not isinstance(record, dict):
+        return None
+    raw_messages = record.get("messages")
+    if not isinstance(raw_messages, list) or not raw_messages:
+        return None
+
+    messages: List[Dict[str, str]] = []
+    for raw_message in raw_messages:
+        if not isinstance(raw_message, dict):
+            return None
+        role = str(raw_message.get("role", "")).strip()
+        if not role or "content" not in raw_message:
+            return None
+        messages.append({"role": role, "content": _text_from_yaml_value(raw_message.get("content"))})
+
+    roles = {message["role"] for message in messages}
+    if not {"user", "assistant"}.issubset(roles):
+        return None
+    return messages
+
+
+def _prompt_pair_records(parsed: Any) -> List[Dict[str, Any]]:
+    if isinstance(parsed, list):
+        candidates = parsed
+    elif isinstance(parsed, dict) and _prompt_pair_record_messages(parsed):
+        candidates = [parsed]
+    elif isinstance(parsed, dict):
+        candidates = []
+        for key in ("examples", "pairs", "items", "data"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                candidates = value
+                break
+    else:
+        candidates = []
+
+    records: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        if isinstance(candidate, dict) and _prompt_pair_record_messages(candidate):
+            records.append(candidate)
+    return records
+
+
+def _content_scalar(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    try:
+        loaded = yaml.safe_load(stripped)
+        if isinstance(loaded, str):
+            return _normalize_line_endings(loaded)
+    except yaml.YAMLError:
+        pass
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return _normalize_line_endings(stripped[1:-1])
+    return _normalize_line_endings(stripped)
+
+
+def _leading_spaces(value: str) -> int:
+    return len(value) - len(value.lstrip(" "))
+
+
+def _dedent_literal_lines(lines: List[str]) -> str:
+    non_empty_indents = [_leading_spaces(line) for line in lines if line.strip()]
+    indent = min(non_empty_indents) if non_empty_indents else 0
+    dedented = [line[indent:] if len(line) >= indent else "" for line in lines]
+    return _normalize_line_endings("\n".join(dedented))
+
+
+def _parse_prompt_pair_block(block_lines: List[str]) -> Optional[Dict[str, Any]]:
+    messages: List[Dict[str, str]] = []
+    index = 0
+    role_pattern = re.compile(r"^(?P<indent>\s*)-\s+role:\s*(?P<role>.+?)\s*$")
+    content_pattern = re.compile(r"^\s*content:\s*(?P<value>.*)$")
+
+    while index < len(block_lines):
+        role_match = role_pattern.match(block_lines[index])
+        if not role_match:
+            index += 1
+            continue
+
+        role_indent = len(role_match.group("indent"))
+        role = _content_scalar(role_match.group("role"))
+        index += 1
+        message_lines: List[str] = []
+        while index < len(block_lines):
+            next_role = role_pattern.match(block_lines[index])
+            if next_role and len(next_role.group("indent")) <= role_indent:
+                break
+            message_lines.append(block_lines[index])
+            index += 1
+
+        content = ""
+        for message_index, line in enumerate(message_lines):
+            content_match = content_pattern.match(line)
+            if not content_match:
+                continue
+            value = content_match.group("value").strip()
+            if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+                content = _dedent_literal_lines(message_lines[message_index + 1 :])
+            else:
+                content = _content_scalar(value)
+            break
+
+        if role and content:
+            messages.append({"role": role, "content": content})
+
+    if _prompt_pair_record_messages({"messages": messages}):
+        return {"messages": messages}
+    return None
+
+
+def _prompt_pair_records_from_text_blocks(raw_text: str) -> List[Dict[str, Any]]:
+    blocks: List[List[str]] = []
+    current: Optional[List[str]] = None
+    for line in raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if re.match(r"^-\s+messages:\s*$", line):
+            if current is not None:
+                blocks.append(current)
+            current = []
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append(current)
+
+    records: List[Dict[str, Any]] = []
+    for block in blocks:
+        record = _parse_prompt_pair_block(block)
+        if record:
+            records.append(record)
+    return records
+
+
+def _single_line_preview(value: str, limit: int = 84) -> str:
+    preview = re.sub(r"\s+", " ", value).strip()
+    if len(preview) <= limit:
+        return preview
+    return f"{preview[: max(0, limit - 1)].rstrip()}..."
+
+
+def _format_prompt_pair_example(record: Dict[str, Any], index: int) -> tuple[str, Dict[str, Any]]:
+    messages = _prompt_pair_record_messages(record) or []
+    lines = [f"Example {index}"]
+    for message in messages:
+        lines.extend(["", f"{message['role']}:", message["content"]])
+
+    role_sequence = [message["role"] for message in messages]
+    first_user = next((message["content"] for message in messages if message["role"] == "user"), "")
+    first_assistant = next((message["content"] for message in messages if message["role"] == "assistant"), "")
+    system_prompt = next((message["content"] for message in messages if message["role"] == "system"), "")
+    title_preview = _single_line_preview(first_user or first_assistant or "prompt pair")
+    title = f"Example {index}: {title_preview}"
+    metadata = {
+        "prompt_pair_example_index": index,
+        "message_count": len(messages),
+        "role_sequence": role_sequence,
+        "structured_messages": messages,
+        "system_prompt": system_prompt,
+        "user_message_count": role_sequence.count("user"),
+        "assistant_message_count": role_sequence.count("assistant"),
+        "has_multi_turn": role_sequence.count("user") > 1 or role_sequence.count("assistant") > 1,
+        "prompt_preview": _single_line_preview(first_user, 160),
+        "response_preview": _single_line_preview(first_assistant, 160),
+    }
+    return "\n".join(lines).strip(), {"title": title, "metadata": metadata}
+
+
+def _extract_prompt_pair_yaml(raw_text: str) -> Optional[tuple[str, List[StructuredTextChunk], Dict[str, Any]]]:
+    parse_mode = "yaml"
+    try:
+        parsed = yaml.safe_load(raw_text)
+        records = _prompt_pair_records(parsed)
+    except yaml.YAMLError:
+        records = _prompt_pair_records_from_text_blocks(raw_text)
+        parse_mode = "line_block_fallback"
+    if not records:
+        records = _prompt_pair_records_from_text_blocks(raw_text)
+        parse_mode = "line_block_fallback" if records else parse_mode
+    if not records:
+        return None
+
+    chunks: List[StructuredTextChunk] = []
+    for index, record in enumerate(records[:MAX_CHUNKS], start=1):
+        chunk_text, formatted = _format_prompt_pair_example(record, index)
+        chunks.append(
+            StructuredTextChunk(
+                text=chunk_text,
+                title=formatted["title"],
+                locator={"kind": "prompt_pair_example", "example_index": index, "chunk_index": index},
+                metadata={
+                    "chunking_strategy": "prompt_pair_yaml",
+                    "prompt_pair_source_format": "messages",
+                    **formatted["metadata"],
+                },
+            )
+        )
+
+    metadata = {
+        "chunking_strategy": "prompt_pair_yaml",
+        "structured_chunking": "prompt_pair_yaml",
+        "prompt_pair_source_format": "messages",
+        "prompt_pair_example_count": len(records),
+        "structured_chunk_count": len(chunks),
+        "structured_chunking_truncated": len(records) > len(chunks),
+        "prompt_pair_parse_mode": parse_mode,
+    }
+    return _normalize_line_endings(raw_text), chunks, metadata
+
+
+NATURAL_SECTION_START_PATTERN = re.compile(
+    r"^(?:"
+    r"(?:Email|Memoir|Note|Fragment|Story|Scene|Letter|Message|Conversation|Example|Pair|Prompt|Response)"
+    r"(?:\s+[\w.-]+)?"
+    r"|From|Subject"
+    r")\s*:",
+    re.IGNORECASE,
+)
+
+
+def _paragraph_spans(text: str) -> List[tuple[int, int, str]]:
+    spans: List[tuple[int, int, str]] = []
+    for match in re.finditer(r"(?s)(?:^|\n{2})(?P<body>.*?)(?=\n{2}|\Z)", text):
+        body = match.group("body")
+        if not body.strip():
+            continue
+        start, end = match.span("body")
+        spans.append((start, end, body))
+    return spans
+
+
+def _looks_like_natural_section_start(paragraph: str) -> bool:
+    first_line = paragraph.split("\n", 1)[0].strip()
+    if not first_line or len(first_line) > 120:
+        return False
+    return bool(NATURAL_SECTION_START_PATTERN.match(first_line))
+
+
+def _natural_section_review_hint(section_text: str) -> str:
+    stripped = section_text.strip()
+    if len(stripped) > CHUNK_CHARS:
+        return "needs_split"
+    content_lines = [line for line in stripped.splitlines()[1:] if line.strip()]
+    if len(stripped) < 80 or len(content_lines) < 2:
+        return "needs_context"
+    return "complete_thought"
+
+
+def _extract_natural_section_chunks(text: str) -> List[StructuredTextChunk]:
+    paragraphs = _paragraph_spans(text)
+    if len(paragraphs) < 2:
+        return []
+
+    section_start_indexes = [
+        paragraph_index
+        for paragraph_index, (_start, _end, paragraph) in enumerate(paragraphs)
+        if _looks_like_natural_section_start(paragraph)
+    ]
+    if len(section_start_indexes) < 2 or section_start_indexes[0] != 0:
+        return []
+
+    chunks: List[StructuredTextChunk] = []
+    for ordinal, paragraph_index in enumerate(section_start_indexes[:MAX_CHUNKS], start=1):
+        next_paragraph_index = (
+            section_start_indexes[ordinal] if ordinal < len(section_start_indexes) else len(paragraphs)
+        )
+        start = paragraphs[paragraph_index][0]
+        end = paragraphs[next_paragraph_index - 1][1]
+        section_text = text[start:end]
+        title = _single_line_preview(section_text.split("\n", 1)[0], 90)
+        chunks.append(
+            StructuredTextChunk(
+                text=section_text,
+                title=title,
+                locator={
+                    "kind": "natural_section",
+                    "chunk_index": ordinal,
+                    "char_start": start,
+                    "char_end": end,
+                },
+                metadata={
+                    "chunking_strategy": "natural_section",
+                    "natural_boundary": True,
+                    "section_index": ordinal,
+                    "char_start": start,
+                    "char_end": end,
+                    "section_review_hint": _natural_section_review_hint(section_text),
+                },
+            )
+        )
+    return chunks
+
+
 def extract_text_from_file(path: Path, *, filename: str, content_type: Optional[str], asset_type: str) -> TextExtractionResult:
     if not should_attempt_text_extraction(filename, content_type, asset_type):
         return TextExtractionResult(status="skipped", parser="none", warning="Asset is not a supported text source.")
@@ -219,6 +542,7 @@ def extract_text_from_file(path: Path, *, filename: str, content_type: Optional[
             "chunk_chars": CHUNK_CHARS,
             "max_chunks": MAX_CHUNKS,
         }
+        structured_chunks: List[StructuredTextChunk] = []
         if mime == "message/rfc822" or suffix == ".eml":
             text, headers = _extract_eml(raw)
             metadata["email_headers"] = headers
@@ -232,17 +556,41 @@ def extract_text_from_file(path: Path, *, filename: str, content_type: Optional[
         elif mime == "application/rtf" or suffix == ".rtf":
             text = _strip_rtf(raw)
             parser = "rtf"
+        elif _is_yaml_source(filename, content_type):
+            raw_text = _decode_bytes(raw)
+            structured = _extract_prompt_pair_yaml(raw_text)
+            if structured:
+                text, structured_chunks, structured_metadata = structured
+                parser = "prompt_pair_yaml"
+                metadata.update(structured_metadata)
+            else:
+                text = _normalize_text(raw_text)
+                parser = "plain_text"
         else:
             text = _normalize_text(_decode_bytes(raw))
             parser = "plain_text"
         metadata["raw_extracted_chars"] = len(text)
         capped, truncated = _cap_text(text)
         metadata["truncated"] = truncated
+        if not structured_chunks and capped:
+            natural_chunks = _extract_natural_section_chunks(capped)
+            if natural_chunks:
+                structured_chunks = natural_chunks
+                metadata.update(
+                    {
+                        "chunking_strategy": "natural_section",
+                        "structured_chunking": "natural_section",
+                        "natural_section_count": len(natural_chunks),
+                        "structured_chunk_count": len(natural_chunks),
+                        "structured_chunking_truncated": len(natural_chunks) >= MAX_CHUNKS,
+                    }
+                )
         return TextExtractionResult(
             status="extracted" if capped else "empty",
             parser=parser,
             text=capped,
             metadata=metadata,
+            structured_chunks=structured_chunks,
         )
     except Exception as exc:  # pragma: no cover - defensive; extraction must not block mirroring.
         return TextExtractionResult(status="error", parser="unknown", warning=str(exc))
@@ -271,7 +619,7 @@ def _source_type_for_extraction(filename: str, content_type: Optional[str]) -> s
     suffix = Path(filename).suffix.lower()
     if mime == "message/rfc822" or suffix == ".eml":
         return "email"
-    if suffix in {".doc", ".docx", ".htm", ".html", ".rtf", ".txt", ".md"} or mime in TEXT_MIME_TYPES or "wordprocessingml" in mime:
+    if suffix in {".doc", ".docx", ".htm", ".html", ".rtf", ".txt", ".md", ".yaml", ".yml"} or mime in TEXT_MIME_TYPES or "wordprocessingml" in mime:
         return "document"
     return "unknown"
 
@@ -312,8 +660,23 @@ def persist_text_extraction(
     content_type: Optional[str],
     extraction: TextExtractionResult,
 ) -> Dict[str, Any]:
-    chunks = list(_chunk_text(extraction.text)) if extraction.status == "extracted" else []
-    chunking_truncated = bool(chunks and chunks[-1][1] < len(extraction.text))
+    chunks: List[StructuredTextChunk] = []
+    chunking_strategy = extraction.metadata.get("chunking_strategy") or "generic_text"
+    if extraction.status == "extracted" and extraction.structured_chunks:
+        chunks = extraction.structured_chunks[:MAX_CHUNKS]
+        chunking_truncated = bool(extraction.metadata.get("structured_chunking_truncated")) or len(extraction.structured_chunks) > len(chunks)
+    elif extraction.status == "extracted":
+        for index, (start, end, chunk) in enumerate(_chunk_text(extraction.text), start=1):
+            chunks.append(
+                StructuredTextChunk(
+                    text=chunk,
+                    locator={"kind": "text_chunk", "chunk_index": index, "char_start": start, "char_end": end},
+                    metadata={"char_start": start, "char_end": end},
+                )
+            )
+        chunking_truncated = bool(chunks and chunks[-1].locator.get("char_end") < len(extraction.text))
+    else:
+        chunking_truncated = False
     metadata = {
         "status": extraction.status,
         "parser": extraction.parser,
@@ -321,6 +684,7 @@ def persist_text_extraction(
         "total_chars": extraction.total_chars,
         "truncated": extraction.truncated,
         "chunk_count": len(chunks),
+        "chunking_strategy": chunking_strategy,
         "chunking_truncated": chunking_truncated,
         "source_object_file_id": source_object_file.id,
         "source_snapshot_id": source_snapshot.id,
@@ -341,6 +705,9 @@ def persist_text_extraction(
     )
     session.add(derivative)
     session.flush()
+    metadata["text_extraction_derivative_id"] = derivative.id
+    derivative.metadata_json = metadata
+    session.add(derivative)
 
     segment_ids: List[str] = []
     task_ids: List[str] = []
@@ -351,7 +718,13 @@ def persist_text_extraction(
             segment_type="text_preview",
             title=f"{asset.title or filename} preview",
             text_content=extraction.preview,
-            locator={"kind": "preview", "source_snapshot_id": source_snapshot.id, "char_start": 0, "char_end": len(extraction.preview)},
+            locator={
+                "kind": "preview",
+                "source_snapshot_id": source_snapshot.id,
+                "text_extraction_derivative_id": derivative.id,
+                "char_start": 0,
+                "char_end": len(extraction.preview),
+            },
             source_truth_status="archival_source",
             maturity_level="L2_extracted",
             metadata_json=metadata,
@@ -360,23 +733,24 @@ def persist_text_extraction(
         session.flush()
         segment_ids.append(preview_segment.id)
 
-        for index, (start, end, chunk) in enumerate(chunks, start=1):
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_locator = {
+                "kind": "text_chunk",
+                **chunk.locator,
+                "source_snapshot_id": source_snapshot.id,
+                "text_extraction_derivative_id": derivative.id,
+                "chunk_index": index,
+            }
             segment = Segment(
                 human_id=f"SEG_CHUNK_{asset.human_id}_{source_snapshot.version}_{index:04d}",
                 asset_id=asset.id,
                 segment_type="text_chunk",
-                title=f"{asset.title or filename} chunk {index}",
-                text_content=chunk,
-                locator={
-                    "kind": "text_chunk",
-                    "source_snapshot_id": source_snapshot.id,
-                    "chunk_index": index,
-                    "char_start": start,
-                    "char_end": end,
-                },
+                title=chunk.title or f"{asset.title or filename} chunk {index}",
+                text_content=chunk.text,
+                locator=chunk_locator,
                 source_truth_status="archival_source",
                 maturity_level="L2_extracted",
-                metadata_json={**metadata, "chunk_index": index, "chunk_count": len(chunks)},
+                metadata_json={**metadata, **chunk.metadata, "chunk_index": index, "chunk_count": len(chunks)},
             )
             session.add(segment)
             session.flush()
@@ -406,7 +780,9 @@ def persist_text_extraction(
                 "total_chars": extraction.total_chars,
                 "truncated": extraction.truncated,
                 "chunking_truncated": chunking_truncated,
+                "chunking_strategy": chunking_strategy,
                 "extraction_parser": extraction.parser,
+                "text_extraction_derivative_id": derivative.id,
             },
             required_decisions=_required_decisions_for_source(source_type),
             created_by="text_extraction",

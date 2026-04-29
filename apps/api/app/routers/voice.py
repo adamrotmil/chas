@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
@@ -11,6 +11,7 @@ from app.models import (
     GenerationReview,
     GoldVoiceExample,
     PromptSpec,
+    VoiceMode,
     utcnow,
 )
 from app.schemas import (
@@ -20,10 +21,41 @@ from app.schemas import (
     ContextPackBuildRequest,
     ContextPackBuildResponse,
     PromptSpecCreate,
+    VoiceModeCreate,
+    VoiceModeRead,
 )
-from app.services.context_packs import build_context_pack
+from app.services.context_packs import build_context_pack, compile_photo_context_pack_readiness_audit
+from app.services.voice_modes import list_voice_modes, upsert_voice_mode
 
 router = APIRouter(tags=["voice"])
+
+
+@router.get("/voice-modes", response_model=List[VoiceModeRead])
+def list_voice_modes_endpoint(session: Session = Depends(get_session)) -> List[VoiceMode]:
+    modes = list_voice_modes(session)
+    session.commit()
+    return modes
+
+
+@router.post("/voice-modes", response_model=VoiceModeRead)
+def create_voice_mode(
+    payload: VoiceModeCreate,
+    session: Session = Depends(get_session),
+) -> VoiceMode:
+    mode = upsert_voice_mode(
+        session,
+        label=payload.label,
+        slug=payload.slug,
+        description=payload.description,
+        default_system_prompt=payload.default_system_prompt,
+        family=payload.family,
+        status=payload.status,
+        metadata_json=payload.metadata_json,
+        created_by="adam",
+    )
+    session.commit()
+    session.refresh(mode)
+    return mode
 
 
 @router.get("/prompt-specs", response_model=List[PromptSpec])
@@ -46,6 +78,15 @@ def create_prompt_spec(
 @router.get("/context-packs", response_model=List[ContextPack])
 def list_context_packs(session: Session = Depends(get_session)) -> List[ContextPack]:
     return session.exec(select(ContextPack).order_by(ContextPack.created_at.desc())).all()
+
+
+@router.get("/context-packs/photo-context-readiness-audit")
+def photo_context_pack_readiness_audit(
+    scope: str = "family_private",
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
+    return compile_photo_context_pack_readiness_audit(session=session, scope=scope, limit=limit)
 
 
 @router.get("/context-packs/{context_pack_id}/items", response_model=List[ContextPackItem])

@@ -304,7 +304,7 @@ If the reviewer chooses `needs_split` or `needs_merge`, no prompt pair candidate
 
 ### `grounded_prompt_pair_candidate`
 
-This is Pair Factory. It does not call a live model.
+This is Pair Factory. It creates natural prompt-pair review tasks. Live text model calls are available only when both environment and task decisions enable them.
 
 The UI asks what kind of prompt/response pair this source should become:
 
@@ -315,16 +315,16 @@ The UI asks what kind of prompt/response pair this source should become:
 - style eval case
 - anti-pattern probe
 
-It also records voice mode, truth mode, response shape, optional prompt text, optional rejected/pre-edit draft text, boundary clearance needed, and factory notes.
+It also records voice mode, truth mode, conversation family, exported system message, response shape, optional user message, optional rejected/pre-edit draft text, boundary clearance needed, live-call preference, and factory notes.
 
 On submit, backend creates:
 
 - `PromptSpec`
 - `ContextPack`
-- `Generation` with model name `prompt_pair_factory_stub_no_model_call`
+- `Generation` with either a scaffold model name or the configured live text generation model
 - `gold_voice_edit` review task
 
-If no prompt text is provided, the backend creates a conservative grounded prompt. If no draft is provided, it creates a deterministic stub draft that explicitly says no live model call occurred.
+If no user message is provided, the backend creates a natural prompt from the selected source. If no draft is provided, it creates a deterministic backstage scaffold unless live text generation is enabled and requested.
 
 ### `gold_voice_edit`
 
@@ -610,13 +610,13 @@ Backend tests currently cover:
 - source review creates processing task, then prompt candidate
 - segmentation `needs_split` does not create prompt candidate
 - metadata profile CRUD
-- prompt pair candidate creates stub gold edit task
+- prompt pair candidate creates natural gold edit task
 - entity CRUD
 - vision draft batch creates system inference profile and review task
 - live vision calls are blocked
 - vision review submission promotes profile and creates OCR segment
 
-Latest full backend test run before this document: 19 passing.
+Latest full backend test run before this document update: 27 passing.
 
 Frontend verification recently run:
 
@@ -650,4 +650,3 @@ Please review with these questions in mind:
 6. Add embedding/vector planning tables or service boundaries without prematurely embedding private material.
 7. Make Exports, Privacy, Models, and Settings either real pages or clearly marked inspector panels.
 8. Add a reviewer-facing audit trail view: source file, mirror snapshot, extraction derivative, annotations, metadata profiles, boundaries, downstream records.
-

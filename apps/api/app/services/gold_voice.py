@@ -15,12 +15,12 @@ from app.models import (
     Task,
     utcnow,
 )
+from app.services.embeddings import upsert_embedding_record
+from app.services.pair_export import compile_pair_export, sft_export_blockers
+from app.services.voice_modes import upsert_voice_mode
 
 
-SYSTEM_PROMPT = (
-    "Write in Charles's selected voice mode. Use indirect tenderness, concrete objects, "
-    "restraint, and practical endings. Do not claim generated text is archival."
-)
+DEFAULT_SYSTEM_PROMPT = "You are Charles Rotmil."
 
 RUBRIC_CRITERIA = [
     "voice_authenticity",
@@ -48,6 +48,36 @@ def _prompt_text(session: Session, generation: Optional[Generation], decisions: 
         if prompt_spec:
             return prompt_spec.prompt_text
     return "Manual Charles voice prompt"
+
+
+def _prompt_spec(session: Session, generation: Optional[Generation], prompt_spec_id: Optional[str]) -> Optional[PromptSpec]:
+    if prompt_spec_id:
+        prompt_spec = session.get(PromptSpec, prompt_spec_id)
+        if prompt_spec:
+            return prompt_spec
+    if generation and generation.prompt_spec_id:
+        return session.get(PromptSpec, generation.prompt_spec_id)
+    return None
+
+
+def _system_prompt(
+    session: Session,
+    *,
+    generation: Optional[Generation],
+    task: Task,
+    decisions: Dict[str, Any],
+    prompt_spec_id: Optional[str],
+) -> str:
+    if decisions.get("system_prompt"):
+        return str(decisions["system_prompt"])
+    if task.input_payload.get("system_prompt"):
+        return str(task.input_payload["system_prompt"])
+    prompt_spec = _prompt_spec(session, generation, prompt_spec_id)
+    if prompt_spec and isinstance(prompt_spec.metadata_json, dict):
+        prompt = prompt_spec.metadata_json.get("system_prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt
+    return DEFAULT_SYSTEM_PROMPT
 
 
 def _rubric_status_score(status: Any) -> int:
@@ -103,7 +133,7 @@ def _derive_quality_summary(ratings: Dict[str, Any]) -> Dict[str, Any]:
     required = ["voice_fidelity", "emotional_truth", "restraint", "non_parody"]
     numeric_gate_passed = all(int(ratings.get(key, 0) or 0) >= 4 for key in required)
     if response_b:
-        sft_ready = response_b_major == 0 and not privacy_blocked
+        sft_ready = response_b_issue_count == 0 and not privacy_blocked
     elif "sft_ready" in stored_summary:
         sft_ready = bool(stored_summary.get("sft_ready"))
     else:
@@ -156,12 +186,27 @@ def _first_or_none(session: Session, statement: Any) -> Any:
     return session.exec(statement).first()
 
 
-def _sft_messages(prompt: str, gold_text: str) -> List[Dict[str, str]]:
+def _sft_messages(system_prompt: str, prompt: str, gold_text: str) -> List[Dict[str, str]]:
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": gold_text},
     ]
+
+
+def _dpo_export_blockers(prompt: str, chosen: str, rejected: str, reasons: List[str]) -> List[str]:
+    blockers: List[str] = []
+    if not prompt.strip():
+        blockers.append("dpo_prompt_empty")
+    if not chosen.strip():
+        blockers.append("dpo_chosen_empty")
+    if not rejected.strip():
+        blockers.append("dpo_rejected_empty")
+    if chosen.strip() and rejected.strip() and chosen.strip() == rejected.strip():
+        blockers.append("dpo_chosen_rejected_identical")
+    if not reasons:
+        blockers.append("dpo_missing_rejected_side_reason")
+    return blockers
 
 
 def upsert_gold_voice_artifacts(
@@ -170,6 +215,13 @@ def upsert_gold_voice_artifacts(
     decisions: Dict[str, Any],
     annotation_id: str,
 ) -> Dict[str, str]:
+    unified_mode = bool(
+        decisions.get("artifact_mode")
+        or decisions.get("content")
+        or decisions.get("chosen")
+        or decisions.get("rejected")
+        or "synthetic" in decisions
+    )
     generation_id = decisions.get("generation_id") or task.input_payload.get("generation_id")
     generation = session.get(Generation, generation_id) if generation_id else None
     prompt_spec_id = decisions.get("prompt_spec_id") or task.input_payload.get("prompt_spec_id")
@@ -179,11 +231,32 @@ def upsert_gold_voice_artifacts(
         prompt_spec_id = prompt_spec_id or generation.prompt_spec_id
         context_pack_id = context_pack_id or generation.context_pack_id
 
-    prompt = _prompt_text(session, generation, decisions)
-    model_draft = decisions.get("model_draft") or (generation.output_text if generation else "")
-    gold_text = decisions.get("adam_gold_edit") or decisions.get("gold_edit") or ""
-    voice_mode = decisions.get("voice_mode") or task.input_payload.get("voice_mode") or "father_to_adam"
-    truth_mode = decisions.get("truth_mode") or task.input_payload.get("truth_mode") or "generative_reconstruction"
+    fallback_truth_status = str(task.input_payload.get("truth_status") or "archival_source")
+    compiled_export = compile_pair_export(
+        {**task.input_payload, **decisions},
+        fallback_truth_status=fallback_truth_status,
+    ) if unified_mode else None
+
+    prompt = str(compiled_export["prompt"]) if compiled_export else _prompt_text(session, generation, decisions)
+    system_prompt = str(compiled_export["system_prompt"]) if compiled_export else _system_prompt(
+        session,
+        generation=generation,
+        task=task,
+        decisions=decisions,
+        prompt_spec_id=prompt_spec_id,
+    )
+    if compiled_export:
+        model_draft = str(compiled_export.get("rejected") or "")
+        gold_text = str(compiled_export.get("chosen") or compiled_export.get("content") or "")
+        voice_mode = str(compiled_export["voice_mode"])
+        truth_mode = str(compiled_export["truth_status"])
+    else:
+        model_draft = decisions.get("model_draft") or (generation.output_text if generation else "")
+        gold_text = decisions.get("adam_gold_edit") or decisions.get("gold_edit") or ""
+        voice_mode = decisions.get("voice_mode") or task.input_payload.get("voice_mode") or "father_to_adam"
+        truth_mode = decisions.get("truth_mode") or task.input_payload.get("truth_mode") or "generative_reconstruction"
+    if isinstance(voice_mode, str) and voice_mode.strip():
+        upsert_voice_mode(session, label=voice_mode.replace("_", " ").title(), slug=voice_mode, family="gold_edit")
     raw_ratings = decisions.get("ratings") or {}
     ratings = dict(raw_ratings) if isinstance(raw_ratings, dict) else {}
     response_rubric = decisions.get("response_rubric") or ratings.get("response_rubric")
@@ -200,13 +273,17 @@ def upsert_gold_voice_artifacts(
     issue_notes = _rubric_notes(response_a_rubric)
     if not failure_modes and issue_notes:
         failure_modes = [note for note in issue_notes.splitlines() if note.strip()]
-    export_flags = decisions.get("export_flags") or {
-        "sft": True,
-        "dpo": True,
-        "eval": True,
-        "anti_pattern": True,
-        "style_rule": True,
-    }
+    export_flags = decisions.get("export_flags") or (
+        compiled_export["export_flags"]
+        if compiled_export
+        else {
+            "sft": True,
+            "dpo": True,
+            "eval": True,
+            "anti_pattern": True,
+            "style_rule": True,
+        }
+    )
 
     if generation_id:
         gold = _first_or_none(
@@ -230,11 +307,19 @@ def upsert_gold_voice_artifacts(
     gold.prompt_spec_id = prompt_spec_id
     gold.context_pack_id = context_pack_id
     gold.voice_mode = voice_mode
-    gold.truth_status = "adam_expert_reconstruction"
+    gold.truth_status = str(truth_mode) if unified_mode else "adam_expert_reconstruction"
     gold.adam_gold_edit = gold_text
     gold.ratings = ratings
     gold.failure_modes = failure_modes
-    gold.downstream_use = export_flags
+    gold.downstream_use = {
+        **export_flags,
+        "artifact_mode": compiled_export.get("artifact_mode") if compiled_export else "legacy_gold_voice_edit",
+        "synthetic": compiled_export.get("synthetic") if compiled_export else True,
+        "context": compiled_export.get("context") if compiled_export else decisions.get("context"),
+        "grounding_asset_id": compiled_export.get("grounding_asset_id") if compiled_export else decisions.get("grounding_asset_id"),
+        "export_preview_yaml": compiled_export.get("yaml_preview") if compiled_export else decisions.get("export_preview_yaml"),
+        "source_annotation_id": annotation_id,
+    }
     gold.approved_by = "adam"
     gold.approved_at = utcnow()
     session.add(gold)
@@ -257,6 +342,8 @@ def upsert_gold_voice_artifacts(
     export_status = "approved" if _rating_passes(ratings) else "candidate"
 
     if export_flags.get("sft"):
+        sft_blockers = sft_export_blockers(system_prompt, prompt, gold_text)
+        sft_export_status = "candidate" if sft_blockers else export_status
         sft = _first_or_none(
             session,
             select(SFTCandidate).where(SFTCandidate.source_gold_voice_example_id == gold.id),
@@ -264,22 +351,29 @@ def upsert_gold_voice_artifacts(
         if not sft:
             sft = SFTCandidate(source_gold_voice_example_id=gold.id)
             session.add(sft)
-        sft.messages = _sft_messages(prompt, gold_text)
+        sft.messages = compiled_export.get("sft_messages") if compiled_export and compiled_export.get("sft_messages") else _sft_messages(system_prompt, prompt, gold_text)
         sft.quality_gate = {
             "approved_by": "adam",
             "min_voice_fidelity_met": _rating_passes(ratings),
             "boundaries_checked": True,
             "no_archival_misattribution": True,
+            "system_prompt": system_prompt,
+            "conversation_family": task.input_payload.get("conversation_family"),
             "rubric_summary": rubric_summary or {},
             "derived_quality": quality_summary,
-            "export_ready": export_status == "approved",
+            "export_ready": sft_export_status == "approved",
+            "export_blockers": sft_blockers,
             "source_annotation_id": annotation_id,
+            "artifact_mode": compiled_export.get("artifact_mode") if compiled_export else "legacy_gold_voice_edit",
+            "export_preview_yaml": compiled_export.get("yaml_preview") if compiled_export else decisions.get("export_preview_yaml"),
         }
-        sft.export_status = export_status
+        sft.export_status = sft_export_status
         session.add(sft)
         created["sft_candidate_id"] = sft.id
 
     if export_flags.get("dpo"):
+        dpo_blockers = _dpo_export_blockers(prompt, gold_text, model_draft, failure_modes)
+        dpo_export_status = "candidate" if dpo_blockers else export_status
         dpo = _first_or_none(
             session,
             select(DPOPair).where(DPOPair.source_gold_voice_example_id == gold.id),
@@ -295,8 +389,8 @@ def upsert_gold_voice_artifacts(
         dpo.prompt = prompt
         dpo.chosen = gold_text
         dpo.rejected = model_draft
-        dpo.reason = failure_modes
-        dpo.export_status = export_status
+        dpo.reason = [*failure_modes, *dpo_blockers]
+        dpo.export_status = dpo_export_status
         session.add(dpo)
         created["dpo_pair_id"] = dpo.id
 
@@ -371,5 +465,27 @@ def upsert_gold_voice_artifacts(
         style_rule.status = export_status
         session.add(style_rule)
         created["style_rule_id"] = style_rule.id
+
+    embedding = upsert_embedding_record(
+        session=session,
+        target_type="gold_voice_example",
+        target_id=gold.id,
+        input_text="\n\n".join(
+            [
+                f"voice_mode: {voice_mode}",
+                f"truth_status: {gold.truth_status}",
+                f"user: {prompt}",
+                f"assistant: {gold_text}",
+            ]
+        ),
+        modality="text",
+        embedding_type="gold_voice_text",
+        truth_status=gold.truth_status,
+        boundary_snapshot={"context_pack_id": context_pack_id, "downstream_use": export_flags},
+        metadata={"source": "gold_voice_edit", "source_annotation_id": annotation_id},
+        created_by="gold_voice_edit",
+    )
+    if embedding:
+        created["embedding_record_id"] = embedding.id
 
     return created

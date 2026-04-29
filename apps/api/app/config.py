@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     openai_project_id: str = ""
     vision_model: str = "gpt-4.1-mini"
     vision_live_calls_enabled: bool = False
+    text_generation_model: str = "gpt-5.5"
+    text_generation_reasoning_effort: str = "xhigh"
+    text_generation_live_calls_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -20,6 +20,13 @@ node_modules/
 out/
 dist/
 coverage/
+apps/web/test-results/
+apps/web/playwright-report/
+
+# Ralph-loop local audit noise; commit latest summaries/checkpoints intentionally.
+updates/ralph_loop_gate_checkpoint_20*.json
+updates/ralph_loop_gate_checkpoint_20*.md
+updates/charlesops_next_product_shaping_codex_package*
 
 # Local storage payloads are intentionally not versioned.
 storage/raw/*
@@ -29,6 +36,7 @@ storage/thumbs/*
 storage/display/*
 storage/transcripts/*
 storage/source_mirror/*
+storage/preview_cache/*
 !storage/**/.gitkeep
 
 # Database/runtime

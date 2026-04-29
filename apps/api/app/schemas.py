@@ -258,6 +258,30 @@ class GenerationReviewCreate(SQLModel):
     reviewer_id: Optional[str] = None
 
 
+class VoiceModeCreate(SQLModel):
+    slug: Optional[str] = None
+    label: str
+    description: Optional[str] = None
+    default_system_prompt: str = "You are Charles Rotmil. Write naturally in his voice."
+    family: Optional[str] = None
+    status: str = "active"
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+
+
+class VoiceModeRead(SQLModel):
+    id: str
+    slug: str
+    label: str
+    description: Optional[str] = None
+    default_system_prompt: str
+    family: Optional[str] = None
+    status: str
+    created_by: str
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
 class GoldVoiceExampleCreate(SQLModel):
     human_id: str
     generation_id: Optional[str] = None
@@ -279,6 +303,9 @@ class PromptPairBatchRequest(SQLModel):
     truth_mode: str = "adam_expert_reconstruction"
     target_response_shape: str = "short_voice_response"
     boundary_clearance_needed: str = "review_before_export"
+    conversation_family: Optional[str] = None
+    system_prompt: Optional[str] = None
+    no_live_model_call: bool = True
 
 
 class PromptPairBatchResponse(SQLModel):
@@ -391,3 +418,38 @@ class AssetMirrorResponse(SQLModel):
     content_type: Optional[str] = None
     byte_size: int
     checksum_sha256: str
+
+
+class AssetUploadResponse(SQLModel):
+    asset_id: str
+    human_id: str
+    title: str
+    asset_type: str
+    boundary_id: Optional[str] = None
+    mirror: AssetMirrorResponse
+    segment_ids: List[str] = Field(default_factory=list)
+    review_task_ids: List[str] = Field(default_factory=list)
+
+
+class PhotoContextTaskCreate(SQLModel):
+    asset_id: Optional[str] = None
+    group_key: Optional[str] = None
+    use_canonical: bool = True
+    source_query: Optional[str] = None
+    candidate_match_quality: Optional[str] = None
+    candidate_selection_reason: Optional[str] = None
+    session_sequence_number: Optional[int] = None
+    session_selected_count: Optional[int] = None
+    session_plan_content_sha256: Optional[str] = None
+    session_completion_signal: Optional[str] = None
+    session_review_policy: Optional[str] = None
+
+
+class PhotoContextTaskCreateResponse(SQLModel):
+    created: bool
+    task_id: str
+    task_human_id: str
+    asset_id: str
+    asset_title: str
+    group_key: Optional[str] = None
+    reason: str

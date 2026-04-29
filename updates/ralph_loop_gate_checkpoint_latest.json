@@ -1,0 +1,1643 @@
+{
+  "check_count": 48,
+  "checkpoint_type": "charlesops_ralph_loop_gate_checkpoint",
+  "checks": [
+    {
+      "detail": "GET /health returned ok",
+      "evidence": {},
+      "name": "API health is reachable",
+      "passed": true
+    },
+    {
+      "detail": "running API reports the current checked-out runtime contract",
+      "evidence": {
+        "contract_id": "charlesops-runtime-2026-04-29.v2",
+        "required_response_fields": {
+          "/api/assets/photo-context-review-pack": [
+            "review_policy",
+            "manifest",
+            "review_worklists",
+            "content_sha256",
+            "export_preview_yaml"
+          ],
+          "/api/assets/photo-context-review-pack/retrieval-gap-field-worklist": [
+            "worklist_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "does_not_create_memory_claim",
+            "requires_adam_context",
+            "missing_field_counts",
+            "items",
+            "content_sha256",
+            "export_preview_yaml",
+            "export_preview_sha256"
+          ],
+          "/api/assets/photo-context-review-pack/retrieval-gap-payoff-preview": [
+            "preview_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "does_not_create_memory_claim",
+            "uses_placeholders_for_missing_adam_context",
+            "source_worklist_content_sha256",
+            "items",
+            "content_sha256",
+            "export_preview_yaml",
+            "export_preview_sha256"
+          ],
+          "/api/assets/photo-context-review-pack/review-session": [
+            "session_type",
+            "selection_policy",
+            "plan_content_sha256",
+            "selected_item_keys",
+            "projected_task_delta",
+            "items"
+          ],
+          "/api/assets/photo-context-review-pack/review-session-plan": [
+            "plan_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "source_query",
+            "completion_signal",
+            "items",
+            "content_sha256",
+            "export_preview_yaml",
+            "export_preview_sha256"
+          ],
+          "/api/assets/photo-context-review-pack/session-progress": [
+            "progress_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "does_not_create_memory_claim",
+            "does_not_create_embedding_record",
+            "requires_adam_context",
+            "completion_signal",
+            "status_counts",
+            "blocked_reason_counts",
+            "retrieval_gap_missing_field_counts",
+            "items",
+            "content_sha256"
+          ],
+          "/api/assets/photo-context-review-pack/session-progress/artifact": [
+            "artifact_type",
+            "progress_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "does_not_create_memory_claim",
+            "does_not_create_embedding_record",
+            "requires_adam_context",
+            "completion_signal",
+            "source_progress_content_sha256",
+            "status_counts",
+            "items",
+            "content_sha256"
+          ],
+          "/api/assets/photo-context-review-pack/top-context-slice": [
+            "slice_type",
+            "review_policy",
+            "worklist_key",
+            "completion_signal",
+            "items",
+            "content_sha256"
+          ],
+          "/api/downstream-readiness/artifact-audit": [
+            "audit_type",
+            "checked_count",
+            "mismatch_count",
+            "all_hashes_match",
+            "checks",
+            "content_sha256"
+          ],
+          "/api/downstream-readiness/artifact-manifest": [
+            "manifest_type",
+            "artifact_count",
+            "formats",
+            "items",
+            "content_sha256"
+          ],
+          "/api/downstream-readiness/bottlenecks": [
+            "queue_type",
+            "ordered_area_keys",
+            "machine_verification",
+            "items"
+          ],
+          "/api/downstream-readiness/morning-handoff": [
+            "report_type",
+            "headline",
+            "primary_bottleneck_area_key",
+            "readiness_summary",
+            "top_bottlenecks",
+            "operator_checklist",
+            "retrieval_gap_work",
+            "artifact_summary",
+            "report_markdown",
+            "content_sha256"
+          ],
+          "/api/prompt-pairs/dpo-rejected-reason-repair-pack": [
+            "packet_type",
+            "review_policy",
+            "blocker",
+            "completion_signal",
+            "items",
+            "content_sha256",
+            "export_preview_yaml"
+          ],
+          "/api/prompt-pairs/dpo-rejected-reason-repair-projection": [
+            "projection_type",
+            "review_policy",
+            "does_not_mutate_task",
+            "input_patch",
+            "before",
+            "after",
+            "yaml_diff_preview",
+            "content_sha256"
+          ],
+          "/api/prompt-pairs/held-candidates": [
+            "review_policy",
+            "does_not_promote_to_training_export",
+            "requires_adam_gold_edit",
+            "worklist_count",
+            "worklists",
+            "content_sha256"
+          ],
+          "/api/prompt-pairs/review-progress": [
+            "progress_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "does_not_promote_to_training_export",
+            "approved_count",
+            "candidate_count",
+            "blocker_counts",
+            "completion_signal",
+            "content_sha256"
+          ],
+          "/api/prompt-pairs/top-blocker-review-session-plan": [
+            "plan_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "does_not_promote_to_training_export",
+            "blocker",
+            "selected_count",
+            "field_plan",
+            "items",
+            "content_sha256",
+            "export_preview_yaml",
+            "export_preview_sha256"
+          ],
+          "/api/prompt-pairs/top-blocker-slice": [
+            "slice_type",
+            "review_policy",
+            "blocker",
+            "completion_signal",
+            "items",
+            "content_sha256"
+          ],
+          "/api/retrieval/gap-review-slice": [
+            "slice_type",
+            "review_policy",
+            "query",
+            "gap_open",
+            "completion_signal",
+            "items",
+            "content_sha256"
+          ],
+          "/api/retrieval/photo-memory-corpus": [
+            "retrieval_origin_record_count",
+            "retrieval_origin_no_claim_count",
+            "next_review_actions"
+          ],
+          "/api/retrieval/photo-memory-corpus/export.manifest": [
+            "retrieval_origin_record_count",
+            "retrieval_origin_no_claim_count",
+            "next_review_actions"
+          ],
+          "/api/tasks/{task_id}/pair-generation/preview": [
+            "preview_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "no_live_model_call",
+            "prompt_instructions_version",
+            "source_task_id",
+            "source_title",
+            "source_spans_supplied",
+            "source_section_count",
+            "candidate_pair_count",
+            "projected_created_pair_count",
+            "projected_held_pair_count",
+            "strategy_counts",
+            "completion_signal",
+            "safety_boundaries",
+            "content_sha256"
+          ]
+        },
+        "runtime_contract_source_sha256": "967cca2362c514bcecd9913a6da2298b795bfc39c9eb76b23b7177c446efa995"
+      },
+      "name": "API runtime contract matches checked-out source",
+      "passed": true
+    },
+    {
+      "detail": "source-review Generate Pairs dry-run exposes required fields without mutating tasks",
+      "evidence": {
+        "candidate_pair_count": 1,
+        "content_sha256": "4554a2d7dea15ee28c0140384ac44762c97cffd94b3462a60f87acbc8c028fc3",
+        "primary_strategy": "deterministic_fallback_source_text",
+        "projected_created_pair_count": 1,
+        "required_field_count": 16,
+        "task_human_id": "TASK_TEXT_DRV_16NEJI1SFNKO8EOGOV_OYQMSWEFYBNGSB_1"
+      },
+      "name": "Source Review pair generation preview is contract-checked",
+      "passed": true
+    },
+    {
+      "detail": "GET http://localhost:3003/ returned 200",
+      "evidence": {},
+      "name": "Web app is reachable",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "npm run typecheck --prefix apps/web",
+        "output_tail": "> charlesops-web@0.1.0 typecheck\n> tsc --noEmit",
+        "returncode": 0
+      },
+      "name": "Web workbench typechecks",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "npx --prefix apps/web playwright test --config apps/web/playwright.config.ts",
+        "output_tail": "Running 11 tests using 1 worker\n\n  \u2713   1 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:3:5 \u203a exports readiness exposes demo gate and retrieval actions (14.1s)\n  \u2713   2 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:273:5 \u203a photo vector summary action opens the fastest held vector review task (10.9s)\n  \u2713   3 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:285:5 \u203a gallery draft review action opens the photo memory review task (11.1s)\n  \u2713   4 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:321:5 \u203a photo submit receipt exposes vector handoff without mutating the archive (11.1s)\n  \u2713   5 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:402:5 \u203a asset dossier shows vector handoff details from task receipts (359ms)\n  \u2713   6 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:518:5 \u203a photo review exposes image preview and downstream memory text preview (610ms)\n  \u2713   7 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:621:5 \u203a source review previews Generate Pairs ticket creation before submit (1.3s)\n  \u2713   8 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:648:5 \u203a retrieval no-claim action opens a photo context task with query provenance (18.1s)\n  \u2713   9 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:791:5 \u203a prompt pairs can be filtered and searched as singleton tickets (2.1s)\n  \u2713  10 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:931:5 \u203a prompt pair ticket explains why backend preflight is held (1.1s)\n  \u2713  11 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:977:5 \u203a DPO rejected reason focus aid applies a provisional rejected-side note (1.1s)\n\n  11 passed (1.2m)\n(node:38058) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:38058) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)",
+        "returncode": 0
+      },
+      "name": "Web readiness UI exposes demo gate, photo review, and retrieval actions",
+      "passed": true
+    },
+    {
+      "detail": "API ranks the next operator actions with policy, counts, and machine-verifiable ordering",
+      "evidence": {
+        "item_count": 4,
+        "ordered_area_keys": [
+          "prompt_pairs",
+          "photo_context",
+          "vector_handoff",
+          "demo_generation"
+        ],
+        "queue_sha256": "abd6670fbb3c484fc3b6e4e4c3c09d2b89037ca3772b1b4e8489beed8b2b4609",
+        "sample_actions": [
+          {
+            "action_type": "open_held_prompt_pair_candidate",
+            "area_key": "prompt_pairs",
+            "count": 30,
+            "enabled": true
+          },
+          {
+            "action_type": "open_existing_photo_context_task",
+            "area_key": "photo_context",
+            "count": 22,
+            "enabled": true
+          },
+          {
+            "action_type": "open_photo_vector_review",
+            "area_key": "vector_handoff",
+            "count": 5,
+            "enabled": true
+          },
+          {
+            "action_type": "configure_text_generation_credentials",
+            "area_key": "demo_generation",
+            "count": 2,
+            "enabled": false
+          }
+        ],
+        "top_area_key": "prompt_pairs"
+      },
+      "name": "Downstream bottleneck queue is API-verifiable",
+      "passed": true
+    },
+    {
+      "detail": "artifact manifest lists downstream outputs with hashes, formats, endpoints, and eligibility policy",
+      "evidence": {
+        "artifact_count": 19,
+        "artifact_families": [
+          "operator_handoff",
+          "photo_context_review",
+          "photo_vector_handoff",
+          "prompt_pair_reference",
+          "prompt_pair_repair",
+          "prompt_pair_review",
+          "source_review_preview",
+          "training_dataset",
+          "training_review_dry_run"
+        ],
+        "content_sha256": "f00c352b8d59cc3da4e9e19c376804f7c3500c90c16a26d47b0d143c4e4d3050",
+        "formats": [
+          "json",
+          "jsonl",
+          "markdown",
+          "yaml"
+        ],
+        "sample_artifacts": [
+          "prompt_pair_audit_markdown",
+          "prompt_pair_review_progress_json",
+          "prompt_pair_top_blocker_session_plan_yaml",
+          "dpo_rejected_reason_repair_yaml",
+          "source_review_pair_generation_preview_json",
+          "prompt_pair_reference_jsonl"
+        ]
+      },
+      "name": "Downstream artifact manifest lists inspectable outputs",
+      "passed": true
+    },
+    {
+      "detail": "artifact audit recomputes declared artifact hashes and finds no mismatches",
+      "evidence": {
+        "checked_count": 19,
+        "content_sha256": "a4deb3344060a49d14d87dfc7f3466954ed67f2d6f1045d58ddc992cd3d7c32c",
+        "manifest_content_sha256": "f00c352b8d59cc3da4e9e19c376804f7c3500c90c16a26d47b0d143c4e4d3050",
+        "mismatch_count": 0,
+        "sample_artifacts": [
+          "prompt_pair_audit_markdown",
+          "prompt_pair_review_progress_json",
+          "prompt_pair_top_blocker_session_plan_yaml",
+          "dpo_rejected_reason_repair_yaml",
+          "source_review_pair_generation_preview_json",
+          "prompt_pair_reference_jsonl"
+        ]
+      },
+      "name": "Downstream artifact hash audit verifies manifest outputs",
+      "passed": true
+    },
+    {
+      "detail": "handoff names top bottlenecks, artifact hash status, and safety boundaries",
+      "evidence": {
+        "artifact_count": 18,
+        "artifact_hashes_match": true,
+        "checklist_count": 4,
+        "content_sha256": "6a0f9cbf03cfe3ea6971b31db5735daa27179241bdaf93c0f29b52f022c03ffe",
+        "ordered_bottleneck_area_keys": [
+          "prompt_pairs",
+          "photo_context",
+          "vector_handoff",
+          "demo_generation"
+        ],
+        "primary_bottleneck_area_key": "prompt_pairs",
+        "readiness_keys": [
+          "prompt_pairs",
+          "photo_context",
+          "vector_handoff",
+          "demo_generation",
+          "artifacts"
+        ],
+        "retrieval_gap_candidate_count": 27,
+        "retrieval_gap_hash": "858f02e157cc8d6bfde49342724a232d7191aabfe218bf7f1d6db4d6be89d528",
+        "retrieval_gap_query": "airplane in Maine"
+      },
+      "name": "Morning handoff summarizes current loop state",
+      "passed": true
+    },
+    {
+      "detail": "prompt-pair audit meets live milestone threshold",
+      "evidence": {
+        "inspectable_pair_count": 433,
+        "invalid_pair_count": 0,
+        "preflight_gate_counts": {
+          "approved": 403,
+          "candidate": 30
+        },
+        "preflight_mismatch_count": 0,
+        "preflight_mismatches": [],
+        "quality_counts": {
+          "review_candidate": 433
+        },
+        "sample_count": 20,
+        "total_pairs": 433,
+        "voice_mode_counts": {
+          "comic_observation": 10,
+          "father_to_adam": 67,
+          "logistical_note": 30,
+          "memoir_scene": 68,
+          "mundane_text_message": 70,
+          "nb_digression": 44,
+          "philosophical_fragment": 19,
+          "photography_reflection": 37,
+          "ps_digression": 61,
+          "source_based_story_recall": 1,
+          "verbatim_email_reply": 26
+        }
+      },
+      "name": "Prompt-pair audit has broad inspectable proof set",
+      "passed": true
+    },
+    {
+      "detail": "held prompt-pair candidates expose blockers, worklists, previews, and open-ticket actions without export promotion",
+      "evidence": {
+        "blocker_counts": {
+          "dpo_rejected_reason_empty": 25,
+          "source_boundary_blocks_training": 5
+        },
+        "content_sha256": "4d6ac9430cb830fb7be412d5e0cd91deabc988d2ed01e563002092e344d9c303",
+        "reported_candidate_count": 30,
+        "sample_tasks": [
+          "TASK_DPO_CANDIDATE_000700",
+          "TASK_DPO_CANDIDATE_000701",
+          "TASK_DPO_CANDIDATE_000702",
+          "TASK_DPO_CANDIDATE_000703",
+          "TASK_DPO_CANDIDATE_000704"
+        ],
+        "sample_worklists": [
+          "prompt_pair_blocker:dpo_rejected_reason_empty",
+          "prompt_pair_blocker:source_boundary_blocks_training"
+        ],
+        "total_candidate_count": 30,
+        "worklist_count": 2
+      },
+      "name": "Held prompt-pair review pack is actionable",
+      "passed": true
+    },
+    {
+      "detail": "review-progress endpoint mirrors audit counts and preserves candidate-only policy",
+      "evidence": {
+        "approved_count": 403,
+        "candidate_count": 30,
+        "completion_signal": "candidate_count_decreases_or_blocker_worklist_changes",
+        "content_sha256": "da499b6e2e0515446b43acca81d51e4688521e15c7b6dec02d644dc5ba66b652",
+        "top_blocker": "dpo_rejected_reason_empty",
+        "top_blocker_count": 25
+      },
+      "name": "Prompt-pair review progress is machine-checkable",
+      "passed": true
+    },
+    {
+      "detail": "top prompt-pair blocker exposes task previews, YAML, preflight blockers, and completion criteria",
+      "evidence": {
+        "blocker": "dpo_rejected_reason_empty",
+        "candidate_count": 25,
+        "content_sha256": "1f78f8f20d2412c9c62084bfc5e07c5959bb595be45c0cc32cdab91d1b336426",
+        "reported_candidate_count": 5,
+        "sample_tasks": [
+          "TASK_DPO_CANDIDATE_000700",
+          "TASK_DPO_CANDIDATE_000701",
+          "TASK_DPO_CANDIDATE_000702",
+          "TASK_DPO_CANDIDATE_000703",
+          "TASK_DPO_CANDIDATE_000704"
+        ]
+      },
+      "name": "Prompt-pair top blocker slice is inspectable",
+      "passed": true
+    },
+    {
+      "detail": "top prompt-pair blocker session plan batches existing tickets without export promotion",
+      "evidence": {
+        "blocker": "dpo_rejected_reason_empty",
+        "candidate_count": 25,
+        "content_sha256": "32bd329b112a77c1057c6542b0dae01d564bc78d7a77ed6d09276154974acf63",
+        "export_preview_sha256": "53109c5cef910d2c1beec0ca27c7a6fc6c0c57715bfe33994ebb7d7a5d53df42",
+        "field_plan": [
+          "failure_modes",
+          "rejected_rubric"
+        ],
+        "sample_tasks": [
+          "TASK_DPO_CANDIDATE_000700",
+          "TASK_DPO_CANDIDATE_000701",
+          "TASK_DPO_CANDIDATE_000702",
+          "TASK_DPO_CANDIDATE_000703",
+          "TASK_DPO_CANDIDATE_000704"
+        ],
+        "selected_count": 5
+      },
+      "name": "Prompt-pair top blocker session plan is actionable",
+      "passed": true
+    },
+    {
+      "detail": "DPO repair packet exposes rejected-side reason gaps with YAML, blockers, and open-ticket actions",
+      "evidence": {
+        "content_sha256": "c5e8502815d5e853588b66e9ec21bf45e689a2bf0bf65240b97a3b476455a427",
+        "export_preview_sha256": "4c62588bcfe042f6977b900b624a0eacbc4e43c11147b0052c37f69d663e3afa",
+        "reported_candidate_count": 25,
+        "sample_tasks": [
+          "TASK_DPO_CANDIDATE_000700",
+          "TASK_DPO_CANDIDATE_000701",
+          "TASK_DPO_CANDIDATE_000702",
+          "TASK_DPO_CANDIDATE_000703",
+          "TASK_DPO_CANDIDATE_000704"
+        ],
+        "total_candidate_count": 25
+      },
+      "name": "DPO rejected-reason repair packet is actionable",
+      "passed": true
+    },
+    {
+      "detail": "large human audit pack exposes exact prompt/response/export previews without final-authenticity claims",
+      "evidence": {
+        "markdown_chars": 687039,
+        "markdown_sample_sections": 200,
+        "represented_modes": [
+          "comic_observation",
+          "father_to_adam",
+          "logistical_note",
+          "memoir_scene",
+          "mundane_text_message",
+          "nb_digression",
+          "philosophical_fragment",
+          "photography_reflection",
+          "ps_digression",
+          "verbatim_email_reply"
+        ],
+        "sample_count": 200,
+        "sample_limit_cap": 250
+      },
+      "name": "200-pair human audit pack is available",
+      "passed": true
+    },
+    {
+      "detail": "prompt-pair tickets compile into a stable reference corpus for future model drafting",
+      "evidence": {
+        "content_sha256": "450ecceb3476d1a57e65750b7b20b8a97638905cefd0dc926448711c17669673",
+        "duplicate_excluded_count": 25,
+        "represented_modes": [
+          "comic_observation",
+          "father_to_adam",
+          "logistical_note",
+          "memoir_scene",
+          "mundane_text_message",
+          "nb_digression",
+          "philosophical_fragment",
+          "photography_reflection",
+          "ps_digression",
+          "verbatim_email_reply"
+        ],
+        "sample_count": 200,
+        "unique_reference_count": 408
+      },
+      "name": "Prompt-pair voice reference pack feeds generation context",
+      "passed": true
+    },
+    {
+      "detail": "dataset export dry-runs expose reviewable SFT/DPO artifacts",
+      "evidence": {
+        "dpo": {
+          "candidate_rows_missing_blockers": 0,
+          "candidate_rows_missing_issue_context": 0,
+          "excluded_count": 0,
+          "excluded_reasons": [],
+          "export_type": "dpo",
+          "included_artifact_types": [
+            "prompt_pair_dpo_review_candidate"
+          ],
+          "included_count": 25,
+          "included_duplicate_count": 0,
+          "mode": "candidate_allowed",
+          "sample_included": [
+            {
+              "artifact_id": "9f5afac9-3b59-4195-8fd5-c02282d100e4",
+              "artifact_type": "prompt_pair_dpo_review_candidate",
+              "export_status": "review_candidate",
+              "review_blockers": [
+                "needs_adam_gold_edit",
+                "rejected_truth_status_model_generated_requires_review"
+              ],
+              "voice_mode": "mundane_text_message"
+            },
+            {
+              "artifact_id": "ec90d79c-30ad-4471-845f-f004d50a177c",
+              "artifact_type": "prompt_pair_dpo_review_candidate",
+              "export_status": "review_candidate",
+              "review_blockers": [
+                "needs_adam_gold_edit",
+                "rejected_truth_status_model_generated_requires_review"
+              ],
+              "voice_mode": "memoir_scene"
+            },
+            {
+              "artifact_id": "ec6ba6de-aee2-458c-a394-348775cb1319",
+              "artifact_type": "prompt_pair_dpo_review_candidate",
+              "export_status": "review_candidate",
+              "review_blockers": [
+                "needs_adam_gold_edit",
+                "rejected_truth_status_model_generated_requires_review"
+              ],
+              "voice_mode": "logistical_note"
+            }
+          ]
+        },
+        "sft": {
+          "candidate_rows_missing_blockers": 0,
+          "excluded_count": 0,
+          "excluded_reasons": [],
+          "export_type": "sft",
+          "included_artifact_types": [
+            "prompt_pair_sft_review_candidate"
+          ],
+          "included_count": 408,
+          "included_duplicate_count": 0,
+          "mode": "candidate_allowed",
+          "sample_included": [
+            {
+              "artifact_id": "70b1ea8e-1e50-4eee-9554-507a58c3cfdc",
+              "artifact_type": "prompt_pair_sft_review_candidate",
+              "export_status": "review_candidate",
+              "review_blockers": [
+                "needs_adam_gold_edit"
+              ],
+              "voice_mode": "mundane_text_message"
+            },
+            {
+              "artifact_id": "66df99c8-a954-421e-a08a-81ffc32225de",
+              "artifact_type": "prompt_pair_sft_review_candidate",
+              "export_status": "review_candidate",
+              "review_blockers": [
+                "needs_adam_gold_edit"
+              ],
+              "voice_mode": "memoir_scene"
+            },
+            {
+              "artifact_id": "7ce1be70-b138-40c9-9f81-122f3fe89224",
+              "artifact_type": "prompt_pair_sft_review_candidate",
+              "export_status": "review_candidate",
+              "review_blockers": [
+                "needs_adam_gold_edit"
+              ],
+              "voice_mode": "logistical_note"
+            }
+          ]
+        }
+      },
+      "name": "Training export dry-runs expose reviewable artifacts",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_dataset_exports.py::test_export_dry_run_excludes_boundary_blocked_and_candidate_items tests/test_ralph_phase1_training_spine.py::test_sft_export_guard_blocks_filename_placeholder_prompt_even_with_clean_rubric tests/test_ralph_phase1_training_spine.py::test_dpo_export_guard_blocks_identical_or_unexplained_rejected_response tests/test_ralph_phase3_prompt_pair_audit.py::test_prompt_pair_audit_and_reference_pack_exclude_structural_sft_blockers",
+        "output_tail": "....                                                                     [100%]\n4 passed in 1.29s",
+        "returncode": 0
+      },
+      "name": "Dataset export build creates exact retrievable JSONL",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_task_submit.py::test_gold_voice_submission_creates_annotation_and_training_artifacts tests/test_task_submit.py::test_gold_voice_response_b_minor_issue_stays_candidate_until_resolved tests/test_task_submit.py::test_unified_dpo_gold_submission_creates_dpo_only_artifact",
+        "output_tail": "...                                                                      [100%]\n3 passed in 0.96s",
+        "returncode": 0
+      },
+      "name": "Prompt-pair submit receipts explain export artifact status",
+      "passed": true
+    },
+    {
+      "detail": "text-generation status exposes model, reasoning, and live-call gate",
+      "evidence": {
+        "fine_tuning_enabled_in_mvp": false,
+        "openai_api_key_configured": false,
+        "text_generation_live_calls_enabled": false,
+        "text_generation_live_ready": false,
+        "text_generation_model": "gpt-5.5",
+        "text_generation_reasoning_effort": "xhigh"
+      },
+      "name": "Text generation model configuration is visible and gated",
+      "passed": true
+    },
+    {
+      "detail": "demo generation exposes held-out prompts and credentials/live-call blocker without creating training truth",
+      "evidence": {
+        "blockers": [
+          "text_generation_live_calls_disabled",
+          "openai_api_key_missing"
+        ],
+        "can_generate": false,
+        "held_out_prompt_count": 5,
+        "sample_prompts": [
+          "How's Portland today?",
+          "Hey Dad, I was thinking about that trip you took for the girls' Bat Mitzvah. Didn't you have some car trouble or money issues back then?",
+          "Colette: Dad where is the Portland airport? I can pick up Eric because we'll be there already. Also, let the hotel know about the late check-in."
+        ],
+        "status": "blocked_missing_credentials_or_live_gate"
+      },
+      "name": "Model demo generation is honestly gated",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_blocker tests/test_ralph_phase1_training_spine.py::test_demo_generation_endpoint_stores_model_generated_outputs_without_training_truth",
+        "output_tail": "..                                                                       [100%]\n2 passed in 0.85s",
+        "returncode": 0
+      },
+      "name": "Model demo generations stay model-generated and outside training truth",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_plain_text_extraction_prefers_natural_sections_over_single_arbitrary_chunk tests/test_ralph_phase1_training_spine.py::test_source_review_generate_pairs_from_natural_sections_creates_singleton_prompt_pair_tasks",
+        "output_tail": "..                                                                       [100%]\n2 passed in 0.78s",
+        "returncode": 0
+      },
+      "name": "Natural text intake creates singleton Prompt Pair tickets",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_source_review_fallback_pair_records_generation_metadata_without_archival_claim",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.80s",
+        "returncode": 0
+      },
+      "name": "Source-review fallback pair generation records model/no-live metadata",
+      "passed": true
+    },
+    {
+      "detail": "mirrored photo previews are live and image-backed",
+      "evidence": {
+        "checked_previews": [
+          {
+            "asset_id": "5e2e3615-850e-4a03-a74c-77e9d8e1949f",
+            "bytes": 192283,
+            "content_type": "image/jpeg",
+            "title": "Rotmil 2021 I.jpg"
+          },
+          {
+            "asset_id": "30990b49-4105-4a13-9cf3-ffb28b308774",
+            "bytes": 250601,
+            "content_type": "image/jpeg",
+            "title": "Rotmil Honors VIII.jpg"
+          }
+        ],
+        "mirrored_count": 82,
+        "photo_count": 273,
+        "preview_ready_count": 82
+      },
+      "name": "Mirrored photos have reliable live previews",
+      "passed": true
+    },
+    {
+      "detail": "photo inventory summarizes review gaps without creating low-quality memories",
+      "evidence": {
+        "duplicate_group_count": 46,
+        "needs_context_count": 71,
+        "needs_context_group_count": 22,
+        "photo_count": 273,
+        "preview_ready_count": 82,
+        "profile_count": 5,
+        "sample_groups": [
+          {
+            "asset_count": 4,
+            "display_title": "Rotmil 2021 II.jpg",
+            "needs_context_count": 4
+          },
+          {
+            "asset_count": 4,
+            "display_title": "Rotmil 2021 III.jpg",
+            "needs_context_count": 4
+          },
+          {
+            "asset_count": 4,
+            "display_title": "Rotmil 2021 IV.jpg",
+            "needs_context_count": 4
+          },
+          {
+            "asset_count": 4,
+            "display_title": "Rotmil 2021 V.jpg",
+            "needs_context_count": 4
+          },
+          {
+            "asset_count": 4,
+            "display_title": "Rotmil 2021 VI.jpg",
+            "needs_context_count": 4
+          }
+        ]
+      },
+      "name": "Photo review inventory exposes context gaps and duplicate groups",
+      "passed": true
+    },
+    {
+      "detail": "photo context pack exposes no-claim gaps, held machine drafts, and reviewed vector handoff preview",
+      "evidence": {
+        "content_sha256": "23f669dce0fbe74f3e86c6ed385924fe4d63adfe722e9733b5fe88add0d343b4",
+        "dry_run_session": {
+          "created_count": 0,
+          "existing_count": 1,
+          "review_policy": "no_claim_until_adam_context_submission",
+          "selected_count": 3
+        },
+        "gallery_preview_item_count": 5,
+        "held_for_adam_review_count": 5,
+        "needs_context_group_count": 22,
+        "photo_context_worklist_count": 3,
+        "photo_count": 273,
+        "preview_ready_count": 82,
+        "retrieval_field_worklist": {
+          "content_sha256": "e36261c4e2a170e78ada985ea8f6a71f8de4140b16aa02c80236edb01420ce3f",
+          "export_preview_sha256": "3695d5c2339d785dc9e5e9da4965faed22e3992f95c411856c3403bf42ad8f88",
+          "missing_field_total": 2,
+          "reported_item_count": 1
+        },
+        "retrieval_payoff_preview": {
+          "content_sha256": "cef7e8b7d94102bbd5827813832c6768320219e566c9fe9ffe8f595226b5a2dd",
+          "reported_item_count": 1,
+          "source_worklist_content_sha256": "e36261c4e2a170e78ada985ea8f6a71f8de4140b16aa02c80236edb01420ce3f",
+          "unlockable_vector_record_count": 1
+        },
+        "reviewed_vector_ready_count": 0,
+        "sample_held_titles": [
+          "Romil and Japanese Flute IV.jpg",
+          "Rotmil 2021 I.jpg",
+          "Rotmil Honors VIII.jpg"
+        ],
+        "sample_no_claim_titles": [
+          "Rotmil 2021 II.jpg",
+          "Rotmil 2021 III.jpg",
+          "Rotmil 2021 IV.jpg"
+        ],
+        "sample_worklists": [
+          "photo_context:no_claim_needs_context",
+          "photo_context:machine_draft_needs_adam_review",
+          "photo_context:gallery_draft_needs_review"
+        ],
+        "session_progress": {
+          "blocked_reason_counts": {
+            "held_pending_downstream_clearance": 1,
+            "not_ready_for_downstream": 1
+          },
+          "completion_signal": "submit_ready_count_increases_or_retrieval_gap_missing_fields_decrease",
+          "content_sha256": "563679a1d380da7d6b60beb5fc739b4f96a47bb4ee137ded83f792c26d16d370",
+          "draft_count": 2,
+          "retrieval_gap_missing_field_counts": {
+            "retrieval_query_relevance": 1,
+            "visual_description_correction": 1
+          },
+          "retrieval_gap_task_count": 2,
+          "status_counts": {
+            "held_pending_downstream_clearance": 1,
+            "submit_ready": 1
+          },
+          "submit_ready_count": 1,
+          "total_context_task_count": 2
+        }
+      },
+      "name": "Photo context review pack previews Adam work queue and vector-safe records",
+      "passed": true
+    },
+    {
+      "detail": "top photo context slice exposes preview URLs, no-claim policy, suggested fields, and completion criteria",
+      "evidence": {
+        "candidate_count": 22,
+        "content_sha256": "4ed1fe5c50a37c1420e7fe451c03b7114890f9bbeaa35b876bf81354b8d77eba",
+        "reported_candidate_count": 5,
+        "sample_titles": [
+          "Rotmil 2021 II.jpg",
+          "Rotmil 2021 III.jpg",
+          "Rotmil 2021 IV.jpg",
+          "Rotmil 2021 V.jpg",
+          "Rotmil 2021 VI.jpg"
+        ],
+        "worklist_key": "photo_context:no_claim_needs_context"
+      },
+      "name": "Photo context top slice is inspectable",
+      "passed": true
+    },
+    {
+      "detail": "session plan preserves query as prioritization context and points each no-claim group to Adam-authored context work",
+      "evidence": {
+        "action_counts": {
+          "create_photo_context_task": 4,
+          "open_existing_photo_context_task": 1
+        },
+        "candidate_count": 22,
+        "content_sha256": "ac0ac75460dc312630a7953dae2a01f1c9466c5029033fc9287f27578080db99",
+        "export_preview_sha256": "abe72c9b88dfca2cdc4b4084016080d5ba1cf7a58bf867997cc42a9477fab35d",
+        "sample_titles": [
+          "Rotmil 2021 II.jpg",
+          "Rotmil 2021 III.jpg",
+          "Rotmil 2021 IV.jpg",
+          "Rotmil 2021 V.jpg",
+          "Rotmil 2021 VI.jpg"
+        ],
+        "selected_count": 5,
+        "source_query": "airplane in Maine"
+      },
+      "name": "Photo context review session plan is no-claim and actionable",
+      "passed": true
+    },
+    {
+      "detail": "gallery preview exposes photo items with boundary and review labels",
+      "evidence": {
+        "draft_item_count": 5,
+        "draft_review_task_count": 5,
+        "hidden_draft_count": 0,
+        "item_count": 5,
+        "reviewed_item_count": 0,
+        "sample_titles": [
+          "Photo memory: Adam with flowers",
+          "Photo memory: Charles with Japanese flute",
+          "Photo memory: honors ceremony"
+        ]
+      },
+      "name": "Gallery preview is boundary-aware and review-labeled",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_gallery_review_endpoint_defaults_to_reviewed_and_can_preview_drafts",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.94s",
+        "returncode": 0
+      },
+      "name": "Gallery endpoint defaults to reviewed photos and can preview drafts",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_review_inventory_groups_copy_variants_and_counts_context_gap tests/test_ralph_phase2_photo_spine.py::test_photo_context_task_created_from_retrieval_gap_preserves_query_origin tests/test_ralph_phase2_photo_spine.py::test_photo_context_question_answers_become_searchable_memory_and_embedding_text",
+        "output_tail": "...                                                                      [100%]\n3 passed in 1.32s",
+        "returncode": 0
+      },
+      "name": "Photo inventory context tasks promote Adam answers",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_submit_projection_is_non_mutating_and_matches_downstream_readiness tests/test_ralph_phase2_photo_spine.py::test_photo_context_submit_receipt_carries_projection_hash_and_payload_preview tests/test_ralph_phase2_photo_spine.py::test_photo_context_submit_projection_reports_boundary_and_context_holds_without_mutation",
+        "output_tail": "...                                                                      [100%]\n3 passed in 1.18s",
+        "returncode": 0
+      },
+      "name": "Photo context submit projection and receipts are auditable",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_session_progress_summarizes_drafts_and_projection_blockers_without_mutation",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.94s",
+        "returncode": 0
+      },
+      "name": "Photo context session progress summarizes drafts and blockers",
+      "passed": true
+    },
+    {
+      "detail": "photo profiles and memories meet milestone threshold",
+      "evidence": {
+        "memory_count": 5,
+        "metadata_profile_count": 6,
+        "photo_memory_count": 5,
+        "photo_profile_count": 5
+      },
+      "name": "Reviewed photos have memory/profile records",
+      "passed": true
+    },
+    {
+      "detail": "machine photo-memory drafts have ready human-review tickets",
+      "evidence": {
+        "review_task_count": 5,
+        "sample_titles": [
+          "Romil and Japanese Flute IV.jpg",
+          "Rotmil Honors VIII.jpg",
+          "Rotmil_Scan_15_2-2018 - Adam with flowers.jpg",
+          "Rotmil-Street Walker.jpg",
+          "Rotmil 2021 I.jpg"
+        ]
+      },
+      "name": "Photo memory drafts are reviewable tasks",
+      "passed": true
+    },
+    {
+      "detail": "photo priority summary ranks fastest review work with missing fields and no-claim safeguards",
+      "evidence": {
+        "reported_count": 7,
+        "sample_paths": [
+          "Fastest vector path",
+          "Fastest vector path",
+          "Fastest vector path",
+          "Fastest vector path",
+          "Fastest vector path"
+        ],
+        "sample_tasks": [
+          "TASK_PHOTO_MEMORY_REVIEW_000729",
+          "TASK_PHOTO_MEMORY_REVIEW_000728",
+          "TASK_PHOTO_MEMORY_REVIEW_000727",
+          "TASK_PHOTO_MEMORY_REVIEW_000726",
+          "TASK_PHOTO_MEMORY_REVIEW_000725"
+        ],
+        "total_candidate_count": 7
+      },
+      "name": "Photo priority summary is no-claim and actionable",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_claim_policy",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.91s",
+        "returncode": 0
+      },
+      "name": "Photo priority summary orders review work without memory claims",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_machine_photo_memory_drafts_create_profiles_memories_embeddings_and_retrieval tests/test_ralph_phase2_photo_spine.py::test_machine_photo_memory_review_promotes_adam_context_over_system_inference tests/test_ralph_phase2_photo_spine.py::test_sealed_photo_review_receipt_reports_boundary_exclusion_from_vector_handoff tests/test_ralph_phase2_photo_spine.py::test_machine_photo_memory_drafts_do_not_overwrite_adam_reviewed_photo_profiles tests/test_ralph_phase2_photo_spine.py::test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_embedding_text tests/test_ralph_phase2_photo_spine.py::test_reviewed_photo_memory_demo_readiness_is_truthful_before_and_after_adam_review",
+        "output_tail": "......                                                                   [100%]\n6 passed in 1.41s",
+        "returncode": 0
+      },
+      "name": "Photo memory draft generation is idempotent and review-safe",
+      "passed": true
+    },
+    {
+      "detail": "photo memories produce review-gated prompt-pair candidates with provenance",
+      "evidence": {
+        "photo_prompt_pair_count": 5,
+        "sample_prompts": [
+          {
+            "human_id": "TASK_PHOTO_PAIR_000730",
+            "prompt": "Dad, what does this photograph bring back about student performance?",
+            "source_photo_id": "5e2e3615-850e-4a03-a74c-77e9d8e1949f",
+            "truth_status": "system_inference"
+          },
+          {
+            "human_id": "TASK_PHOTO_PAIR_000731",
+            "prompt": "Dad, what do you see in this street photograph?",
+            "source_photo_id": "54593e54-1ede-4e40-9567-580681ef4d12",
+            "truth_status": "system_inference"
+          },
+          {
+            "human_id": "TASK_PHOTO_PAIR_000732",
+            "prompt": "Dad, what do you remember about Adam holding the flowers?",
+            "source_photo_id": "6528c37f-b7c8-45eb-b59b-967150f41849",
+            "truth_status": "system_inference"
+          },
+          {
+            "human_id": "TASK_PHOTO_PAIR_000733",
+            "prompt": "Dad, what do you remember about that honors ceremony?",
+            "source_photo_id": "30990b49-4105-4a13-9cf3-ffb28b308774",
+            "truth_status": "system_inference"
+          },
+          {
+            "human_id": "TASK_PHOTO_PAIR_000734",
+            "prompt": "Dad, what do you remember about the Japanese flute?",
+            "source_photo_id": "8a4804ea-e2fc-4b8c-9c2d-53e0349de1c1",
+            "truth_status": "system_inference"
+          }
+        ]
+      },
+      "name": "Photo memory records create grounded Prompt Pair tickets",
+      "passed": true
+    },
+    {
+      "detail": "photo-memory corpus exposes reviewed-only, boundary-filtered embedding inputs",
+      "evidence": {
+        "corpus_type": "photo_memory_embedding_text",
+        "excluded_count": 5,
+        "next_review_action_count": 5,
+        "record_count": 0,
+        "retrieval_origin_no_claim_count": 0,
+        "retrieval_origin_record_count": 0,
+        "review_policy": "reviewed_only_by_default",
+        "sample_titles": []
+      },
+      "name": "Photo memory corpus is embedding-ready",
+      "passed": true
+    },
+    {
+      "detail": "photo-memory embedding JSONL handoff has manifest, provenance, and no inline vectors",
+      "evidence": {
+        "boundary_excluded_count": 0,
+        "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "draft_preview_only": true,
+        "draft_preview_record_count": 5,
+        "excluded_count": 5,
+        "held_for_adam_review_count": 5,
+        "next_review_action_count": 5,
+        "record_count": 0,
+        "retrieval_origin_no_claim_count": 0,
+        "retrieval_origin_record_count": 0,
+        "reviewed_ready_count": 0,
+        "sample_held": [
+          {
+            "reasons": [
+              "requires_adam_review"
+            ],
+            "review_status": "held_for_adam_review",
+            "review_task_human_id": "TASK_PHOTO_MEMORY_REVIEW_000725",
+            "source_photo_title": "Romil and Japanese Flute IV.jpg"
+          },
+          {
+            "reasons": [
+              "requires_adam_review"
+            ],
+            "review_status": "held_for_adam_review",
+            "review_task_human_id": "TASK_PHOTO_MEMORY_REVIEW_000726",
+            "source_photo_title": "Rotmil Honors VIII.jpg"
+          },
+          {
+            "reasons": [
+              "requires_adam_review"
+            ],
+            "review_status": "held_for_adam_review",
+            "review_task_human_id": "TASK_PHOTO_MEMORY_REVIEW_000727",
+            "source_photo_title": "Rotmil_Scan_15_2-2018 - Adam with flowers.jpg"
+          }
+        ],
+        "sample_ids": []
+      },
+      "name": "Photo vector handoff export is stable and boundary-aware",
+      "passed": true
+    },
+    {
+      "detail": "reviewed-photo demo is either ready with reviewed records or blocked with exact Adam-review actions",
+      "evidence": {
+        "blockers": [
+          "no_reviewed_vector_ready_photo_memory"
+        ],
+        "candidate_action_count": 5,
+        "reviewed_vector_ready_count": 0,
+        "sample_titles": [],
+        "status": "needs_adam_review"
+      },
+      "name": "Reviewed photo-memory demo readiness is truthful",
+      "passed": true
+    },
+    {
+      "detail": "required photo-memory retrieval queries return linked results",
+      "evidence": {
+        "queries": [
+          {
+            "query": "Japanese flute",
+            "result_count": 1,
+            "top_result": {
+              "boundary_snapshot": {
+                "contains_living_person_sensitive_material": false,
+                "created_at": "2026-04-29T01:35:05.590708Z",
+                "id": "ebbdebba-6cc3-4fc3-8eee-9caf93305a44",
+                "notes": "Machine-drafted family-private photo memory boundary; Adam review still required before quotation/public use.",
+                "privacy_level": "family_private",
+                "quotable": false,
+                "redaction_required": false,
+                "retrievable_in_chat": true,
+                "reviewed_at": "2026-04-29T04:05:22.922071Z",
+                "reviewed_by": "system_draft",
+                "searchable": true,
+                "summarizable": true,
+                "target_id": "8a4804ea-e2fc-4b8c-9c2d-53e0349de1c1",
+                "target_type": "asset",
+                "usable_for_dpo": false,
+                "usable_for_eval": true,
+                "usable_for_gallery_family": true,
+                "usable_for_gallery_public": false,
+                "usable_for_sft": false,
+                "usable_for_simulation": true,
+                "usable_for_voice_context": true
+              },
+              "embedding_record_id": "21206cfd-6732-4384-bb33-5751ac08990b",
+              "input_preview": "Photo memory: Charles with Japanese flute Photo memory machine draft. Charles sits in his apartment playing a Japanese flute, surrounded by books, coffee, pistachios, papers, and ordinary working objects. Machine draft from image preview and filename. This looks like a memory anc",
+              "matched_terms": [
+                "flute",
+                "japanese",
+                "music"
+              ],
+              "retrieval_gap_origin": null,
+              "review_policy": {
+                "boundary_reviewed_by": "system_draft",
+                "does_not_certify_final_memory": true,
+                "requires_adam_review": true,
+                "truth_status": "system_inference"
+              },
+              "score": 29,
+              "source_photo_id": "8a4804ea-e2fc-4b8c-9c2d-53e0349de1c1",
+              "target_id": "a8d1763b-8850-44d5-b09d-52195d101a28",
+              "target_type": "memory",
+              "title": "Photo memory: Charles with Japanese flute",
+              "truth_status": "system_inference",
+              "why_matched": "Matched query terms: flute, japanese, music."
+            }
+          },
+          {
+            "query": "honors ceremony",
+            "result_count": 1,
+            "top_result": {
+              "boundary_snapshot": {
+                "contains_living_person_sensitive_material": false,
+                "created_at": "2026-04-29T01:35:05.616188Z",
+                "id": "98c366cb-ff45-49be-bbfd-f7df175e2f3d",
+                "notes": "Machine-drafted family-private photo memory boundary; Adam review still required before quotation/public use.",
+                "privacy_level": "family_private",
+                "quotable": false,
+                "redaction_required": false,
+                "retrievable_in_chat": true,
+                "reviewed_at": "2026-04-29T04:05:22.941676Z",
+                "reviewed_by": "system_draft",
+                "searchable": true,
+                "summarizable": true,
+                "target_id": "30990b49-4105-4a13-9cf3-ffb28b308774",
+                "target_type": "asset",
+                "usable_for_dpo": false,
+                "usable_for_eval": true,
+                "usable_for_gallery_family": true,
+                "usable_for_gallery_public": false,
+                "usable_for_sft": false,
+                "usable_for_simulation": true,
+                "usable_for_voice_context": true
+              },
+              "embedding_record_id": "08c51282-879d-4573-8307-5527fbef1045",
+              "input_preview": "Photo memory: honors ceremony Photo memory machine draft. Black-and-white image of Charles speaking at a microphone inside a synagogue-like hall during an honors or remembrance ceremony. Machine draft from image preview and filename. This appears connected to public testimony, ho",
+              "matched_terms": [
+                "ceremony",
+                "honors",
+                "microphone",
+                "testimony"
+              ],
+              "retrieval_gap_origin": null,
+              "review_policy": {
+                "boundary_reviewed_by": "system_draft",
+                "does_not_certify_final_memory": true,
+                "requires_adam_review": true,
+                "truth_status": "system_inference"
+              },
+              "score": 36,
+              "source_photo_id": "30990b49-4105-4a13-9cf3-ffb28b308774",
+              "target_id": "9149a9e3-da98-41f2-b1ce-9bb9d4a6b8c7",
+              "target_type": "memory",
+              "title": "Photo memory: honors ceremony",
+              "truth_status": "system_inference",
+              "why_matched": "Matched query terms: ceremony, honors, microphone, testimony."
+            }
+          },
+          {
+            "query": "Adam flowers",
+            "result_count": 3,
+            "top_result": {
+              "boundary_snapshot": {
+                "contains_living_person_sensitive_material": false,
+                "created_at": "2026-04-29T01:35:05.507780Z",
+                "id": "ab41498f-1f53-4793-8381-e7db19cd4b28",
+                "notes": "Machine-drafted family-private photo memory boundary; Adam review still required before quotation/public use.",
+                "privacy_level": "family_private",
+                "quotable": false,
+                "redaction_required": false,
+                "retrievable_in_chat": true,
+                "reviewed_at": "2026-04-29T04:05:22.952945Z",
+                "reviewed_by": "system_draft",
+                "searchable": true,
+                "summarizable": true,
+                "target_id": "6528c37f-b7c8-45eb-b59b-967150f41849",
+                "target_type": "asset",
+                "usable_for_dpo": false,
+                "usable_for_eval": true,
+                "usable_for_gallery_family": true,
+                "usable_for_gallery_public": false,
+                "usable_for_sft": false,
+                "usable_for_simulation": true,
+                "usable_for_voice_context": true
+              },
+              "embedding_record_id": "7e91dd25-1832-4e57-9b59-2450714f4f3a",
+              "input_preview": "Photo memory: Adam with flowers Photo memory machine draft. A young Adam stands outside holding yellow flowers in soft light, with grass and greenery behind him. Machine draft from image preview and filename. This is a family-memory anchor for Adam as a child, flowers, tenderness",
+              "matched_terms": [
+                "adam",
+                "flowers"
+              ],
+              "retrieval_gap_origin": null,
+              "review_policy": {
+                "boundary_reviewed_by": "system_draft",
+                "does_not_certify_final_memory": true,
+                "requires_adam_review": true,
+                "truth_status": "system_inference"
+              },
+              "score": 22,
+              "source_photo_id": "6528c37f-b7c8-45eb-b59b-967150f41849",
+              "target_id": "e7120df5-eced-4517-b554-c8b89a71ca22",
+              "target_type": "memory",
+              "title": "Photo memory: Adam with flowers",
+              "truth_status": "system_inference",
+              "why_matched": "Matched query terms: adam, flowers."
+            }
+          }
+        ]
+      },
+      "name": "Photo semantic retrieval returns meaningful memory results",
+      "passed": true
+    },
+    {
+      "detail": "query either resolves to a reviewed/flagged memory or returns a no-claim photo-context gap",
+      "evidence": {
+        "query": "airplane in Maine",
+        "result_count": 0,
+        "retrieval_gap": {
+          "backlog_only_candidate_count": 27,
+          "candidate_group_selection_policy": "reviewable_evidence_overlap_then_backlog_sample",
+          "candidate_photo_group_count": 27,
+          "message": "No boundary-cleared photo memory matched this query yet.",
+          "next_queue": "photo_assets_needing_context",
+          "next_queues": [
+            "photo_assets_needing_context",
+            "vision_drafts_needing_review"
+          ],
+          "photo_assets_needing_context_count": 71,
+          "photo_groups_needing_context_count": 22,
+          "photo_groups_needing_draft_review_count": 5,
+          "preview_ready_photo_count": 82,
+          "query": "airplane in Maine",
+          "sample_context_groups": [
+            {
+              "candidate_evidence": {
+                "candidate_media_kind": "photograph_like",
+                "candidate_queue": "photo_assets_needing_context",
+                "evidence_source": "title_filename_only",
+                "not_memory_claim": true,
+                "profile_status": "missing",
+                "review_task_human_id": "TASK_PHOTO_CONTEXT_000735",
+                "review_task_id": "83568aab-5b44-4f6b-af52-08583b23b29b",
+                "source_fields": [
+                  "asset.title",
+                  "asset.original_filename",
+                  "asset.human_id"
+                ],
+                "source_photo_ids": [
+                  "293cb10f-d4a0-4d39-9b84-177689d64e6e"
+                ],
+                "source_titles": [
+                  "Rotmil_10_19 - Cathryn WIlson.jpg"
+                ],
+                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
+                "truth_status": "no_claim"
+              },
+              "candidate_match_quality": "backlog_only",
+              "candidate_media_kind": "photograph_like",
+              "candidate_queue": "photo_assets_needing_context",
+              "candidate_status": "needs_photo_context",
+              "canonical_asset_id": "293cb10f-d4a0-4d39-9b84-177689d64e6e",
+              "display_title": "Rotmil_10_19 - Cathryn WIlson.jpg",
+              "group_key": "rotmil 10 19 cathryn wilson",
+              "matched_query_terms": [],
+              "preview_ready_count": 1,
+              "primary_action": {
+                "action_type": "open_existing_photo_context_task",
+                "label": "Open context task",
+                "queue": "photo_assets_needing_context",
+                "task_human_id": "TASK_PHOTO_CONTEXT_000735",
+                "task_id": "83568aab-5b44-4f6b-af52-08583b23b29b"
+              },
+              "selection_reason": "backlog_sample_no_semantic_match"
+            },
+            {
+              "candidate_evidence": {
+                "candidate_media_kind": "photograph_like",
+                "candidate_queue": "photo_assets_needing_context",
+                "evidence_source": "title_filename_only",
+                "not_memory_claim": true,
+                "profile_status": "missing",
+                "review_task_human_id": "TASK_PHOTO_CONTEXT_000736",
+                "review_task_id": "3bc1a651-d3d1-414f-9f58-b50abb1aceab",
+                "source_fields": [
+                  "asset.title",
+                  "asset.original_filename",
+                  "asset.human_id"
+                ],
+                "source_photo_ids": [
+                  "5fa5f3a1-4d4a-4131-9820-4dc2a8a8a6dd",
+                  "e88fc76e-bb47-45b8-a121-f479fb25f1f6",
+                  "73599d1d-2cdf-4b35-b32c-8cd4f3e6a9f2",
+                  "e95a66fd-ddb4-4781-9fa4-ba814e22c274"
+                ],
+                "source_titles": [
+                  "Rotmil 2021 II.jpg",
+                  "Rotmil 2021 II - Copy.jpg",
+                  "Rotmil 2021 II - Copy - Copy.jpg",
+                  "Rotmil 2021 II - Copy (2).jpg"
+                ],
+                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
+                "truth_status": "no_claim"
+              },
+              "candidate_match_quality": "backlog_only",
+              "candidate_media_kind": "photograph_like",
+              "candidate_queue": "photo_assets_needing_context",
+              "candidate_status": "needs_photo_context",
+              "canonical_asset_id": "5fa5f3a1-4d4a-4131-9820-4dc2a8a8a6dd",
+              "display_title": "Rotmil 2021 II.jpg",
+              "group_key": "rotmil 2021 ii",
+              "matched_query_terms": [],
+              "preview_ready_count": 4,
+              "primary_action": {
+                "action_type": "open_existing_photo_context_task",
+                "label": "Open context task",
+                "queue": "photo_assets_needing_context",
+                "task_human_id": "TASK_PHOTO_CONTEXT_000736",
+                "task_id": "3bc1a651-d3d1-414f-9f58-b50abb1aceab"
+              },
+              "selection_reason": "backlog_sample_no_semantic_match"
+            },
+            {
+              "candidate_evidence": {
+                "candidate_media_kind": "photograph_like",
+                "candidate_queue": "photo_assets_needing_context",
+                "evidence_source": "title_filename_only",
+                "not_memory_claim": true,
+                "profile_status": "missing",
+                "review_task_human_id": null,
+                "review_task_id": null,
+                "source_fields": [
+                  "asset.title",
+                  "asset.original_filename",
+                  "asset.human_id"
+                ],
+                "source_photo_ids": [
+                  "c15dc959-f9a0-4a38-9787-88cf589c7e8b",
+                  "28abb4a5-7968-4ac2-b944-ae38576a167b",
+                  "f6a764ec-80b5-4bdd-a23e-5f4c53f51408",
+                  "db8cb938-df97-4a1e-8731-0f982d4dce41"
+                ],
+                "source_titles": [
+                  "Rotmil 2021 III - Copy (2).jpg",
+                  "Rotmil 2021 III.jpg",
+                  "Rotmil 2021 III - Copy - Copy.jpg",
+                  "Rotmil 2021 III - Copy.jpg"
+                ],
+                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
+                "truth_status": "no_claim"
+              },
+              "candidate_match_quality": "backlog_only",
+              "candidate_media_kind": "photograph_like",
+              "candidate_queue": "photo_assets_needing_context",
+              "candidate_status": "needs_photo_context",
+              "canonical_asset_id": "28abb4a5-7968-4ac2-b944-ae38576a167b",
+              "display_title": "Rotmil 2021 III.jpg",
+              "group_key": "rotmil 2021 iii",
+              "matched_query_terms": [],
+              "preview_ready_count": 4,
+              "primary_action": {
+                "action_type": "create_photo_context_task",
+                "label": "Create context task",
+                "queue": "photo_assets_needing_context",
+                "request": {
+                  "body": {
+                    "asset_id": "28abb4a5-7968-4ac2-b944-ae38576a167b",
+                    "candidate_match_quality": "backlog_only",
+                    "candidate_selection_reason": "backlog_sample_no_semantic_match",
+                    "group_key": "rotmil 2021 iii",
+                    "source_query": "airplane in Maine",
+                    "use_canonical": true
+                  },
+                  "endpoint": "/api/assets/photo-review-inventory/context-task",
+                  "method": "POST"
+                }
+              },
+              "selection_reason": "backlog_sample_no_semantic_match"
+            },
+            {
+              "candidate_evidence": {
+                "candidate_media_kind": "photograph_like",
+                "candidate_queue": "photo_assets_needing_context",
+                "evidence_source": "title_filename_only",
+                "not_memory_claim": true,
+                "profile_status": "missing",
+                "review_task_human_id": null,
+                "review_task_id": null,
+                "source_fields": [
+                  "asset.title",
+                  "asset.original_filename",
+                  "asset.human_id"
+                ],
+                "source_photo_ids": [
+                  "5bf1cd11-4d3c-4d23-ad1c-e72caf051cf7",
+                  "08dec74a-4540-4a3e-a08f-5fade2130199",
+                  "17ba22bb-140a-4afa-85ed-3075c5b84c45",
+                  "1c6382e9-1fc5-4c8a-a028-81a7dbd82854"
+                ],
+                "source_titles": [
+                  "Rotmil 2021 IV - Copy - Copy.jpg",
+                  "Rotmil 2021 IV.jpg",
+                  "Rotmil 2021 IV - Copy.jpg",
+                  "Rotmil 2021 IV - Copy (2).jpg"
+                ],
+                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
+                "truth_status": "no_claim"
+              },
+              "candidate_match_quality": "backlog_only",
+              "candidate_media_kind": "photograph_like",
+              "candidate_queue": "photo_assets_needing_context",
+              "candidate_status": "needs_photo_context",
+              "canonical_asset_id": "08dec74a-4540-4a3e-a08f-5fade2130199",
+              "display_title": "Rotmil 2021 IV.jpg",
+              "group_key": "rotmil 2021 iv",
+              "matched_query_terms": [],
+              "preview_ready_count": 4,
+              "primary_action": {
+                "action_type": "create_photo_context_task",
+                "label": "Create context task",
+                "queue": "photo_assets_needing_context",
+                "request": {
+                  "body": {
+                    "asset_id": "08dec74a-4540-4a3e-a08f-5fade2130199",
+                    "candidate_match_quality": "backlog_only",
+                    "candidate_selection_reason": "backlog_sample_no_semantic_match",
+                    "group_key": "rotmil 2021 iv",
+                    "source_query": "airplane in Maine",
+                    "use_canonical": true
+                  },
+                  "endpoint": "/api/assets/photo-review-inventory/context-task",
+                  "method": "POST"
+                }
+              },
+              "selection_reason": "backlog_sample_no_semantic_match"
+            },
+            {
+              "candidate_evidence": {
+                "candidate_media_kind": "photograph_like",
+                "candidate_queue": "photo_assets_needing_context",
+                "evidence_source": "title_filename_only",
+                "not_memory_claim": true,
+                "profile_status": "missing",
+                "review_task_human_id": null,
+                "review_task_id": null,
+                "source_fields": [
+                  "asset.title",
+                  "asset.original_filename",
+                  "asset.human_id"
+                ],
+                "source_photo_ids": [
+                  "4c734c6a-e7f2-4ec6-b2d3-d709bfdbe47c",
+                  "821b2f08-d964-4d70-967f-6215684f20e5",
+                  "fd44585a-8680-4eb3-a7e0-bbdabdddfcf0",
+                  "9101e186-3437-49fd-a1db-d808b7811e9b"
+                ],
+                "source_titles": [
+                  "Rotmil 2021 V - Copy - Copy.jpg",
+                  "Rotmil 2021 V - Copy.jpg",
+                  "Rotmil 2021 V.jpg",
+                  "Rotmil 2021 V - Copy (2).jpg"
+                ],
+                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
+                "truth_status": "no_claim"
+              },
+              "candidate_match_quality": "backlog_only",
+              "candidate_media_kind": "photograph_like",
+              "candidate_queue": "photo_assets_needing_context",
+              "candidate_status": "needs_photo_context",
+              "canonical_asset_id": "fd44585a-8680-4eb3-a7e0-bbdabdddfcf0",
+              "display_title": "Rotmil 2021 V.jpg",
+              "group_key": "rotmil 2021 v",
+              "matched_query_terms": [],
+              "preview_ready_count": 4,
+              "primary_action": {
+                "action_type": "create_photo_context_task",
+                "label": "Create context task",
+                "queue": "photo_assets_needing_context",
+                "request": {
+                  "body": {
+                    "asset_id": "fd44585a-8680-4eb3-a7e0-bbdabdddfcf0",
+                    "candidate_match_quality": "backlog_only",
+                    "candidate_selection_reason": "backlog_sample_no_semantic_match",
+                    "group_key": "rotmil 2021 v",
+                    "source_query": "airplane in Maine",
+                    "use_canonical": true
+                  },
+                  "endpoint": "/api/assets/photo-review-inventory/context-task",
+                  "method": "POST"
+                }
+              },
+              "selection_reason": "backlog_sample_no_semantic_match"
+            }
+          ],
+          "sample_groups_are_not_memory_claims": true,
+          "scope": "family_private",
+          "status": "no_boundary_cleared_memory_result",
+          "suggested_next_action": "Review candidate photos and create Adam-authored photo context before treating this as memory.",
+          "truth_status": "no_claim",
+          "weak_evidence_candidate_count": 0,
+          "workflow": "photo_context_review"
+        },
+        "top_result": null
+      },
+      "name": "Photo retrieval no-claim gaps are honest and actionable",
+      "passed": true
+    },
+    {
+      "detail": "retrieval-gap query has a first-class no-claim review slice with previews and query provenance",
+      "evidence": {
+        "backlog_only_candidate_count": 27,
+        "candidate_count": 27,
+        "content_sha256": "858f02e157cc8d6bfde49342724a232d7191aabfe218bf7f1d6db4d6be89d528",
+        "query": "airplane in Maine",
+        "reported_candidate_count": 5,
+        "sample_titles": [
+          "Rotmil_10_19 - Cathryn WIlson.jpg",
+          "Rotmil 2021 II.jpg",
+          "Rotmil 2021 III.jpg",
+          "Rotmil 2021 IV.jpg",
+          "Rotmil 2021 V.jpg"
+        ],
+        "weak_evidence_candidate_count": 0
+      },
+      "name": "Retrieval gap review slice is no-claim and actionable",
+      "passed": true
+    }
+  ],
+  "failed_checks": [],
+  "failed_count": 0,
+  "generated_at": "2026-04-29T20:01:10.593145Z",
+  "passed_count": 48,
+  "status": "pass"
+}

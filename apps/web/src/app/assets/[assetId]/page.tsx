@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, Boxes, Database, FileText, Image, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeft, Boxes, ClipboardList, Database, FileText, Image, ShieldCheck, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { getAssetDossier, getAssetPreviewUrl } from "@/lib/api";
@@ -206,6 +206,7 @@ export default function AssetDossierPage() {
         <CountCard label="Boundaries" value={dossier.counts.boundaries} />
         <CountCard label="Tasks" value={dossier.counts.tasks} />
         <CountCard label="Annotations" value={dossier.counts.annotations} />
+        <CountCard label="Receipts" value={dossier.counts.task_receipts} />
         <CountCard label="Context Packs" value={dossier.counts.context_packs} />
         <CountCard label="Gold Examples" value={dossier.counts.gold_voice_examples} />
         <CountCard label="SFT" value={dossier.counts.sft_candidates} />
@@ -293,6 +294,55 @@ export default function AssetDossierPage() {
                 <strong>{labelFromKey(String(item.task_type ?? item.annotation_type ?? "record"))}</strong>
                 <span>{labelFromKey(String(item.status ?? item.created_by ?? "recorded"))}</span>
                 <p>{String(item.reason_created ?? item.notes ?? "No notes.")}</p>
+              </article>
+            );
+          }}
+        />
+        <RecordList
+          title="Task Receipts"
+          icon={<ClipboardList size={15} />}
+          records={dossier.task_receipts ?? []}
+          render={(record) => {
+            const item = record as NonNullable<AssetDossier["task_receipts"]>[number];
+            const projectionValue = item.summary.submit_projection;
+            const projection =
+              projectionValue && typeof projectionValue === "object" && !Array.isArray(projectionValue)
+                ? (projectionValue as JsonRecord)
+                : null;
+            const contentHash = typeof projection?.content_sha256 === "string" ? projection.content_sha256 : "";
+            const readiness = typeof projection?.submit_readiness === "string" ? projection.submit_readiness : "";
+            const previewYaml = typeof projection?.export_preview_yaml === "string" ? projection.export_preview_yaml : "";
+            const vectorStatus =
+              typeof item.created_or_updated.vector_handoff_status === "string"
+                ? item.created_or_updated.vector_handoff_status
+                : typeof projection?.vector_handoff_status === "string"
+                ? projection.vector_handoff_status
+                : "";
+            const vectorReason =
+              typeof item.created_or_updated.vector_handoff_reason === "string" ? item.created_or_updated.vector_handoff_reason : "";
+            const vectorRecordId =
+              typeof item.created_or_updated.vector_handoff_record_id === "string" ? item.created_or_updated.vector_handoff_record_id : "";
+            return (
+              <article key={item.id} className="dossier-record">
+                <strong>{item.human_id}</strong>
+                <span>
+                  {labelFromKey(item.task_type)} · {labelFromKey(item.downstream_status)}
+                </span>
+                <p>{item.next_action_label || "Durable annotation receipt recorded."}</p>
+                <div className="dossier-badge-row compact">
+                  <span>Boundary {labelFromKey(item.boundary_status)}</span>
+                  {readiness ? <span>{labelFromKey(readiness)}</span> : null}
+                  {vectorStatus ? <span>Vector {labelFromKey(vectorStatus)}</span> : null}
+                  {vectorRecordId ? <span>Vector record {vectorRecordId.slice(0, 8)}</span> : null}
+                  {contentHash ? <span>Hash {contentHash.slice(0, 12)}</span> : null}
+                </div>
+                {vectorReason ? <p className="dossier-receipt-vector-reason">{vectorReason}</p> : null}
+                {previewYaml ? (
+                  <details className="dossier-receipt-preview">
+                    <summary>Submit payload YAML</summary>
+                    <pre>{previewYaml}</pre>
+                  </details>
+                ) : null}
               </article>
             );
           }}

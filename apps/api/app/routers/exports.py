@@ -1,14 +1,85 @@
-from typing import List
+import hashlib
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel import Session, select
 
 from app.db.session import get_session
 from app.exports.jsonl import dpo_export_items, export_dry_run, sft_export_items, to_jsonl
-from app.models import DatasetExport, DatasetExportItem
+from app.models import DatasetExport, DatasetExportItem, utcnow
 from app.schemas import DatasetBuildRequest
 
 router = APIRouter(prefix="/dataset-exports", tags=["dataset exports"])
+
+
+def _manifest_excluded(dry_run: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "artifact_type": item["artifact_type"],
+            "artifact_id": item["artifact_id"],
+            "source_gold_voice_example_id": item["source_gold_voice_example_id"],
+            "reasons": item["reasons"],
+        }
+        for item in dry_run["excluded"]
+    ]
+
+
+def _export_manifest(payload: DatasetBuildRequest, dry_run: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    excluded = _manifest_excluded(dry_run)
+    excluded_reasons = sorted({reason for item in excluded for reason in item["reasons"]})
+    source_ids = [
+        str(row["source_gold_voice_example_id"])
+        for row in dry_run["included"]
+        if row.get("source_gold_voice_example_id")
+    ]
+    artifact_ids = [str(row["artifact_id"]) for row in dry_run["included"]]
+    stable_item_keys = [f"{row['artifact_type']}:{row['artifact_id']}" for row in dry_run["included"]]
+    jsonl = to_jsonl(items)
+    return {
+        "export_type": payload.export_type,
+        "version": payload.version,
+        "split": payload.split,
+        "format": "jsonl",
+        "generated_at": utcnow().isoformat().replace("+00:00", "Z"),
+        "item_count": len(items),
+        "included_count": dry_run["included_count"],
+        "excluded_count": dry_run["excluded_count"],
+        "source_ids": source_ids,
+        "artifact_ids": artifact_ids,
+        "stable_item_keys": stable_item_keys,
+        "content_sha256": hashlib.sha256(jsonl.encode("utf-8")).hexdigest(),
+        "filters": {
+            "export_type": payload.export_type,
+            "include_candidates": False,
+            "status": "approved_only",
+            "split": payload.split,
+        },
+        "split_policy_snapshot": {
+            "requested_split": payload.split,
+            "holdout_eval_split_configured": False,
+            "explicit_holdout_status": "not_configured",
+            "notes": (
+                "MVP dataset builds only the requested approved split. "
+                "Held-out demo prompts are tracked separately by /api/model-status/demo-readiness."
+            ),
+        },
+        "excluded_reasons": excluded_reasons,
+        "boundary_policy_snapshot": {
+            "blocked_context_boundaries_excluded": True,
+            "export_requires_boundary_gate": True,
+            "private_or_sensitive_items_require_explicit_clearance": True,
+        },
+        "quality_policy_snapshot": {
+            "candidate_items_excluded_from_build": True,
+            "requires_approved_artifact_status": True,
+            "response_b_major_privacy_issue_blocks_export": True,
+        },
+        "dry_run": {
+            "included_count": dry_run["included_count"],
+            "excluded_count": dry_run["excluded_count"],
+            "excluded": excluded,
+        },
+    }
 
 
 @router.get("", response_model=List[DatasetExport])
@@ -32,28 +103,14 @@ def build_dataset_export(
         export_type=payload.export_type,
         version=payload.version,
         status="built",
-        manifest={
-            "item_count": len(items),
-            "format": "jsonl",
-            "dry_run": {
-                "included_count": dry_run["included_count"],
-                "excluded_count": dry_run["excluded_count"],
-                "excluded": [
-                    {
-                        "artifact_type": item["artifact_type"],
-                        "artifact_id": item["artifact_id"],
-                        "source_gold_voice_example_id": item["source_gold_voice_example_id"],
-                        "reasons": item["reasons"],
-                    }
-                    for item in dry_run["excluded"]
-                ],
-            },
-        },
+        manifest=_export_manifest(payload, dry_run, items),
     )
     session.add(export)
     session.flush()
 
-    for item in items:
+    for row in dry_run["included"]:
+        item = row["payload"]
+        source = row.get("source") or {}
         source_id = (
             item.get("metadata", {}).get("source_gold_voice_example_id")
             or item.get("metadata", {}).get("source_id")
@@ -66,14 +123,38 @@ def build_dataset_export(
                 source_id=source_id,
                 split=payload.split,
                 payload=item,
-                boundary_snapshot={"boundary_gate_passed": True},
-                quality_snapshot={"status": "approved"},
+                boundary_snapshot={
+                    "boundary_gate_passed": True,
+                    "context_boundary_status": source.get("context_boundary_status"),
+                    "task_receipt_boundary_status": source.get("receipt_boundary_status"),
+                },
+                quality_snapshot={
+                    "status": row.get("export_status"),
+                    "artifact_type": row.get("artifact_type"),
+                    "quality_gate_passed": row.get("export_status") == "approved",
+                },
             )
         )
 
     session.commit()
     session.refresh(export)
     return export
+
+
+@router.get("/{export_id}/jsonl")
+def stored_export_jsonl(
+    export_id: str,
+    session: Session = Depends(get_session),
+) -> Response:
+    export = session.get(DatasetExport, export_id)
+    if export is None:
+        raise HTTPException(status_code=404, detail="Dataset export not found")
+    items = session.exec(
+        select(DatasetExportItem)
+        .where(DatasetExportItem.dataset_export_id == export_id)
+        .order_by(DatasetExportItem.source_type.asc(), DatasetExportItem.source_id.asc(), DatasetExportItem.id.asc())
+    ).all()
+    return Response(content=to_jsonl([item.payload for item in items]), media_type="application/x-ndjson")
 
 
 @router.get("/jsonl")

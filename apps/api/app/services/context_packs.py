@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session, select
 
-from app.models import Asset, Boundary, ContextPack, ContextPackItem, GoldVoiceExample, Memory, Segment
+from app.models import Asset, Boundary, ContextPack, ContextPackItem, GoldVoiceExample, Memory, MemorySource, MetadataProfile, Segment
 from app.schemas import ContextPackBuildRequest
 
 
 def _human_id(prefix: str, count: int) -> str:
     return f"{prefix}_{count:06d}"
+
+
+def _stable_hash(payload: Dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _count(session: Session, model: Any) -> int:
@@ -31,6 +37,200 @@ def _boundary_for(session: Session, item_type: str, item_id: str) -> Optional[Bo
     return None
 
 
+CONTEXT_SAFE_TRUTH_STATUSES = {
+    "archival_source",
+    "spoken_source",
+    "adam_memory",
+    "adam_inference",
+    "adam_expert_reconstruction",
+    "interpretive_synthesis",
+}
+
+
+def _comma_join(values: List[Any]) -> str:
+    return ", ".join(str(value).strip() for value in values if str(value).strip())
+
+
+def _append_line(lines: List[str], label: str, value: Any) -> None:
+    if isinstance(value, list):
+        text = _comma_join(value)
+    else:
+        text = str(value or "").strip()
+    if text:
+        lines.append(f"{label}: {text}")
+
+
+def _reviewed_photo_profile(session: Session, asset_id: str) -> Optional[MetadataProfile]:
+    return session.exec(
+        select(MetadataProfile)
+        .where(MetadataProfile.target_type == "asset")
+        .where(MetadataProfile.target_id == asset_id)
+        .where(MetadataProfile.profile_type == "photo_context")
+        .where(MetadataProfile.metadata_status == "reviewed")
+        .order_by(MetadataProfile.updated_at.desc())
+    ).first()
+
+
+def _linked_reviewed_memories(session: Session, asset_id: str) -> List[Memory]:
+    sources = session.exec(
+        select(MemorySource)
+        .where(MemorySource.source_type == "asset")
+        .where(MemorySource.source_id == asset_id)
+        .order_by(MemorySource.confidence.desc())
+    ).all()
+    memories: List[Memory] = []
+    seen: set[str] = set()
+    for source in sources:
+        if source.memory_id in seen:
+            continue
+        memory = session.get(Memory, source.memory_id)
+        if memory is None:
+            continue
+        if memory.truth_status not in CONTEXT_SAFE_TRUTH_STATUSES:
+            continue
+        if memory.maturity_level != "L3_reviewed":
+            continue
+        memories.append(memory)
+        seen.add(memory.id)
+    return memories
+
+
+def _photo_asset_fact(session: Session, asset: Asset) -> Optional[str]:
+    profile = _reviewed_photo_profile(session, asset.id)
+    memories = _linked_reviewed_memories(session, asset.id)
+    if profile is None and not memories:
+        return asset.title or asset.original_filename or asset.human_id
+
+    lines = ["photo_context:"]
+    _append_line(lines, "  source_photo", asset.title or asset.original_filename or asset.human_id)
+    _append_line(lines, "  source_photo_id", asset.id)
+    if profile is not None and profile.truth_status in CONTEXT_SAFE_TRUTH_STATUSES:
+        _append_line(lines, "  profile_title", profile.title)
+        _append_line(lines, "  visual_description", profile.summary)
+        _append_line(lines, "  adam_context", profile.adam_context_note)
+        _append_line(lines, "  truth_status", profile.truth_status)
+        _append_line(lines, "  metadata_status", profile.metadata_status)
+        _append_line(lines, "  reviewed_by", profile.reviewed_by)
+        _append_line(lines, "  date", profile.date_label)
+        _append_line(lines, "  date_confidence", profile.date_confidence)
+        _append_line(lines, "  people", profile.people)
+        _append_line(lines, "  places", profile.places)
+        _append_line(lines, "  themes", profile.themes)
+        _append_line(lines, "  concrete_objects", profile.concrete_objects)
+        _append_line(lines, "  open_questions", profile.open_questions)
+    if memories:
+        lines.append("  linked_memories:")
+        for memory in memories[:5]:
+            lines.append(f"    - title: {memory.title}")
+            _append_line(lines, "      summary", memory.summary)
+            _append_line(lines, "      truth_status", memory.truth_status)
+            _append_line(lines, "      themes", memory.themes)
+            _append_line(lines, "      open_questions", memory.open_questions)
+    return "\n".join(lines)[:1200]
+
+
+def compile_photo_context_pack_readiness_audit(
+    *,
+    session: Session,
+    scope: str = "family_private",
+    limit: int = 50,
+) -> Dict[str, Any]:
+    safe_limit = max(1, min(limit, 500))
+    reviewed_profiles = session.exec(
+        select(MetadataProfile)
+        .where(MetadataProfile.target_type == "asset")
+        .where(MetadataProfile.profile_type == "photo_context")
+        .where(MetadataProfile.metadata_status == "reviewed")
+        .order_by(MetadataProfile.updated_at.desc())
+    ).all()
+    candidate_asset_ids: List[str] = []
+    for profile in reviewed_profiles:
+        if profile.target_id not in candidate_asset_ids:
+            candidate_asset_ids.append(profile.target_id)
+
+    items: List[Dict[str, Any]] = []
+    ready_count = 0
+    blocked_count = 0
+    filename_only_count = 0
+    system_inference_leak_count = 0
+    linked_memory_count = 0
+
+    for asset_id in candidate_asset_ids[:safe_limit]:
+        asset = session.get(Asset, asset_id)
+        if asset is None or asset.asset_type != "photo":
+            continue
+        boundary = _boundary_for(session, "asset", asset.id)
+        boundary_check = _boundary_check(boundary, "asset", asset.id)
+        profile = _reviewed_photo_profile(session, asset.id)
+        memories = _linked_reviewed_memories(session, asset.id)
+        fact = _photo_asset_fact(session, asset) or ""
+        fallback_title = asset.title or asset.original_filename or asset.human_id
+        system_drafts = session.exec(
+            select(MetadataProfile)
+            .where(MetadataProfile.target_type == "asset")
+            .where(MetadataProfile.target_id == asset.id)
+            .where(MetadataProfile.profile_type == "photo_context")
+            .where(MetadataProfile.truth_status == "system_inference")
+        ).all()
+        leaked_system_draft_summaries = [
+            str(draft.summary)
+            for draft in system_drafts
+            if draft.summary and str(draft.summary) in fact
+        ]
+        includes_reviewed_context = bool(profile and profile.summary and str(profile.summary) in fact)
+        includes_linked_memory = bool(memories and any(memory.summary and memory.summary in fact for memory in memories))
+        is_filename_only = fact.strip() == str(fallback_title or "").strip()
+        if boundary_check["included"] and includes_reviewed_context and not is_filename_only and not leaked_system_draft_summaries:
+            ready_count += 1
+        if not boundary_check["included"]:
+            blocked_count += 1
+        if is_filename_only:
+            filename_only_count += 1
+        if leaked_system_draft_summaries:
+            system_inference_leak_count += 1
+        linked_memory_count += len(memories)
+        items.append(
+            {
+                "asset_id": asset.id,
+                "asset_human_id": asset.human_id,
+                "title": fallback_title,
+                "boundary_included": boundary_check["included"],
+                "boundary_reason": boundary_check["reason"],
+                "privacy_level": boundary.privacy_level if boundary else None,
+                "includes_reviewed_photo_context": includes_reviewed_context,
+                "includes_linked_reviewed_memory": includes_linked_memory,
+                "linked_reviewed_memory_count": len(memories),
+                "system_inference_draft_excluded": not leaked_system_draft_summaries,
+                "filename_only_fallback": is_filename_only,
+                "fact_char_count": len(fact),
+                "fact_preview": fact[:500],
+            }
+        )
+
+    payload = {
+        "audit_type": "photo_context_pack_readiness_audit",
+        "scope": scope,
+        "review_policy": "read_only_context_pack_fact_projection",
+        "does_not_mutate_state": True,
+        "requires_boundary_clearance": True,
+        "uses_reviewed_photo_context": True,
+        "uses_linked_reviewed_memories": True,
+        "excludes_system_inference_drafts": True,
+        "completion_signal": "reviewed_photo_context_assets_have_non_filename_context_or_are_boundary_blocked",
+        "reviewed_photo_profile_count": len(reviewed_profiles),
+        "candidate_photo_asset_count": len(candidate_asset_ids),
+        "reported_item_count": len(items),
+        "ready_context_pack_asset_count": ready_count,
+        "blocked_context_pack_asset_count": blocked_count,
+        "filename_only_fallback_count": filename_only_count,
+        "linked_reviewed_memory_count": linked_memory_count,
+        "system_inference_leak_count": system_inference_leak_count,
+        "items": items,
+    }
+    payload["content_sha256"] = _stable_hash({key: value for key, value in payload.items() if key != "content_sha256"})
+    return payload
+
+
 def _item_fact(session: Session, item_type: str, item_id: str) -> Optional[str]:
     if item_type == "segment":
         segment = session.get(Segment, item_id)
@@ -45,6 +245,8 @@ def _item_fact(session: Session, item_type: str, item_id: str) -> Optional[str]:
     if item_type == "asset":
         asset = session.get(Asset, item_id)
         if asset:
+            if asset.asset_type == "photo":
+                return _photo_asset_fact(session, asset)
             return asset.title or asset.original_filename or asset.human_id
     if item_type == "gold_voice_example":
         gold = session.get(GoldVoiceExample, item_id)

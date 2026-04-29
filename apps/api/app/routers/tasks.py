@@ -7,9 +7,15 @@ from sqlmodel import Session, select
 from app.db.session import get_session
 from app.models import Annotation, Task, TaskDraft
 from app.schemas import TaskDraftUpsert, TaskStatusUpdate, TaskSubmit
+from app.services.asset_triage import upsert_asset_triage_artifacts
 from app.services.gold_voice import upsert_gold_voice_artifacts
+from app.services.pair_generation import create_make_gold_tasks_from_review, preview_make_gold_tasks_from_review
+from app.services.photo_context_projection import build_photo_context_submit_projection
+from app.services.photo_memory import upsert_photo_context_artifacts
 from app.services.prompt_pairs import create_prompt_pair_review_task
+from app.services.source_spans import create_source_span_annotations
 from app.services.source_review import upsert_segment_boundary_review_artifacts, upsert_source_review_artifacts
+from app.services.task_receipts import create_task_receipt
 from app.services.vision import upsert_vision_review_artifacts
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -28,6 +34,30 @@ def _task_draft(session: Session, task_id: str, user_id: str = "adam") -> Option
     return session.exec(
         select(TaskDraft).where(TaskDraft.task_id == task_id).where(TaskDraft.user_id == user_id)
     ).first()
+
+
+def _receipt_safe_submit_projection(projection: dict) -> dict:
+    if projection.get("projection_type") != "photo_context_submit_projection":
+        return {}
+    vector_handoff = projection.get("memory_embedding_vector_handoff")
+    boundary = projection.get("boundary")
+    gallery = projection.get("gallery")
+    return {
+        "projection_type": projection.get("projection_type"),
+        "review_policy": projection.get("review_policy"),
+        "content_sha256": projection.get("content_sha256"),
+        "export_preview_yaml": projection.get("export_preview_yaml"),
+        "submit_readiness": projection.get("submit_readiness"),
+        "blocked_reasons": projection.get("blocked_reasons", []),
+        "vector_handoff_status": vector_handoff.get("status") if isinstance(vector_handoff, dict) else None,
+        "boundary_privacy_level": (
+            (boundary.get("snapshot_after") or {}).get("privacy_level") if isinstance(boundary, dict) else None
+        ),
+        "gallery_scope_after": gallery.get("scope_after") if isinstance(gallery, dict) else None,
+        "does_not_mutate_state": projection.get("does_not_mutate_state") is True,
+        "no_live_embedding_call": projection.get("no_live_embedding_call") is True,
+        "ordinary_db_vector_storage": projection.get("ordinary_db_vector_storage") is True,
+    }
 
 
 @router.get("", response_model=List[Task])
@@ -93,6 +123,36 @@ def upsert_task_draft(
     return draft
 
 
+@router.post("/{task_id}/photo-context/projection")
+def preview_photo_context_submit(
+    task_id: str,
+    payload: TaskSubmit,
+    session: Session = Depends(get_session),
+) -> dict:
+    task = _task_or_404(session, task_id)
+    return build_photo_context_submit_projection(
+        session=session,
+        task=task,
+        decisions=payload.decisions,
+    )
+
+
+@router.post("/{task_id}/pair-generation/preview")
+def preview_source_review_pair_generation(
+    task_id: str,
+    payload: TaskSubmit,
+    session: Session = Depends(get_session),
+) -> dict:
+    task = _task_or_404(session, task_id)
+    if task.task_type not in {"text_segment_review", "text_segment_boundary_review", "email_voice_sample"}:
+        raise HTTPException(status_code=400, detail="Task does not support source-review pair generation")
+    return preview_make_gold_tasks_from_review(
+        session=session,
+        task=task,
+        decisions=payload.decisions,
+    )
+
+
 @router.delete("/{task_id}/draft")
 def delete_task_draft(
     task_id: str,
@@ -126,6 +186,14 @@ def submit_task(
     session.flush()
 
     creates_or_updates = {}
+    source_span_annotations = []
+    if task.task_type in {"text_segment_review", "text_segment_boundary_review", "email_voice_sample"}:
+        source_span_annotations = create_source_span_annotations(
+            session=session,
+            task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+        )
     if task.task_type == "gold_voice_edit":
         creates_or_updates = upsert_gold_voice_artifacts(
             session=session,
@@ -166,6 +234,77 @@ def submit_task(
             annotation_id=annotation.id,
         )
         annotation.creates_or_updates = creates_or_updates
+    elif task.task_type == "photo_context":
+        submit_projection = _receipt_safe_submit_projection(
+            build_photo_context_submit_projection(
+                session=session,
+                task=task,
+                decisions=payload.decisions,
+            )
+        )
+        creates_or_updates = upsert_photo_context_artifacts(
+            session=session,
+            task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+        )
+        if submit_projection:
+            creates_or_updates = {
+                **creates_or_updates,
+                "submit_projection": submit_projection,
+                "submit_projection_content_sha256": submit_projection.get("content_sha256"),
+            }
+        annotation.creates_or_updates = creates_or_updates
+    elif task.task_type == "asset_triage":
+        creates_or_updates = upsert_asset_triage_artifacts(
+            session=session,
+            task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+        )
+        annotation.creates_or_updates = creates_or_updates
+
+    if task.task_type in {"text_segment_review", "text_segment_boundary_review", "email_voice_sample"} and payload.decisions.get(
+        "generate_pairs_on_submit"
+    ) in {"yes", "generate", True}:
+        pair_updates = create_make_gold_tasks_from_review(
+            session=session,
+            task=task,
+            decisions=payload.decisions,
+            annotation_id=annotation.id,
+            source_span_annotations=source_span_annotations,
+        )
+        creates_or_updates = {**creates_or_updates, **pair_updates}
+        annotation.creates_or_updates = creates_or_updates
+
+    receipt = create_task_receipt(
+        session=session,
+        task=task,
+        annotation_id=annotation.id,
+        creates_or_updates=creates_or_updates,
+    )
+    annotation.creates_or_updates = {
+        **creates_or_updates,
+        "task_receipt_id": receipt.id,
+        "receipt": {
+            "id": receipt.id,
+            "human_id": receipt.human_id,
+            "downstream_status": receipt.downstream_status,
+            "boundary_status": receipt.boundary_status,
+            "blocked_reasons": receipt.blocked_reasons,
+            "next_action_label": receipt.next_action_label,
+            "next_queue": receipt.next_queue,
+            "outcomes": receipt.summary.get("outcomes", []),
+            "export_artifact": receipt.summary.get("export_artifact"),
+            "pair_generation_run": receipt.summary.get("pair_generation_run"),
+            "retrieval_origin": receipt.summary.get("retrieval_origin"),
+            "review_session_origin": receipt.summary.get("review_session_origin"),
+            "vector_handoff_status": creates_or_updates.get("vector_handoff_status"),
+            "vector_handoff_reason": creates_or_updates.get("vector_handoff_reason"),
+            "vector_handoff_record_id": creates_or_updates.get("vector_handoff_record_id"),
+            "submit_projection": receipt.summary.get("submit_projection"),
+        },
+    }
 
     task.status = "submitted"
     task.completed_at = datetime.now(timezone.utc)

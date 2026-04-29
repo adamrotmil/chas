@@ -23,6 +23,16 @@ const defaultUserIntents = [
 
 const defaultTruthModes = ["adam_expert_reconstruction", "interpretive_synthesis", "archival_source", "system_inference"];
 const defaultResponseShapes = ["short_voice_response", "short_email_reply", "longer_letter", "memoir_paragraph", "archive_answer", "eval_prompt"];
+const defaultConversationFamilies = [
+  "verbatim_email_reply",
+  "adam_prompted_memory",
+  "source_based_story_recall",
+  "mundane_text_message",
+  "ps_digression",
+  "nb_digression",
+  "long_literary_source_excerpt",
+  "multi_turn_thread"
+];
 
 function payloadString(payload: JsonRecord, key: string, fallback = ""): string {
   const value = payload[key];
@@ -125,6 +135,9 @@ export function ContextPackBuilderPanel({ selectedTask, tasks, batchBusy = false
   const [voiceMode, setVoiceMode] = useState("father_to_adam");
   const [truthMode, setTruthMode] = useState("adam_expert_reconstruction");
   const [targetResponseShape, setTargetResponseShape] = useState("short_voice_response");
+  const [conversationFamily, setConversationFamily] = useState("adam_prompted_memory");
+  const [systemPrompt, setSystemPrompt] = useState("You are Charles Rotmil.");
+  const [noLiveModelCall, setNoLiveModelCall] = useState(true);
   const [boundaryClearance, setBoundaryClearance] = useState("review_before_export");
   const [batchLimit, setBatchLimit] = useState(10);
   const [allowedFact, setAllowedFact] = useState("");
@@ -254,6 +267,20 @@ export function ContextPackBuilderPanel({ selectedTask, tasks, batchBusy = false
           </select>
         </label>
         <label>
+          <span>Family</span>
+          <select value={conversationFamily} onChange={(event) => setConversationFamily(event.target.value)}>
+            {defaultConversationFamilies.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>System</span>
+          <input value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} />
+        </label>
+        <label>
           <span>Boundary check</span>
           <select value={boundaryClearance} onChange={(event) => setBoundaryClearance(event.target.value)}>
             {["review_before_export", "source_boundary_clear", "needs_redaction", "do_not_export"].map((option) => (
@@ -273,6 +300,14 @@ export function ContextPackBuilderPanel({ selectedTask, tasks, batchBusy = false
             onChange={(event) => setBatchLimit(Number(event.target.value))}
           />
         </label>
+        <label className="utility-check-row">
+          <input
+            type="checkbox"
+            checked={noLiveModelCall}
+            onChange={(event) => setNoLiveModelCall(event.target.checked)}
+          />
+          <span>No live model call</span>
+        </label>
         <div className="utility-mini-list">
           <span>Factory action</span>
           <button
@@ -285,10 +320,13 @@ export function ContextPackBuilderPanel({ selectedTask, tasks, batchBusy = false
                 voice_mode: voiceMode,
                 truth_mode: truthMode,
                 target_response_shape: targetResponseShape,
-                boundary_clearance_needed: boundaryClearance
+                conversation_family: conversationFamily,
+                system_prompt: systemPrompt,
+                boundary_clearance_needed: boundaryClearance,
+                no_live_model_call: noLiveModelCall
               })
             }
-            title="Built: create no-live-model review tasks from ready prompt-pair candidates using these batch defaults."
+            title="Built: create review tasks from ready prompt-pair candidates using these batch defaults."
           >
             <Sparkles size={14} />
             {batchBusy ? "Creating reviews" : "Create review batch"}

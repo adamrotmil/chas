@@ -28,9 +28,9 @@ def _asset_type_for(mime_type: Optional[str], name: str) -> str:
     if (
         mime.startswith("text/")
         or mime == "application/pdf"
-        or mime in {"application/rtf", "application/json"}
+        or mime in {"application/rtf", "application/json", "application/x-yaml", "application/yaml", "text/yaml"}
         or mime.startswith("application/vnd.google-apps.")
-        or lowered_name.endswith((".txt", ".md", ".rtf", ".pdf", ".doc", ".docx"))
+        or lowered_name.endswith((".txt", ".md", ".rtf", ".pdf", ".doc", ".docx", ".yaml", ".yml"))
     ):
         return "text"
     return "file"

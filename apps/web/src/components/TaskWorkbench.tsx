@@ -19,9 +19,33 @@ import {
   TextCursorInput
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createEntity, getAssetPreviewUrl, getAssetTextChunks, getEntities, getTaskDraft, saveTaskDraft } from "@/lib/api";
+import {
+  createEntity,
+  createVoiceMode,
+  getAssetPreviewUrl,
+  getAssetTextChunks,
+  getDpoRejectedReasonRepairProjection,
+  getEntities,
+  getTaskDraft,
+  getVoiceModes,
+  preflightPromptPairExportGate,
+  previewPhotoContextSubmitProjection,
+  previewSourcePairGeneration,
+  saveTaskDraft
+} from "@/lib/api";
 import { maturityLabel, readinessBadgesForTask } from "@/lib/readiness";
-import type { Asset, Entity, Segment, Task } from "@/lib/types";
+import type {
+  Asset,
+  DpoRejectedReasonRepairProjection,
+  Entity,
+  PhotoContextSubmitProjection,
+  PromptPairPreflightExportGate,
+  Segment,
+  SourcePairGenerationPreview,
+  SourceSpanDraft,
+  Task,
+  VoiceMode
+} from "@/lib/types";
 
 type Decisions = Record<string, unknown>;
 type RubricIssueStatus = "no_issues" | "minor_issues" | "major_issues" | "not_applicable";
@@ -36,6 +60,7 @@ type ChunkSelection = {
   active_chunk_id?: string;
   selected_chunk_count: number;
 };
+type PromptPairEditorMode = "plain" | "yaml";
 type SourceUseMode =
   | "verbatim_preferred"
   | "grounded_synthesis_allowed"
@@ -58,16 +83,20 @@ function sameDecisionRecord(left: Decisions, right: Decisions): boolean {
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(left[key], right[key]));
 }
 
+function isGeneratePairsTask(task: Task): boolean {
+  return ["text_segment_review", "text_segment_boundary_review", "email_voice_sample"].includes(task.task_type);
+}
+
 interface TaskWorkbenchProps {
   task: Task;
   asset?: Asset;
   queuePosition: number;
   queueTotal: number;
-  qualityScore: number;
   completedThisSession: number;
   memoriesCount: number;
   goldExamplesCount: number;
   assetsCount: number;
+  assets: Asset[];
   onSubmit: (decisions: Decisions, notes?: string) => Promise<void>;
   onSkip: () => Promise<void>;
   onFlag: () => Promise<void>;
@@ -84,7 +113,7 @@ const taskLabels: Record<string, { label: string; icon: React.ReactNode }> = {
   email_voice_sample: { label: "Email Voice Sample", icon: <Mail size={18} /> },
   vision_draft_review: { label: "Vision Draft Review", icon: <Image size={18} /> },
   grounded_prompt_pair_candidate: { label: "Prompt Pair Factory", icon: <ClipboardList size={18} /> },
-  gold_voice_edit: { label: "Gold Voice Edit", icon: <Sparkles size={18} /> }
+  gold_voice_edit: { label: "Prompt Pair", icon: <Sparkles size={18} /> }
 };
 
 const NEW_PERSON_VALUE = "__new_person__";
@@ -214,6 +243,13 @@ const decisionPromptLabels: Record<string, string> = {
   prompt_intent: "What kind of prompt/response pair to make",
   source_chunks_to_use: "Which reviewed source chunks to use",
   chunk_adjustment_requested: "Whether the chunk should be split, merged, approved, or held",
+  chunk_quality_profile: "Quality/provenance split for selected chunks",
+  ready_reference_chunk_range: "Chunk indices that can move forward as reference-ready",
+  needs_adam_edit_chunk_range: "Chunk indices that require Adam edit before pairing",
+  ready_reference_truth_status: "Truth status for reference-ready chunks",
+  needs_adam_edit_truth_status: "Truth status for chunks needing Adam edit",
+  chunk_quality_notes: "Notes about the quality/provenance split",
+  pairing_gate: "How Pair Factory should treat the selected chunks",
   segmentation_notes: "What should change about the segmentation",
   whole_source_context_mode: "How the whole source remains available",
   ready_for_prompt_pair_factory: "Whether approved chunks can move to Prompt Pair Factory",
@@ -238,6 +274,21 @@ function labelFromKey(value: string): string {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function promptPairBlockerAction(blocker: string): string {
+  const actions: Record<string, string> = {
+    dpo_rejected_reason_empty: "Add a rejected-side Minor or Major issue note with plain-language DPO context.",
+    needs_adam_gold_edit: "Adam confirms this pair as gold before it can become an approved training row.",
+    source_boundary_blocks_training: "Review the source boundary and allow SFT/DPO only if safe.",
+    boundary_review_required: "Resolve boundary clearance before export.",
+    rejected_truth_status_model_generated_requires_review: "Adam reviews the model-generated rejected side before export.",
+    privacy_export_blocked: "Keep private or sealed material out of training export.",
+    rubric_not_export_ready: "Resolve rubric issues or keep this item as a candidate.",
+    server_preflight_pending: "Wait for backend preflight before deciding export status.",
+    server_preflight_unavailable: "Retry backend preflight before submitting export-sensitive changes."
+  };
+  return actions[blocker] ?? "Resolve this blocker in the editor before treating the row as approved.";
 }
 
 function promptFromDecisionKey(value: string): string {
@@ -271,6 +322,183 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
+function questionAnswersHaveMemoryContext(questionAnswers: Record<string, string>): boolean {
+  const memoryQuestionIds = new Set(["why_it_matters", "why_this_photo_matters", "meaning", "invisible_context"]);
+  return Object.entries(questionAnswers).some(([key, value]) => memoryQuestionIds.has(key) && value.trim().length > 0);
+}
+
+function reviewedPhotoTruthStatus({
+  taskType,
+  description,
+  adamContextNote,
+  invisibleContext,
+  questionAnswers,
+  visionAccuracy
+}: {
+  taskType: string;
+  description: string;
+  adamContextNote: string;
+  invisibleContext?: string;
+  questionAnswers: Record<string, string>;
+  visionAccuracy?: string;
+}): string {
+  if (taskType === "photo_context") {
+    return adamContextNote.trim() || invisibleContext?.trim() || questionAnswersHaveMemoryContext(questionAnswers)
+      ? "adam_memory"
+      : "adam_inference";
+  }
+  if (adamContextNote.trim() || invisibleContext?.trim() || questionAnswersHaveMemoryContext(questionAnswers)) {
+    return "adam_memory";
+  }
+  if (description.trim() && visionAccuracy !== "rejected") {
+    return "adam_inference";
+  }
+  return "system_inference";
+}
+
+function photoReviewConsequences({
+  privacyLevel,
+  readyForDownstream,
+  galleryEligibility,
+  truthStatus
+}: {
+  privacyLevel: string;
+  readyForDownstream: string;
+  galleryEligibility: string;
+  truthStatus: string;
+}): Array<{ label: string; value: string; tone: "good" | "warning" | "neutral" }> {
+  const ready = readyForDownstream === "yes";
+  const sealed = privacyLevel === "sealed";
+  const sensitive = ["private_sensitive", "sensitive_living_people"].includes(privacyLevel);
+  const publicGallery = ready && privacyLevel === "public_candidate" && galleryEligibility === "public_candidate";
+  const familyGallery = ready && !sealed && galleryEligibility === "family_private" && privacyLevel === "family_private";
+  return [
+    {
+      label: "Truth label",
+      value: labelFromKey(truthStatus),
+      tone: truthStatus === "adam_memory" ? "good" : truthStatus === "system_inference" ? "warning" : "neutral"
+    },
+    {
+      label: "Vector handoff",
+      value: ready && !sealed && !sensitive ? "Eligible after submit" : ready && sealed ? "Excluded by boundary" : "Held until cleared",
+      tone: ready && !sealed && !sensitive ? "good" : "warning"
+    },
+    {
+      label: "Gallery",
+      value: publicGallery ? "Public candidate" : familyGallery ? "Family gallery" : ready && sealed ? "Hidden" : "Held or context-only",
+      tone: publicGallery || familyGallery ? "good" : "warning"
+    },
+    {
+      label: "Training",
+      value: "Not SFT/DPO material",
+      tone: "neutral"
+    }
+  ];
+}
+
+type PhotoPromotionChecklistItem = {
+  key: string;
+  label: string;
+  status: string;
+  reason: string;
+  tone: "good" | "warning" | "neutral";
+};
+
+function checklistTone(status: string): "good" | "warning" | "neutral" {
+  if (["complete", "eligible_reviewed_record", "eligible"].includes(status)) {
+    return "good";
+  }
+  if (["missing", "excluded_by_boundary", "held_pending_downstream_clearance", "held_missing_memory_context"].includes(status)) {
+    return "warning";
+  }
+  return "neutral";
+}
+
+function localPhotoPromotionChecklist({
+  description,
+  adamContextNote,
+  invisibleContext,
+  questionAnswers,
+  privacyLevel,
+  readyForDownstream,
+  ocrReviewStatus,
+  vectorStatus
+}: {
+  description: string;
+  adamContextNote: string;
+  invisibleContext: string;
+  questionAnswers: Record<string, string>;
+  privacyLevel: string;
+  readyForDownstream: string;
+  ocrReviewStatus: string;
+  vectorStatus: string;
+}): PhotoPromotionChecklistItem[] {
+  const hasDescription = description.trim().length > 0;
+  const hasAdamContext =
+    adamContextNote.trim().length > 0 ||
+    invisibleContext.trim().length > 0 ||
+    questionAnswersHaveMemoryContext(questionAnswers);
+  const hasPrivacy = privacyLevel.trim().length > 0;
+  const hasDownstreamChoice = ["yes", "later", "no"].includes(readyForDownstream);
+  const hasOcrStatus = ocrReviewStatus.trim().length > 0;
+  const hasMemoryText = hasDescription || hasAdamContext;
+  const sensitive = ["sealed", "private_sensitive", "sensitive_living_people"].includes(privacyLevel);
+  const localVectorStatus =
+    vectorStatus ||
+    (!hasMemoryText
+      ? "held_missing_memory_context"
+      : readyForDownstream !== "yes"
+        ? "held_pending_downstream_clearance"
+        : sensitive
+          ? "excluded_by_boundary"
+          : "eligible_reviewed_record");
+
+  return [
+    {
+      key: "visual_description_correction",
+      label: "Reviewed visual description",
+      status: hasDescription ? "complete" : "missing",
+      reason: "Needed so retrieval and gallery surfaces describe visible pixels in Adam-reviewed language.",
+      tone: checklistTone(hasDescription ? "complete" : "missing")
+    },
+    {
+      key: "adam_context",
+      label: "Adam context or answers",
+      status: hasAdamContext ? "complete" : "missing",
+      reason: "Needed to promote this from image description into Adam memory rather than inference.",
+      tone: checklistTone(hasAdamContext ? "complete" : "missing")
+    },
+    {
+      key: "privacy_level",
+      label: "Privacy level",
+      status: hasPrivacy ? "complete" : "missing",
+      reason: "Every downstream photo record needs an explicit boundary before retrieval or export.",
+      tone: checklistTone(hasPrivacy ? "complete" : "missing")
+    },
+    {
+      key: "ready_for_downstream",
+      label: "Downstream choice",
+      status: hasDownstreamChoice ? "complete" : "missing",
+      reason: "Submit should record whether this can move to retrieval, gallery, and embedding handoff now.",
+      tone: checklistTone(hasDownstreamChoice ? "complete" : "missing")
+    },
+    {
+      key: "ocr_review_status",
+      label: "OCR or handwriting status",
+      status: hasOcrStatus ? "complete" : "missing",
+      reason: "The review should say whether visible text is absent, machine-drafted, accepted, or corrected.",
+      tone: checklistTone(hasOcrStatus ? "complete" : "missing")
+    },
+    {
+      key: "vector_handoff_status",
+      label: "Vector handoff status",
+      status: localVectorStatus,
+      reason: "Default vector handoff requires Adam-reviewed text, downstream clearance, and a non-sealed boundary.",
+      tone: checklistTone(localVectorStatus)
+    }
+  ];
+}
+
 function uniqueValues(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
 }
@@ -302,6 +530,15 @@ function formatFreeTextValue(value: unknown, fallback = "Not answered"): string 
     return value.trim() || fallback;
   }
   return formatMetadataValue(value, fallback);
+}
+
+function recordString(record: Record<string, unknown> | undefined, key: string, fallback = ""): string {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function recordBoolean(record: Record<string, unknown> | undefined, key: string): boolean {
+  return record?.[key] === true;
 }
 
 function sourceReviewDigestItems(decisions: Decisions) {
@@ -633,9 +870,9 @@ function entityOptionLabel(entity: Entity): string {
   return relationships ? `${entity.canonical_name} (${relationships})` : entity.canonical_name;
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, focusKey, children }: { label: string; hint?: string; focusKey?: string; children: React.ReactNode }) {
   return (
-    <label className="field">
+    <label className="field" data-focus-key={focusKey}>
       <span className="field-label">{label}</span>
       {hint ? <small>{hint}</small> : null}
       {children}
@@ -713,6 +950,95 @@ function TextArea({
   return <textarea rows={rows} value={value} onChange={(event) => onChange(event.target.value)} />;
 }
 
+function LineNumberedTextArea({
+  value,
+  onChange,
+  rows = 12,
+  className = ""
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+  className?: string;
+}) {
+  const gutterRef = useRef<HTMLDivElement>(null);
+  const lines = value.split(/\r?\n/);
+  const lineCount = Math.max(1, lines.length);
+
+  function replaceSelection(textarea: HTMLTextAreaElement, insertText: string, selectionStart: number, selectionEnd: number) {
+    const nextValue = `${value.slice(0, selectionStart)}${insertText}${value.slice(selectionEnd)}`;
+    const nextCursor = selectionStart + insertText.length;
+    onChange(nextValue);
+    window.requestAnimationFrame(() => {
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function indentationBefore(index: number): string {
+    const lineStart = value.lastIndexOf("\n", Math.max(0, index - 1)) + 1;
+    const currentLinePrefix = value.slice(lineStart, index);
+    const currentIndent = currentLinePrefix.match(/^[ \t]*/)?.[0] ?? "";
+    if (currentIndent || currentLinePrefix.trim()) {
+      return currentIndent;
+    }
+    const previousLineEnd = Math.max(0, lineStart - 1);
+    const previousLineStart = value.lastIndexOf("\n", Math.max(0, previousLineEnd - 1)) + 1;
+    const previousLine = value.slice(previousLineStart, previousLineEnd);
+    return previousLine.match(/^[ \t]*/)?.[0] ?? "";
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Tab") {
+      event.preventDefault();
+      const textarea = event.currentTarget;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      if (event.shiftKey) {
+        const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+        const removable = value.slice(lineStart, lineStart + 2) === "  " ? 2 : value.slice(lineStart, lineStart + 1) === "\t" ? 1 : 0;
+        if (removable > 0) {
+          const nextValue = `${value.slice(0, lineStart)}${value.slice(lineStart + removable)}`;
+          const nextCursor = Math.max(lineStart, start - removable);
+          onChange(nextValue);
+          window.requestAnimationFrame(() => textarea.setSelectionRange(nextCursor, Math.max(nextCursor, end - removable)));
+        }
+        return;
+      }
+      replaceSelection(textarea, "  ", start, end);
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const textarea = event.currentTarget;
+      const start = textarea.selectionStart;
+      replaceSelection(textarea, `\n${indentationBefore(start)}`, start, textarea.selectionEnd);
+    }
+  }
+
+  return (
+    <div className={["line-editor", className].filter(Boolean).join(" ")}>
+      <div className="line-editor-gutter" ref={gutterRef} aria-hidden="true">
+        {Array.from({ length: lineCount }, (_, index) => (
+          <span key={index}>{index + 1}</span>
+        ))}
+      </div>
+      <textarea
+        rows={rows}
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={handleKeyDown}
+        onScroll={(event) => {
+          if (gutterRef.current) {
+            gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+          }
+        }}
+      />
+    </div>
+  );
+}
+
 function Select({
   value,
   onChange,
@@ -731,6 +1057,210 @@ function Select({
       ))}
     </select>
   );
+}
+
+function indentBlock(text: string, spaces: number): string {
+  const indent = " ".repeat(spaces);
+  const lines = text.split(/\r?\n/);
+  return (lines.length > 0 ? lines : [""]).map((line) => (line ? `${indent}${line}` : indent.trimEnd())).join("\n");
+}
+
+function yamlScalar(value: string, blockIndent = 4): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "\"\"";
+  }
+  if (trimmed.includes("\n")) {
+    return `|-\n${indentBlock(trimmed, blockIndent)}`;
+  }
+  if (/[:#[\]{}]|^\s|'\s|"|^[-?]|[&*!|>%@`]/.test(trimmed)) {
+    return `"${trimmed.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+  }
+  return trimmed;
+}
+
+function buildPairYaml({
+  artifactMode,
+  systemPrompt,
+  prompt,
+  content,
+  chosen,
+  rejected
+}: {
+  artifactMode: "sft" | "dpo";
+  systemPrompt: string;
+  prompt: string;
+  content: string;
+  chosen: string;
+  rejected: string;
+}): string {
+  if (artifactMode === "dpo") {
+    return [
+      `- system: ${yamlScalar(systemPrompt, 4)}`,
+      `  prompt: ${yamlScalar(prompt, 4)}`,
+      "  chosen: |-",
+      indentBlock(chosen, 4),
+      "  rejected: |-",
+      indentBlock(rejected, 4)
+    ].join("\n");
+  }
+  return [
+    "- messages:",
+    "   - role: system",
+    `     content: ${yamlScalar(systemPrompt, 7)}`,
+    "   - role: user",
+    `     content: ${yamlScalar(prompt, 7)}`,
+    "   - role: assistant",
+    "     content: |-",
+    indentBlock(content, 7)
+  ].join("\n");
+}
+
+function normalizePreviewYaml(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+}
+
+function unquoteYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2 && trimmed[0] === trimmed[trimmed.length - 1] && ["\"", "'"].includes(trimmed[0])) {
+    return trimmed.slice(1, -1).replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+  }
+  return trimmed;
+}
+
+function dedentYamlBlock(lines: string[]): string {
+  const indents = lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length);
+  const indent = indents.length > 0 ? Math.min(...indents) : 0;
+  return lines.map((line) => (line.length >= indent ? line.slice(indent) : "")).join("\n").replace(/\s+$/g, "");
+}
+
+function parseSftYamlEditor(value: string): { systemPrompt: string; prompt: string; content: string } | null {
+  const lines = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const messages: { role: string; content: string }[] = [];
+  const rolePattern = /^(\s*)-\s+role:\s*(.+?)\s*$/;
+  const contentPattern = /^\s*content:\s*(.*)$/;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const roleMatch = lines[index].match(rolePattern);
+    if (!roleMatch) {
+      continue;
+    }
+    const roleIndent = roleMatch[1].length;
+    const role = unquoteYamlScalar(roleMatch[2]);
+    const messageLines: string[] = [];
+    index += 1;
+    while (index < lines.length) {
+      const nextRole = lines[index].match(rolePattern);
+      if (nextRole && nextRole[1].length <= roleIndent) {
+        index -= 1;
+        break;
+      }
+      messageLines.push(lines[index]);
+      index += 1;
+    }
+
+    let content = "";
+    for (let messageIndex = 0; messageIndex < messageLines.length; messageIndex += 1) {
+      const contentMatch = messageLines[messageIndex].match(contentPattern);
+      if (!contentMatch) {
+        continue;
+      }
+      const scalar = contentMatch[1].trim();
+      if (["|", "|-", "|+", ">", ">-", ">+"].includes(scalar)) {
+        content = dedentYamlBlock(messageLines.slice(messageIndex + 1));
+      } else {
+        content = unquoteYamlScalar(scalar);
+      }
+      break;
+    }
+    if (role && content) {
+      messages.push({ role, content });
+    }
+  }
+
+  const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+  const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+  const content = messages.find((message) => message.role === "assistant")?.content ?? "";
+  return prompt && content ? { systemPrompt, prompt, content } : null;
+}
+
+function parseDpoYamlEditor(value: string): { systemPrompt: string; prompt: string; chosen: string; rejected: string } | null {
+  const lines = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const entries: Partial<Record<"system" | "prompt" | "chosen" | "rejected", string>> = {};
+  const keyPattern = /^(\s*)(?:-\s*)?(system|prompt|chosen|rejected):\s*(.*)$/;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(keyPattern);
+    if (!match || match[1].length > 2) {
+      continue;
+    }
+    const key = match[2] as "system" | "prompt" | "chosen" | "rejected";
+    const scalar = match[3].trim();
+    if (["|", "|-", "|+", ">", ">-", ">+"].includes(scalar)) {
+      const blockLines: string[] = [];
+      index += 1;
+      while (index < lines.length) {
+        const nextKey = lines[index].match(keyPattern);
+        if (nextKey && nextKey[1].length <= 2) {
+          index -= 1;
+          break;
+        }
+        blockLines.push(lines[index]);
+        index += 1;
+      }
+      entries[key] = dedentYamlBlock(blockLines);
+    } else {
+      entries[key] = unquoteYamlScalar(scalar);
+    }
+  }
+
+  if (Object.keys(entries).length === 0) {
+    return null;
+  }
+
+  return {
+    systemPrompt: entries.system ?? "",
+    prompt: entries.prompt ?? "",
+    chosen: entries.chosen ?? "",
+    rejected: entries.rejected ?? ""
+  };
+}
+
+function defaultSystemPromptForMode(artifactMode: "sft" | "dpo"): string {
+  return artifactMode === "dpo"
+    ? "You are Charles Rotmil."
+    : "You are Charles Rotmil. Write naturally in his voice.";
+}
+
+function assetOptionLabel(asset: Asset): string {
+  return asset.title || asset.original_filename || asset.human_id;
+}
+
+function validArtifactMode(value: string): "sft" | "dpo" {
+  return value === "dpo" ? "dpo" : "sft";
+}
+
+function validEditorMode(value: string): PromptPairEditorMode {
+  return value === "yaml" ? "yaml" : "plain";
+}
+
+function spansFromDecision(value: unknown): SourceSpanDraft[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    .map((item, index) => ({
+      id: typeof item.id === "string" ? item.id : `span_${index}_${Date.now()}`,
+      start_char: typeof item.start_char === "number" ? item.start_char : 0,
+      end_char: typeof item.end_char === "number" ? item.end_char : 0,
+      text: typeof item.text === "string" ? item.text : typeof item.selected_text === "string" ? item.selected_text : "",
+      span_type: (item.span_type === "prompt" || item.span_type === "response" ? item.span_type : "context") as SourceSpanDraft["span_type"],
+      speaker: typeof item.speaker === "string" ? item.speaker : "",
+      code: typeof item.code === "string" ? item.code : "",
+      notes: typeof item.notes === "string" ? item.notes : ""
+    }))
+    .filter((span) => span.text.trim() && span.end_char > span.start_char);
 }
 
 function SourcePreview({ task }: { task: Task }) {
@@ -767,16 +1297,264 @@ function SourcePreview({ task }: { task: Task }) {
       <LinePreview text={previewText} className="source-line-preview" />
       {typeof task.input_payload.chunk_count === "number" || typeof task.input_payload.total_chars === "number" ? (
         <div className="source-text-meta">
+          <span>preview: {previewText.length} chars</span>
           {typeof task.input_payload.chunk_count === "number" ? <span>{task.input_payload.chunk_count} chunks</span> : null}
+          {payloadString(task.input_payload.chunking_strategy) ? (
+            <span>{labelFromKey(payloadString(task.input_payload.chunking_strategy))}</span>
+          ) : null}
           {typeof task.input_payload.total_chars === "number" ? <span>{task.input_payload.total_chars} chars extracted</span> : null}
-          {task.input_payload.truncated ? <span>preview capped</span> : null}
+          {typeof task.input_payload.total_chars === "number" && task.input_payload.total_chars > previewText.length ? (
+            <span>full text in chunks below</span>
+          ) : null}
+          {task.input_payload.truncated ? <span>source capped</span> : null}
         </div>
       ) : null}
     </section>
   );
 }
 
-function PhotoAssetPreview({ task }: { task: Task }) {
+function sourceTextForCoding(task: Task): string {
+  return (
+    payloadString(task.input_payload.preview_text) ||
+    payloadString(task.input_payload.source_excerpt) ||
+    payloadString(task.input_payload.text)
+  );
+}
+
+function SourceSpanCoder({
+  task,
+  spans,
+  onChange
+}: {
+  task: Task;
+  spans: SourceSpanDraft[];
+  onChange: (spans: SourceSpanDraft[]) => void;
+}) {
+  const text = sourceTextForCoding(task);
+  const preRef = useRef<HTMLPreElement | null>(null);
+  const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
+  const [spanType, setSpanType] = useState<SourceSpanDraft["span_type"]>("response");
+  const [speaker, setSpeaker] = useState("");
+  const [code, setCode] = useState("");
+  const [spanNotes, setSpanNotes] = useState("");
+
+  if (!text) {
+    return null;
+  }
+
+  function captureSelection() {
+    const selected = window.getSelection();
+    const node = preRef.current;
+    if (!selected || selected.rangeCount === 0 || !node) {
+      return;
+    }
+    const range = selected.getRangeAt(0);
+    if (!node.contains(range.commonAncestorContainer)) {
+      return;
+    }
+    const selectedText = range.toString();
+    if (!selectedText.trim()) {
+      return;
+    }
+    const before = document.createRange();
+    before.selectNodeContents(node);
+    before.setEnd(range.startContainer, range.startOffset);
+    const start = before.toString().length;
+    setSelection({ start, end: start + selectedText.length, text: selectedText });
+  }
+
+  function addSpan() {
+    if (!selection) {
+      return;
+    }
+    const next: SourceSpanDraft = {
+      id: `span_${selection.start}_${selection.end}_${Date.now()}`,
+      start_char: selection.start,
+      end_char: selection.end,
+      text: selection.text,
+      span_type: spanType,
+      speaker,
+      code,
+      notes: spanNotes
+    };
+    onChange([...spans, next].sort((left, right) => left.start_char - right.start_char));
+    setSelection(null);
+    setCode("");
+    setSpanNotes("");
+  }
+
+  function removeSpan(id: string) {
+    onChange(spans.filter((span) => span.id !== id));
+  }
+
+  return (
+    <section className="source-span-coder">
+      <div className="source-span-header">
+        <div>
+          <span>Source coding</span>
+          <strong>Highlight text to tag Prompt, Response, or Context</strong>
+        </div>
+        <em>{spans.length} span{spans.length === 1 ? "" : "s"}</em>
+      </div>
+      <pre ref={preRef} className="source-coding-text" onMouseUp={captureSelection} onKeyUp={captureSelection}>
+        {text}
+      </pre>
+      <div className="source-span-controls">
+        <Field label="Tag">
+          <select value={spanType} onChange={(event) => setSpanType(event.target.value as SourceSpanDraft["span_type"])}>
+            <option value="prompt">Prompt</option>
+            <option value="response">Response</option>
+            <option value="context">Context</option>
+          </select>
+        </Field>
+        <Field label="Speaker">
+          <input value={speaker} onChange={(event) => setSpeaker(event.target.value)} placeholder="Charles, Adam, Cathryn..." />
+        </Field>
+        <Field label="Coding">
+          <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="freeform tag or note" />
+        </Field>
+        <Field label="Notes">
+          <input value={spanNotes} onChange={(event) => setSpanNotes(event.target.value)} />
+        </Field>
+        <button type="button" className="secondary-action" onClick={addSpan} disabled={!selection}>
+          Add Span
+        </button>
+      </div>
+      {selection ? (
+        <div className="selection-preview">
+          <span>
+            Selected chars {selection.start}-{selection.end}
+          </span>
+          <p>{selection.text}</p>
+        </div>
+      ) : null}
+      {spans.length > 0 ? (
+        <div className="span-list">
+          {spans.map((span) => (
+            <div key={span.id} className="span-chip">
+              <strong>{labelFromKey(span.span_type)}</strong>
+              <span>{span.speaker || "speaker unset"}</span>
+              <p>{span.text}</p>
+              {span.code ? <em>{span.code}</em> : null}
+              <button type="button" onClick={() => removeSpan(span.id)}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function isPhotoLikeTask(task: Task, asset?: Asset): boolean {
+  const taskSourceType = payloadString(task.input_payload.source_type) || payloadString(task.input_payload.asset_type);
+  const mimeType = payloadString(task.input_payload.mime_type) || asset?.mime_type || "";
+  const filename = (
+    payloadString(task.input_payload.source_filename) ||
+    payloadString(task.input_payload.asset_title) ||
+    payloadString(task.input_payload.title) ||
+    asset?.original_filename ||
+    asset?.title ||
+    ""
+  ).toLowerCase();
+  return (
+    task.task_type === "photo_context" ||
+    task.task_type === "vision_draft_review" ||
+    ["photo", "image", "scan"].includes(taskSourceType) ||
+    asset?.asset_type === "photo" ||
+    mimeType.startsWith("image/") ||
+    /\.(jpg|jpeg|png|gif|webp|heic|tif|tiff)$/i.test(filename)
+  );
+}
+
+function SourcePairGenerationPreviewPanel({
+  preview,
+  status
+}: {
+  preview: SourcePairGenerationPreview | null;
+  status: string;
+}) {
+  const strategyEntries = preview ? Object.entries(preview.strategy_counts) : [];
+  const firstPair = preview?.created_pairs_preview[0] ?? preview?.held_pairs_preview[0];
+
+  return (
+    <section className="source-pair-generation-preview" aria-label="Generate Pairs preview">
+      <header>
+        <div>
+          <span>Generate Pairs preview</span>
+          <strong>
+            {preview
+              ? `${preview.projected_created_pair_count} ticket${preview.projected_created_pair_count === 1 ? "" : "s"} projected`
+              : status || "Preparing preview"}
+          </strong>
+        </div>
+        <em>{preview?.completion_signal ? labelFromKey(preview.completion_signal) : status || "dry run"}</em>
+      </header>
+      {preview ? (
+        <>
+          <div className="source-pair-preview-grid">
+            <div>
+              <span>Pair source</span>
+              <strong>{preview.primary_strategy_label}</strong>
+              <small>{strategyEntries.map(([strategy, count]) => `${count} ${labelFromKey(strategy)}`).join(" / ") || "No pairs"}</small>
+            </div>
+            <div>
+              <span>Tickets after click</span>
+              <strong>
+                {preview.projected_created_pair_count} create / {preview.projected_held_pair_count} held
+              </strong>
+              <small>{preview.next_queue ? labelFromKey(preview.next_queue) : "No next queue yet"}</small>
+            </div>
+            <div>
+              <span>Source sections</span>
+              <strong>
+                {preview.source_section_count} seen / {preview.projected_held_source_section_count} unpaired
+              </strong>
+              <small>{preview.source_text_char_count} source chars</small>
+            </div>
+            <div>
+              <span>Annotations</span>
+              <strong>
+                {preview.source_span_draft_count} span{preview.source_span_draft_count === 1 ? "" : "s"}
+              </strong>
+              <small>{preview.source_spans_supplied ? "Prompt/response coding included" : "No span coding yet"}</small>
+            </div>
+            <div>
+              <span>Safety</span>
+              <strong>{preview.does_not_mutate_state ? "Non-mutating dry run" : "Review mutation risk"}</strong>
+              <small>{preview.no_live_model_call ? "No live model call" : "May call live model"}</small>
+            </div>
+          </div>
+          {firstPair ? (
+            <div className="source-pair-example-preview" aria-label="First generated pair preview">
+              <span>First ticket preview</span>
+              <strong>
+                {firstPair.artifact_mode.toUpperCase()} Pair {String(firstPair.pair_index).padStart(3, "0")}
+              </strong>
+              <p>{firstPair.prompt_preview}</p>
+              <small>
+                {firstPair.reason ? `Held: ${labelFromKey(firstPair.reason)}` : firstPair.strategy_label}
+                {firstPair.source_chunk_index ? ` / chunk ${firstPair.source_chunk_index}` : ""}
+              </small>
+            </div>
+          ) : (
+            <p className="quiet">No creatable prompt/response pair found yet.</p>
+          )}
+          <ul className="source-pair-safety-list">
+            {preview.safety_boundaries.map((boundary) => (
+              <li key={boundary}>{boundary}</li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="quiet">{status || "Generation preview will appear here before you click Generate Pairs."}</p>
+      )}
+    </section>
+  );
+}
+
+function PhotoAssetPreview({ task, asset }: { task: Task; asset?: Asset }) {
   const assetId = payloadString(task.input_payload.asset_id) || (task.target_type === "asset" ? task.target_id : "");
   const [failed, setFailed] = useState(false);
   const [variant, setVariant] = useState<"display" | "thumbnail" | "original">("display");
@@ -794,7 +1572,19 @@ function PhotoAssetPreview({ task }: { task: Task }) {
     payloadString(task.input_payload.source_filename) ||
     payloadString(task.input_payload.asset_title) ||
     payloadString(task.input_payload.title) ||
+    asset?.title ||
+    asset?.original_filename ||
     "Photo source";
+  const driveWebView = payloadString(task.input_payload.drive_web_view_link);
+  const driveThumbnail = payloadString(task.input_payload.drive_thumbnail_link);
+  const mirrorStatus = payloadString(task.input_payload.mirror_status);
+  const statusRows = [
+    asset?.import_status ? `Import: ${labelFromKey(asset.import_status)}` : "",
+    asset?.processing_status ? `Processing: ${labelFromKey(asset.processing_status)}` : "",
+    mirrorStatus ? `Mirror: ${labelFromKey(mirrorStatus)}` : "",
+    driveThumbnail ? "Drive thumbnail metadata is present" : "",
+    driveWebView ? "Drive source link is present" : ""
+  ].filter(Boolean);
 
   return (
     <section className="photo-preview-panel">
@@ -824,14 +1614,205 @@ function PhotoAssetPreview({ task }: { task: Task }) {
         {failed ? (
           <div className="photo-preview-empty">
             <Image size={24} />
-            <span>Preview is not available yet. Mirror the source or open the dossier to inspect Drive/source records.</span>
+            <strong>Preview not available yet</strong>
+            <span>
+              This is still useful as a metadata/photo-memory task. Mirror the source or inspect the dossier when you need pixels.
+            </span>
+            {statusRows.length > 0 ? (
+              <div className="photo-preview-status">
+                {statusRows.map((row) => (
+                  <small key={row}>{row}</small>
+                ))}
+              </div>
+            ) : null}
             <button type="button" onClick={() => setFailed(false)}>
               Retry
             </button>
+            {driveWebView ? (
+              <Link href={driveWebView} target="_blank" rel="noreferrer">
+                Open source
+              </Link>
+            ) : null}
           </div>
         ) : (
           <img src={getAssetPreviewUrl(assetId, variant)} alt={title} onError={() => setFailed(true)} />
         )}
+      </div>
+    </section>
+  );
+}
+
+function PhotoGroupContextCard({ task }: { task: Task }) {
+  const payload = task.input_payload;
+  const groupKey = payloadString(payload.photo_group_key);
+  const canonicalAssetId = payloadString(payload.canonical_asset_id) || payloadString(payload.asset_id);
+  const variants = Array.isArray(payload.group_variants)
+    ? (payload.group_variants as Record<string, unknown>[])
+    : [];
+  const retrievalOrigin = payload.retrieval_gap_origin && typeof payload.retrieval_gap_origin === "object"
+    ? (payload.retrieval_gap_origin as Record<string, unknown>)
+    : {};
+  const retrievalReview = payload.retrieval_gap_review && typeof payload.retrieval_gap_review === "object"
+    ? (payload.retrieval_gap_review as Record<string, unknown>)
+    : {};
+  const reviewSessionOrigin = payload.review_session_origin && typeof payload.review_session_origin === "object"
+    ? (payload.review_session_origin as Record<string, unknown>)
+    : {};
+  const retrievalReviewFields = Array.isArray(retrievalReview.required_fields)
+    ? (retrievalReview.required_fields as Record<string, unknown>[])
+    : [];
+  const retrievalQuery = payloadString(retrievalOrigin.query);
+  const retrievalQuality = payloadString(retrievalOrigin.candidate_match_quality);
+  const sessionSequence = Number(reviewSessionOrigin.sequence_number || 0);
+  const sessionSelectedCount = Number(reviewSessionOrigin.selected_count || 0);
+  const sessionCompletionSignal = payloadString(reviewSessionOrigin.completion_signal);
+  const sessionPlanHash = payloadString(reviewSessionOrigin.plan_content_sha256);
+  if (!groupKey && variants.length === 0) {
+    return null;
+  }
+  return (
+    <section className="photo-group-card" aria-label="Photo group context">
+      <header>
+        <div>
+          <span>Photo group</span>
+          <strong>{groupKey || "single photo"}</strong>
+        </div>
+        <em>{variants.length || 1} variant{(variants.length || 1) === 1 ? "" : "s"}</em>
+      </header>
+      <div className="photo-group-summary">
+        {canonicalAssetId ? (
+          <span>
+            Canonical
+            <strong>{canonicalAssetId.slice(0, 8)}</strong>
+          </span>
+        ) : null}
+        {payload.source_photo_inventory === true ? <span>Created from inventory</span> : null}
+        {retrievalQuery ? (
+          <span>
+            Retrieval gap
+            <strong>{retrievalQuery}</strong>
+            {retrievalQuality ? <em>{labelFromKey(retrievalQuality)}</em> : null}
+          </span>
+        ) : null}
+      </div>
+      {Object.keys(reviewSessionOrigin).length > 0 ? (
+        <div className="review-session-position-strip" aria-label="Review session position">
+          <span>
+            <em>Session item</em>
+            <strong>
+              {sessionSequence > 0 && sessionSelectedCount > 0
+                ? `${sessionSequence} / ${sessionSelectedCount}`
+                : "session queue"}
+            </strong>
+          </span>
+          <span>
+            <em>Query context</em>
+            <strong>{payloadString(reviewSessionOrigin.source_query, retrievalQuery || "not set")}</strong>
+          </span>
+          {sessionCompletionSignal ? (
+            <span>
+              <em>Completion signal</em>
+              <strong>{labelFromKey(sessionCompletionSignal)}</strong>
+            </span>
+          ) : null}
+          {sessionPlanHash ? (
+            <span>
+              <em>Plan hash</em>
+              <strong>{sessionPlanHash.slice(0, 12)}</strong>
+            </span>
+          ) : null}
+          <small>{payloadString(reviewSessionOrigin.review_policy, "query-aware no-claim review session")}</small>
+        </div>
+      ) : null}
+      {retrievalQuery ? (
+        <div className="retrieval-gap-task-plan" aria-label="Retrieval gap task plan">
+          <span>
+            <strong>No memory claim yet</strong>
+            <em>{recordString(retrievalReview, "review_policy", "retrieval_gap_no_claim_until_adam_context")}</em>
+          </span>
+          {retrievalReviewFields.length > 0 ? (
+            <small>
+              Answer before retrieval use:{" "}
+              {retrievalReviewFields
+                .map((field) => recordString(field, "label", recordString(field, "field_key")))
+                .filter(Boolean)
+                .join(", ")}
+            </small>
+          ) : null}
+        </div>
+      ) : null}
+      {variants.length > 0 ? (
+        <div className="photo-variant-list">
+          {variants.slice(0, 8).map((variant, index) => {
+            const assetId = payloadString(variant.asset_id, `variant-${index + 1}`);
+            const title = payloadString(variant.title, `Variant ${index + 1}`);
+            const isCanonical = canonicalAssetId && assetId === canonicalAssetId;
+            return (
+              <div key={`${assetId}-${index}`} className={isCanonical ? "canonical" : ""}>
+                <strong>{title}</strong>
+                <span>{payloadString(variant.processing_status, "unknown")}</span>
+                {variant.is_copy_variant === true ? <em>copy</em> : null}
+                {isCanonical ? <em>canonical</em> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function PhotoPromptPairSourceCard({
+  task,
+  asset
+}: {
+  task: Task;
+  asset?: Asset;
+}) {
+  const payload = task.input_payload;
+  const sourcePhotoId = payloadString(payload.source_photo_id) || payloadString(payload.grounding_asset_id);
+  if (!sourcePhotoId) {
+    return null;
+  }
+  const boundary = payload.boundary_snapshot && typeof payload.boundary_snapshot === "object"
+    ? (payload.boundary_snapshot as Record<string, unknown>)
+    : {};
+  const title =
+    asset?.title ||
+    asset?.original_filename ||
+    payloadString(payload.source_title) ||
+    payloadString(payload.asset_title) ||
+    "Source photo";
+  const profileStatus = payloadString(payload.source_profile_status, "unknown");
+  const truthStatus = payloadString(payload.source_truth_status, payloadString(payload.truth_status, "unknown"));
+  const privacyLevel = typeof boundary.privacy_level === "string" ? boundary.privacy_level : "unreviewed";
+  const sftAllowed = boundary.usable_for_sft === true;
+  const retrievalOrigin = payload.retrieval_gap_origin && typeof payload.retrieval_gap_origin === "object"
+    ? (payload.retrieval_gap_origin as Record<string, unknown>)
+    : {};
+  const retrievalQuery = payloadString(retrievalOrigin.query);
+  const retrievalQuality = payloadString(retrievalOrigin.candidate_match_quality);
+
+  return (
+    <section className="photo-pair-source-card">
+      <div className="photo-pair-thumb">
+        <img src={getAssetPreviewUrl(sourcePhotoId, "thumbnail")} alt={title} />
+      </div>
+      <div className="photo-pair-source-details">
+        <span>Photo grounding source</span>
+        <strong>{title}</strong>
+        <div>
+          <em>{labelFromKey(profileStatus)}</em>
+          <em>{labelFromKey(truthStatus)}</em>
+          <em>{labelFromKey(privacyLevel)}</em>
+          <em data-tone={sftAllowed ? "good" : "warning"}>{sftAllowed ? "SFT allowed" : "SFT held"}</em>
+        </div>
+        {retrievalQuery ? (
+          <p className="source-card-note">
+            Entered from retrieval gap: <strong>{retrievalQuery}</strong>
+            {retrievalQuality ? ` (${labelFromKey(retrievalQuality)})` : ""}. This is workflow provenance, not a memory claim.
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -887,6 +1868,60 @@ function EditableExtraction({
   );
 }
 
+type ChunkQualityTone = "ready" | "edit" | "neutral";
+
+function segmentMetadataString(segment: Segment, key: string, fallback = ""): string {
+  const value = segment.metadata_json[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function segmentMetadataBoolean(segment: Segment, key: string): boolean {
+  return segment.metadata_json[key] === true;
+}
+
+function chunkDisplayLabel(segment: Segment, fallbackIndex: number): string {
+  const chunkIndex = locatorNumber(segment.locator, "chunk_index", fallbackIndex);
+  if (segment.locator.kind === "natural_section" || segmentMetadataString(segment, "chunking_strategy") === "natural_section") {
+    return `Section ${chunkIndex}`;
+  }
+  return `Chunk ${chunkIndex}`;
+}
+
+function chunkReviewHint(segment: Segment): { label: string; shortLabel: string; tone: ChunkQualityTone } | null {
+  const hint = segmentMetadataString(segment, "section_review_hint");
+  if (!hint) {
+    return null;
+  }
+  if (hint === "needs_context") {
+    return { label: "Needs context", shortLabel: "Context", tone: "edit" };
+  }
+  if (hint === "needs_split") {
+    return { label: "Needs split", shortLabel: "Split", tone: "edit" };
+  }
+  return { label: labelFromKey(hint), shortLabel: "Natural", tone: "neutral" };
+}
+
+function chunkQualityFor(segment: Segment, readyIds: Set<string>, editIds: Set<string>): {
+  label: string;
+  shortLabel: string;
+  tone: ChunkQualityTone;
+} {
+  const metadataStatus = segmentMetadataString(segment, "chunk_quality_status");
+  if (metadataStatus === "pairing_ready_reference" || readyIds.has(segment.id)) {
+    return { label: "Reference ready", shortLabel: "Ready", tone: "ready" };
+  }
+  if (metadataStatus === "needs_adam_edit" || editIds.has(segment.id)) {
+    return { label: "Needs Adam edit", shortLabel: "Edit", tone: "edit" };
+  }
+  if (segment.source_truth_status === "model_generated") {
+    return { label: "Model generated", shortLabel: "Model", tone: "edit" };
+  }
+  if (metadataStatus) {
+    return { label: labelFromKey(metadataStatus), shortLabel: labelFromKey(metadataStatus), tone: "neutral" };
+  }
+  return { label: "Reviewed", shortLabel: "Reviewed", tone: "neutral" };
+}
+
 function ChunkBrowser({
   task,
   initialSelection,
@@ -897,11 +1932,32 @@ function ChunkBrowser({
   onChange: (selection: ChunkSelection, activeChunk?: Segment) => void;
 }) {
   const assetId = payloadString(task.input_payload.asset_id);
+  const textExtractionDerivativeId = payloadString(task.input_payload.text_extraction_derivative_id);
   const [chunks, setChunks] = useState<Segment[]>([]);
   const [activeId, setActiveId] = useState(initialSelection.active_chunk_id ?? "");
   const [selectedIds, setSelectedIds] = useState<string[]>(initialSelection.selected_chunk_ids);
   const [error, setError] = useState("");
+  const readyPayloadIds = useMemo(() => new Set(payloadArray(task.input_payload.pairing_ready_chunk_ids)), [
+    task.input_payload.pairing_ready_chunk_ids
+  ]);
+  const editPayloadIds = useMemo(() => new Set(payloadArray(task.input_payload.needs_adam_edit_chunk_ids)), [
+    task.input_payload.needs_adam_edit_chunk_ids
+  ]);
   const activeChunk = chunks.find((chunk) => chunk.id === activeId) ?? chunks[0];
+  const activeQuality = activeChunk ? chunkQualityFor(activeChunk, readyPayloadIds, editPayloadIds) : null;
+  const qualitySummary = useMemo(() => {
+    let ready = 0;
+    let edit = 0;
+    for (const chunk of chunks) {
+      const quality = chunkQualityFor(chunk, readyPayloadIds, editPayloadIds);
+      if (quality.tone === "ready") {
+        ready += 1;
+      } else if (quality.tone === "edit") {
+        edit += 1;
+      }
+    }
+    return { ready, edit, other: Math.max(0, chunks.length - ready - edit) };
+  }, [chunks, editPayloadIds, readyPayloadIds]);
 
   useEffect(() => {
     setChunks([]);
@@ -913,7 +1969,7 @@ function ChunkBrowser({
     }
 
     let cancelled = false;
-    getAssetTextChunks(assetId)
+    getAssetTextChunks(assetId, textExtractionDerivativeId || undefined)
       .then((nextChunks) => {
         if (cancelled) {
           return;
@@ -934,7 +1990,7 @@ function ChunkBrowser({
     return () => {
       cancelled = true;
     };
-  }, [assetId, initialSelection.active_chunk_id, initialSelection.selected_chunk_ids, task.id, task.task_type]);
+  }, [assetId, initialSelection.active_chunk_id, initialSelection.selected_chunk_ids, task.id, task.task_type, textExtractionDerivativeId]);
 
   useEffect(() => {
     onChange({
@@ -964,6 +2020,13 @@ function ChunkBrowser({
             {selectedIds.length} selected / {chunks.length} available
           </strong>
         </div>
+        {qualitySummary.ready > 0 || qualitySummary.edit > 0 ? (
+          <div className="chunk-quality-summary" aria-label="Chunk quality summary">
+            {qualitySummary.ready > 0 ? <span data-tone="ready">{qualitySummary.ready} reference-ready</span> : null}
+            {qualitySummary.edit > 0 ? <span data-tone="edit">{qualitySummary.edit} need Adam edit</span> : null}
+            {qualitySummary.other > 0 ? <span data-tone="neutral">{qualitySummary.other} other</span> : null}
+          </div>
+        ) : null}
         <div className="chunk-actions">
           <button type="button" onClick={() => setSelectedIds(chunks.map((chunk) => chunk.id))} disabled={chunks.length === 0}>
             Select all
@@ -980,13 +2043,23 @@ function ChunkBrowser({
             {chunks.map((chunk, index) => {
               const chunkIndex = locatorNumber(chunk.locator, "chunk_index", index + 1);
               const selected = selectedIds.includes(chunk.id);
-              const className = ["chunk-row", chunk.id === activeChunk?.id ? "active" : "", selected ? "selected" : ""]
+              const quality = chunkQualityFor(chunk, readyPayloadIds, editPayloadIds);
+              const reviewHint = chunkReviewHint(chunk);
+              const displayLabel = chunkDisplayLabel(chunk, index + 1);
+              const className = [
+                "chunk-row",
+                `quality-${quality.tone}`,
+                reviewHint?.tone === "edit" ? "quality-edit" : "",
+                chunk.id === activeChunk?.id ? "active" : "",
+                selected ? "selected" : ""
+              ]
                 .filter(Boolean)
                 .join(" ");
               return (
                 <div className={className} key={chunk.id}>
-                  <button type="button" onClick={() => setActiveId(chunk.id)}>
-                    Chunk {chunkIndex}
+                  <button type="button" onClick={() => setActiveId(chunk.id)} title={quality.label}>
+                    <span>{displayLabel}</span>
+                    <small>{[quality.shortLabel, reviewHint?.shortLabel].filter(Boolean).join(" / ")}</small>
                   </button>
                   <input
                     type="checkbox"
@@ -1001,12 +2074,29 @@ function ChunkBrowser({
           {activeChunk ? (
             <div className="chunk-detail">
               <div className="chunk-detail-meta">
-                <span>Chunk {locatorNumber(activeChunk.locator, "chunk_index", 1)}</span>
-                <span>
-                  chars {locatorNumber(activeChunk.locator, "char_start")}-
-                  {locatorNumber(activeChunk.locator, "char_end")}
-                </span>
+                <span>{chunkDisplayLabel(activeChunk, 1)}</span>
+                {activeQuality ? <span className="chunk-quality-pill" data-tone={activeQuality.tone}>{activeQuality.label}</span> : null}
+                {activeChunk.locator.kind === "natural_section" || segmentMetadataBoolean(activeChunk, "natural_boundary") ? (
+                  <span className="chunk-quality-pill" data-tone="ready">Natural boundary</span>
+                ) : null}
+                {chunkReviewHint(activeChunk) ? (
+                  <span className="chunk-quality-pill" data-tone={chunkReviewHint(activeChunk)?.tone}>
+                    {chunkReviewHint(activeChunk)?.label}
+                  </span>
+                ) : null}
+                <span>{labelFromKey(activeChunk.source_truth_status)}</span>
+                {activeChunk.locator.kind === "prompt_pair_example" ? (
+                  <span>prompt-pair example</span>
+                ) : (
+                  <span>
+                    chars {locatorNumber(activeChunk.locator, "char_start")}-
+                    {locatorNumber(activeChunk.locator, "char_end")}
+                  </span>
+                )}
               </div>
+              {segmentMetadataString(activeChunk, "chunk_quality_notes") ? (
+                <p className="chunk-quality-note">{segmentMetadataString(activeChunk, "chunk_quality_notes")}</p>
+              ) : null}
               <LinePreview text={activeChunk.text_content ?? ""} className="chunk-line-preview" />
             </div>
           ) : null}
@@ -1161,6 +2251,982 @@ function AssetTriageForm({
       <Field label="Notes">
         <TextArea value={triageNotes} onChange={setTriageNotes} />
       </Field>
+    </div>
+  );
+}
+
+function PhotoMemoryReviewForm({
+  task,
+  initialDecisions,
+  onChange
+}: {
+  task: Task;
+  initialDecisions: Decisions;
+  onChange: (value: Decisions) => void;
+}) {
+  const payload = task.input_payload;
+  const draft = payload.vision_draft && typeof payload.vision_draft === "object"
+    ? (payload.vision_draft as Record<string, unknown>)
+    : {};
+  const machineDraftDefaults = {
+    description: payloadString(draft.visual_summary),
+    visiblePeople: [...payloadArray(payload.machine_guess_people), ...payloadArray(draft.visible_people)].join(", "),
+    place: payloadString(payload.machine_guess_place) || payloadArray(draft.places).join(", "),
+    dateRange: payloadString(draft.time_period_guess, "unknown"),
+    tags: [...payloadArray(draft.objects), ...payloadArray(draft.themes)].join(", "),
+    objects: payloadArray(draft.objects).join(", "),
+    ocrText: payloadString(draft.handwriting_text) || payloadString(draft.ocr_text)
+  };
+  const hasMachineDraftDefaults = Object.values(machineDraftDefaults).some((value) => value.trim() && value !== "unknown");
+  const questions = Array.isArray(payload.suggested_questions) ? (payload.suggested_questions as Record<string, unknown>[]) : [];
+  const initialQuestionAnswers =
+    initialDecisions.question_answers && typeof initialDecisions.question_answers === "object"
+      ? (initialDecisions.question_answers as Record<string, unknown>)
+      : {};
+  const [visionAccuracy, setVisionAccuracy] = useState(decisionString(initialDecisions, "vision_accuracy", "not_applicable"));
+  const [description, setDescription] = useState(
+    decisionString(
+      initialDecisions,
+      "accepted_visual_description",
+      decisionString(initialDecisions, "visual_description_correction", machineDraftDefaults.description)
+    )
+  );
+  const [visiblePeople, setVisiblePeople] = useState(
+    decisionListText(
+      initialDecisions,
+      "visible_people",
+      decisionListText(initialDecisions, "people", machineDraftDefaults.visiblePeople)
+    )
+  );
+  const [absentPeople, setAbsentPeople] = useState(decisionListText(initialDecisions, "absent_but_relevant_people"));
+  const [place, setPlace] = useState(
+    decisionString(
+      initialDecisions,
+      "place",
+      decisionListText(initialDecisions, "places", machineDraftDefaults.place)
+    )
+  );
+  const [dateRange, setDateRange] = useState(
+    decisionString(initialDecisions, "date_or_range", machineDraftDefaults.dateRange)
+  );
+  const [dateConfidence, setDateConfidence] = useState(decisionString(initialDecisions, "date_confidence", "unknown"));
+  const [event, setEvent] = useState(decisionString(initialDecisions, "event", "unknown"));
+  const [tags, setTags] = useState(
+    decisionListText(initialDecisions, "accepted_tags", machineDraftDefaults.tags)
+  );
+  const [objects, setObjects] = useState(decisionListText(initialDecisions, "concrete_objects", machineDraftDefaults.objects));
+  const [rejectedInferences, setRejectedInferences] = useState(decisionListText(initialDecisions, "rejected_system_inferences"));
+  const [openQuestions, setOpenQuestions] = useState(decisionListText(initialDecisions, "open_questions"));
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>(() =>
+    Object.fromEntries(Object.entries(initialQuestionAnswers).map(([key, value]) => [key, String(value ?? "")]))
+  );
+  const [adamContextNote, setAdamContextNote] = useState(decisionString(initialDecisions, "adam_context_note"));
+  const [invisibleContext, setInvisibleContext] = useState(decisionString(initialDecisions, "invisible_context_note"));
+  const [memoryPotential, setMemoryPotential] = useState(decisionNumber(initialDecisions, "memory_potential", 4));
+  const [privacySensitivity, setPrivacySensitivity] = useState(decisionNumber(initialDecisions, "privacy_sensitivity", 2));
+  const [privacyLevel, setPrivacyLevel] = useState(decisionString(initialDecisions, "privacy_level", "family_private"));
+  const [privacyNotes, setPrivacyNotes] = useState(decisionString(initialDecisions, "privacy_notes"));
+  const [readyForDownstream, setReadyForDownstream] = useState(decisionString(initialDecisions, "ready_for_downstream", "later"));
+  const [galleryEligibility, setGalleryEligibility] = useState(decisionString(initialDecisions, "gallery_eligibility", "family_private"));
+  const [ocrReviewStatus, setOcrReviewStatus] = useState(decisionString(initialDecisions, "ocr_review_status", "not_present"));
+  const [ocrTruthStatus, setOcrTruthStatus] = useState(decisionString(initialDecisions, "ocr_truth_status", "system_inference"));
+  const [correctedOcrText, setCorrectedOcrText] = useState(
+    decisionString(initialDecisions, "corrected_ocr_text", machineDraftDefaults.ocrText)
+  );
+  const [projection, setProjection] = useState<PhotoContextSubmitProjection | null>(null);
+  const [projectionStatus, setProjectionStatus] = useState(
+    task.task_type === "photo_context" ? "Backend projection pending" : "Local preview"
+  );
+  const [copyReviewPromptStatus, setCopyReviewPromptStatus] = useState("");
+  const [adamReviewPasteText, setAdamReviewPasteText] = useState("");
+  const [adamReviewPasteStatus, setAdamReviewPasteStatus] = useState("Paste numbered answers from Adam, then apply.");
+  const downstreamTruthStatus = reviewedPhotoTruthStatus({
+    taskType: task.task_type,
+    description,
+    adamContextNote,
+    invisibleContext,
+    questionAnswers,
+    visionAccuracy
+  });
+  const downstreamConsequences = photoReviewConsequences({
+    privacyLevel,
+    readyForDownstream,
+    galleryEligibility,
+    truthStatus: downstreamTruthStatus
+  });
+  const answeredQuestionPreview = Object.entries(questionAnswers)
+    .filter(([, value]) => String(value ?? "").trim())
+    .map(([key, value]) => `${promptFromDecisionKey(key)}: ${String(value).trim()}`);
+  const downstreamSearchText = [
+    description ? `Visual description: ${description}` : "",
+    visiblePeople ? `People: ${parseList(visiblePeople).join(", ")}` : "",
+    place ? `Place: ${place}` : "",
+    dateRange && dateRange !== "unknown" ? `Date: ${dateRange}` : "",
+    event && event !== "unknown" ? `Event: ${event}` : "",
+    tags ? `Tags and themes: ${parseList(tags).join(", ")}` : "",
+    objects ? `Visible objects: ${parseList(objects).join(", ")}` : "",
+    adamContextNote ? `Adam context: ${adamContextNote}` : "",
+    invisibleContext ? `Invisible context: ${invisibleContext}` : "",
+    answeredQuestionPreview.length ? `Adam answers: ${answeredQuestionPreview.join(" | ")}` : "",
+    openQuestions ? `Open questions: ${parseList(openQuestions).join(", ")}` : ""
+  ].filter(Boolean).join("\n");
+
+  const currentDecisions = useMemo<Decisions>(() => {
+    const people = parseList(visiblePeople);
+    const places = parseList(place);
+    const acceptedTags = parseList(tags);
+    return {
+      vision_accuracy: visionAccuracy,
+      accepted_visual_description: description,
+      visual_description_correction: description,
+      people,
+      visible_people: people,
+      absent_but_relevant_people: parseList(absentPeople),
+      places,
+      place,
+      date_or_range: dateRange,
+      date_confidence: dateConfidence,
+      event,
+      accepted_tags: acceptedTags,
+      themes: acceptedTags,
+      concrete_objects: parseList(objects),
+      rejected_system_inferences: parseList(rejectedInferences),
+      open_questions: parseList(openQuestions),
+      question_answers: questionAnswers,
+      adam_context_note: adamContextNote,
+      invisible_context_note: invisibleContext,
+      memory_potential: memoryPotential,
+      privacy_sensitivity: privacySensitivity,
+      privacy_level: privacyLevel,
+      privacy_notes: privacyNotes,
+      ready_for_downstream: readyForDownstream,
+      gallery_eligibility: galleryEligibility,
+      ocr_review_status: ocrReviewStatus,
+      ocr_truth_status: ocrTruthStatus,
+      corrected_ocr_text: correctedOcrText,
+      source_genre: payloadString(payload.asset_type, "photo"),
+      downstream_search_text_preview: downstreamSearchText,
+      truth_status: downstreamTruthStatus,
+      voice_presence: "absent"
+    };
+  }, [
+    absentPeople,
+    adamContextNote,
+    correctedOcrText,
+    dateConfidence,
+    dateRange,
+    description,
+    event,
+    galleryEligibility,
+    invisibleContext,
+    memoryPotential,
+    objects,
+    ocrReviewStatus,
+    ocrTruthStatus,
+    onChange,
+    openQuestions,
+    place,
+    privacyLevel,
+    privacyNotes,
+    privacySensitivity,
+    questionAnswers,
+    readyForDownstream,
+    rejectedInferences,
+    tags,
+    downstreamSearchText,
+    downstreamTruthStatus,
+    task.task_type,
+    payload.asset_type,
+    visiblePeople,
+    visionAccuracy
+  ]);
+
+  useEffect(() => {
+    onChange(currentDecisions);
+  }, [currentDecisions, onChange]);
+
+  useEffect(() => {
+    if (task.task_type !== "photo_context") {
+      setProjection(null);
+      setProjectionStatus("Local preview");
+      return;
+    }
+    let cancelled = false;
+    setProjectionStatus("Updating backend projection");
+    const timeout = window.setTimeout(() => {
+      previewPhotoContextSubmitProjection(task.id, currentDecisions)
+        .then((nextProjection) => {
+          if (!cancelled) {
+            setProjection(nextProjection);
+            setProjectionStatus(nextProjection.supported ? "Backend projection ready" : "Projection unavailable");
+          }
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled) {
+            setProjection(null);
+            setProjectionStatus(caught instanceof Error ? `Projection failed: ${caught.message}` : "Projection failed");
+          }
+        });
+    }, 450);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [currentDecisions, task.id, task.task_type]);
+
+  const metadataProjection = projection?.metadata_profile;
+  const vectorProjection = projection?.memory_embedding_vector_handoff;
+  const galleryProjection = projection?.gallery;
+  const memoryProjection = projection?.memory;
+  const projectionVectorStatus = recordString(vectorProjection, "status");
+  const retrievalOrigin = payload.retrieval_gap_origin && typeof payload.retrieval_gap_origin === "object"
+    ? (payload.retrieval_gap_origin as Record<string, unknown>)
+    : {};
+  const retrievalQuery = payloadString(retrievalOrigin.query);
+  const retrievalReview = payload.retrieval_gap_review && typeof payload.retrieval_gap_review === "object"
+    ? (payload.retrieval_gap_review as Record<string, unknown>)
+    : {};
+  const reviewSessionOrigin = payload.review_session_origin && typeof payload.review_session_origin === "object"
+    ? (payload.review_session_origin as Record<string, unknown>)
+    : {};
+  const retrievalReviewFields = Array.isArray(retrievalReview.required_fields)
+    ? (retrievalReview.required_fields as Record<string, unknown>[])
+    : [];
+  const retrievalIncompleteFields = projection?.field_requirements?.length
+    ? projection.field_requirements
+        .filter((item) => recordString(item, "status") !== "complete")
+        .map((item) => recordString(item, "label", recordString(item, "field_key")))
+    : retrievalReviewFields.map((field) => recordString(field, "label", recordString(field, "field_key"))).filter(Boolean);
+  const retrievalQueryAnswer = String(questionAnswers.retrieval_query_relevance ?? "").trim();
+  const taskPayoffTemplate = retrievalQuery
+    ? [
+        `Photo memory: ${payloadString(payload.asset_title, payloadString(payload.title, "Untitled photo"))}`,
+        `Retrieval query: ${retrievalQuery}`,
+        `Visible facts: ${description.trim() || "[requires Adam: reviewed visible facts]"}`,
+        `Query relevance: ${retrievalQueryAnswer || "[requires Adam: connection to retrieval query]"}`,
+        `Adam context: ${invisibleContext.trim() || adamContextNote.trim() || "[requires Adam: invisible memory context]"}`,
+        `Uncertainty: ${openQuestions.trim() || "[requires Adam: explicit uncertainty/open questions]"}`,
+        `Boundary: ${privacyLevel || "[requires Adam: boundary and retrieval permission]"}`
+      ].join("\n")
+    : "";
+  const promotionChecklist = projection?.field_requirements?.length
+    ? [
+        ...projection.field_requirements.map((item) => {
+          const fieldKey = recordString(item, "field_key", "field");
+          const status = recordString(item, "status", "missing");
+          return {
+            key: fieldKey,
+            label: recordString(item, "label", fieldKey),
+            status,
+            reason: recordString(item, "reason"),
+            tone: checklistTone(status)
+          };
+        }),
+        {
+          key: "vector_handoff_status",
+          label: "Vector handoff status",
+          status: projectionVectorStatus || "unknown",
+          reason: recordString(vectorProjection, "reason", "Default vector handoff requires Adam-reviewed context, clearance, and boundary."),
+          tone: checklistTone(projectionVectorStatus || "unknown")
+        }
+      ]
+    : localPhotoPromotionChecklist({
+        description,
+        adamContextNote,
+        invisibleContext,
+        questionAnswers,
+        privacyLevel,
+        readyForDownstream,
+        ocrReviewStatus,
+        vectorStatus: ""
+      });
+  const promotionCompleteCount = promotionChecklist.filter((item) => item.tone === "good").length;
+  const promotionHeldCount = Math.max(0, promotionChecklist.length - promotionCompleteCount);
+  const sessionRequirementRows = projection?.field_requirements?.length
+    ? projection.field_requirements
+    : retrievalReviewFields.map((field) => ({
+        field_key: recordString(field, "field_key"),
+        label: recordString(field, "label", recordString(field, "field_key")),
+        status: "missing"
+      }));
+  const sessionRequirementCompleteCount = sessionRequirementRows.filter(
+    (item) => recordString(item, "status") === "complete"
+  ).length;
+  const sessionRequirementTotal = sessionRequirementRows.length;
+  const sessionBlockers = projection?.blocked_reasons ?? [];
+  const sessionMetricImpact =
+    projectionVectorStatus === "eligible_reviewed_record"
+      ? "Would move session completion metric on submit"
+      : sessionBlockers.length
+        ? "Session metric waits for blockers"
+        : "Session metric waits for backend projection";
+  const sessionPositionText = `${recordString(reviewSessionOrigin, "sequence_number", "?")} / ${recordString(
+    reviewSessionOrigin,
+    "selected_count",
+    "?"
+  )}`;
+  const adamFocusItems = [
+    {
+      key: "reviewed_visual_description",
+      label: "Reviewed visual description",
+      status: description.trim() ? "complete" : "missing",
+      detail: "Visible facts Adam confirms or corrects."
+    },
+    ...(retrievalQuery
+      ? [
+          {
+            key: "retrieval_query_relevance",
+            label: "Connection to retrieval query",
+            status: retrievalQueryAnswer ? "complete" : "missing",
+            detail: `Why this photo does or does not answer "${retrievalQuery}".`
+          }
+        ]
+      : []),
+    {
+      key: "why_it_matters",
+      label: "Why it matters",
+      status: adamContextNote.trim() ? "complete" : "missing",
+      detail: "Adam-authored memory significance, not model inference."
+    },
+    {
+      key: "invisible_context",
+      label: "Invisible context",
+      status: invisibleContext.trim() ? "complete" : "missing",
+      detail: "People, meaning, or circumstances not visible in the pixels."
+    },
+    {
+      key: "open_questions",
+      label: "Open questions",
+      status: openQuestions.trim() ? "complete" : "missing",
+      detail: "Uncertainty to preserve instead of smoothing over."
+    }
+  ];
+  const adamFocusCompleteCount = adamFocusItems.filter((item) => item.status === "complete").length;
+  const firstIncompleteAdamFocus = adamFocusItems.find((item) => item.status !== "complete");
+  const adamReviewPromptText = [
+    `Photo: ${payloadString(payload.asset_title, payloadString(payload.title, "Untitled photo"))}`,
+    retrievalQuery ? `Retrieval query: ${retrievalQuery}` : "Retrieval query: none",
+    "",
+    "Please answer only from Adam's memory or direct observation. Do not invent or smooth over uncertainty.",
+    "This is a review prompt, not generated memory text.",
+    "",
+    ...adamFocusItems.map((item, index) => `${index + 1}. ${item.label}: ${item.detail}`)
+  ].join("\n");
+  const projectionConsequences = projection?.supported
+    ? [
+        {
+          label: "Truth label",
+          value: labelFromKey(recordString(metadataProjection, "truth_status_after", downstreamTruthStatus)),
+          tone: recordString(metadataProjection, "truth_status_after") === "adam_memory" ? "good" : "neutral"
+        },
+        {
+          label: "Vector handoff",
+          value: labelFromKey(projectionVectorStatus || "unknown"),
+          tone: projectionVectorStatus === "eligible_reviewed_record" ? "good" : "warning"
+        },
+        {
+          label: "Gallery",
+          value: recordBoolean(galleryProjection, "hidden_by_boundary")
+            ? "Hidden by boundary"
+            : labelFromKey(recordString(galleryProjection, "scope_after", "Held or context-only")),
+          tone: recordBoolean(galleryProjection, "hidden_by_boundary") ? "warning" : "good"
+        },
+        {
+          label: "Memory",
+          value: recordBoolean(memoryProjection, "would_create")
+            ? "Will create"
+            : recordBoolean(memoryProjection, "would_update")
+              ? "Will update"
+              : "Not created",
+          tone: recordBoolean(memoryProjection, "would_create") || recordBoolean(memoryProjection, "would_update") ? "good" : "warning"
+        },
+        {
+          label: "Training",
+          value: "Not SFT/DPO material",
+          tone: "neutral"
+        }
+      ]
+    : downstreamConsequences;
+  const projectionSearchText = recordString(projection?.profile_embedding, "input_preview") || downstreamSearchText;
+  const vectorProjectionReason = recordString(
+    vectorProjection,
+    "reason",
+    "Submit stores reviewed photo context without making SFT/DPO training material."
+  );
+  const submitOutcomePreview = (() => {
+    if (task.task_type !== "photo_context") {
+      return {
+        label: "Saves reviewed photo annotation",
+        detail: "Vision draft review keeps machine help separate until a photo-context projection is available."
+      };
+    }
+    if (!projection) {
+      return {
+        label: "Backend projection pending",
+        detail: "Waiting to confirm whether Submit creates memory, holds context, or blocks vector handoff."
+      };
+    }
+    if (!projection.supported) {
+      return {
+        label: "Saves review without vector projection",
+        detail: "This task is not currently eligible for backend photo-context projection."
+      };
+    }
+    if (projectionVectorStatus === "eligible_reviewed_record") {
+      return {
+        label: "Creates vector-safe memory record",
+        detail: "Reviewed-only handoff; no live embedding call; no ordinary DB vector storage."
+      };
+    }
+    if (projectionVectorStatus === "excluded_by_boundary") {
+      return {
+        label: "Saves review but excludes vector handoff",
+        detail: vectorProjectionReason
+      };
+    }
+    if (projectionVectorStatus === "held_pending_downstream_clearance") {
+      return {
+        label: "Saves held photo context",
+        detail: "Adam context is preserved, but retrieval and vector handoff wait for downstream clearance."
+      };
+    }
+    if (projectionVectorStatus === "held_missing_memory_context") {
+      return {
+        label: "Needs context before memory export",
+        detail: "Submit can save progress, but the vector memory record stays held until required context is complete."
+      };
+    }
+    return {
+      label: labelFromKey(projection.submit_readiness || projectionVectorStatus || "review saved"),
+      detail: projection.blocked_reasons.length
+        ? `Held or blocked: ${projection.blocked_reasons.map(labelFromKey).join(", ")}.`
+        : vectorProjectionReason
+    };
+  })();
+
+  function updateQuestionAnswer(questionId: string, value: string) {
+    setQuestionAnswers((current) => ({ ...current, [questionId]: value }));
+  }
+
+  function restoreMachineDraftDefaults() {
+    setDescription(machineDraftDefaults.description);
+    setVisiblePeople(machineDraftDefaults.visiblePeople);
+    setPlace(machineDraftDefaults.place);
+    setDateRange(machineDraftDefaults.dateRange);
+    setTags(machineDraftDefaults.tags);
+    setObjects(machineDraftDefaults.objects);
+    setCorrectedOcrText(machineDraftDefaults.ocrText);
+  }
+
+  function setRetrievalReadyDefaults() {
+    setPrivacyLevel("family_private");
+    setReadyForDownstream("yes");
+    setGalleryEligibility("family_private");
+    if (!correctedOcrText.trim()) {
+      setOcrReviewStatus("not_present");
+    }
+  }
+
+  function applySessionSafeDefaults() {
+    setRetrievalReadyDefaults();
+  }
+
+  function focusPhotoContextField(fieldKey: string) {
+    const field = document.querySelector<HTMLElement>(`[data-focus-key="${fieldKey}"]`);
+    const target = field?.querySelector<HTMLElement>("textarea, input, select, button");
+    const focusTarget = target ?? field;
+    focusTarget?.scrollIntoView({ block: "center", behavior: "smooth" });
+    window.setTimeout(() => focusTarget?.focus(), 150);
+  }
+
+  async function copyAdamReviewPrompt() {
+    try {
+      await navigator.clipboard.writeText(adamReviewPromptText);
+      setCopyReviewPromptStatus("Copied review prompt");
+    } catch {
+      setCopyReviewPromptStatus("Prompt preview is ready to select");
+    }
+  }
+
+  function applyAdamReviewAnswers() {
+    const matches = Array.from(adamReviewPasteText.matchAll(/(?:^|\n)\s*(\d+)\.\s*([^:\n]+):?\s*/g));
+    const answers = new Map<string, string>();
+
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index];
+      const nextMatch = matches[index + 1];
+      const label = String(match[2] ?? "").trim().toLowerCase();
+      const answer = adamReviewPasteText
+        .slice((match.index ?? 0) + match[0].length, nextMatch?.index ?? adamReviewPasteText.length)
+        .trim();
+      const focusItem = adamFocusItems.find((item) => label.startsWith(item.label.toLowerCase()));
+      if (focusItem && answer && answer !== focusItem.detail) {
+        answers.set(focusItem.key, answer);
+      }
+    }
+
+    if (answers.has("reviewed_visual_description")) {
+      setDescription(answers.get("reviewed_visual_description") ?? "");
+    }
+    if (answers.has("retrieval_query_relevance")) {
+      const retrievalAnswer = answers.get("retrieval_query_relevance") ?? "";
+      setQuestionAnswers((current) => {
+        const nextAnswers: Record<string, string> = { ...current, retrieval_query_relevance: retrievalAnswer };
+        questions.forEach((question, index) => {
+          const id = payloadString(question.id, `question_${index + 1}`);
+          const questionText = payloadString(question.question).toLowerCase();
+          if (id.includes("retrieval") || id.includes("query") || questionText.includes("retrieval") || questionText.includes("query")) {
+            nextAnswers[id] = retrievalAnswer;
+          }
+        });
+        return nextAnswers;
+      });
+    }
+    if (answers.has("why_it_matters")) {
+      setAdamContextNote(answers.get("why_it_matters") ?? "");
+    }
+    if (answers.has("invisible_context")) {
+      setInvisibleContext(answers.get("invisible_context") ?? "");
+    }
+    if (answers.has("open_questions")) {
+      setOpenQuestions(answers.get("open_questions") ?? "");
+    }
+
+    setAdamReviewPasteStatus(
+      answers.size
+        ? `Applied ${answers.size} Adam answer${answers.size === 1 ? "" : "s"} to review fields.`
+        : "No changed Adam answers found; keep the numbered labels and replace the prompt text with answers."
+    );
+  }
+
+  function holdForLater() {
+    setReadyForDownstream("later");
+    setGalleryEligibility("none");
+  }
+
+  function keepSealed() {
+    setPrivacyLevel("sealed");
+    setReadyForDownstream("no");
+    setGalleryEligibility("none");
+  }
+
+  return (
+    <div className="form-grid source-question-grid photo-memory-grid">
+      <FormHint title="Photo memory review">
+        Describe what is visible separately from what Adam knows. This creates searchable photo metadata, memory links, gallery eligibility, and embedding inputs without treating system guesses as source truth.
+      </FormHint>
+      {task.task_type === "photo_context" ? (
+        <section className="photo-context-completion-payoff" aria-label="Photo context completion payoff">
+          <header>
+            <div>
+              <span>Completion payoff</span>
+              <strong>{submitOutcomePreview.label}</strong>
+            </div>
+            <em>{projectionStatus}</em>
+          </header>
+          <p>{submitOutcomePreview.detail}</p>
+          <div className="photo-context-payoff-grid" aria-label="Completion payoff gates">
+            <span data-tone={projectionVectorStatus === "eligible_reviewed_record" ? "good" : "warning"}>
+              <em>Vector handoff</em>
+              <strong>{labelFromKey(projectionVectorStatus || "backend_projection_pending")}</strong>
+            </span>
+            <span data-tone={adamFocusCompleteCount === adamFocusItems.length ? "good" : "warning"}>
+              <em>Adam fields</em>
+              <strong>
+                {adamFocusCompleteCount} / {adamFocusItems.length} answered
+              </strong>
+            </span>
+            <span data-tone={retrievalQuery ? "warning" : "neutral"}>
+              <em>Retrieval query</em>
+              <strong>{retrievalQuery || "No retrieval gap"}</strong>
+            </span>
+            <span data-tone={Object.keys(reviewSessionOrigin).length ? "warning" : "neutral"}>
+              <em>Session item</em>
+              <strong>{Object.keys(reviewSessionOrigin).length ? sessionPositionText : "Not in session"}</strong>
+            </span>
+            <span data-tone={projectionVectorStatus === "eligible_reviewed_record" ? "good" : "warning"}>
+              <em>Session metric</em>
+              <strong>{sessionMetricImpact}</strong>
+            </span>
+          </div>
+          <div className="photo-context-payoff-actions">
+            {firstIncompleteAdamFocus ? (
+              <button type="button" onClick={() => focusPhotoContextField(firstIncompleteAdamFocus.key)}>
+                Focus first missing: {firstIncompleteAdamFocus.label}
+              </button>
+            ) : (
+              <span>Adam-required fields complete in the current draft.</span>
+            )}
+          </div>
+          <div className="photo-context-missing-field-list" aria-label="Photo context missing field jump list">
+            {adamFocusItems.map((item) => (
+              <button key={item.key} type="button" data-status={item.status} onClick={() => focusPhotoContextField(item.key)}>
+                <em>{item.status === "complete" ? "Complete" : "Needs Adam"}</em>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </button>
+            ))}
+          </div>
+          <small>
+            No memory claim until Adam submits context.{" "}
+            {retrievalIncompleteFields.length
+              ? `Needs: ${retrievalIncompleteFields.slice(0, 3).join(", ")}`
+              : "Required context is complete in the current projection."}
+          </small>
+        </section>
+      ) : null}
+      {hasMachineDraftDefaults ? (
+        <section className="machine-draft-defaults" aria-label="Machine draft defaults">
+          <header>
+            <div>
+              <span>Machine-derived defaults</span>
+              <strong>Visible-field scaffold only</strong>
+            </div>
+            <button type="button" onClick={restoreMachineDraftDefaults}>
+              Restore visible defaults
+            </button>
+          </header>
+          <p>
+            These values come from a machine draft. They speed up visible description review but are not Adam memory until corrected, contextualized, and submitted.
+          </p>
+          <div>
+            {machineDraftDefaults.description ? (
+              <span>
+                <em>Description</em>
+                {machineDraftDefaults.description}
+              </span>
+            ) : null}
+            {machineDraftDefaults.visiblePeople ? (
+              <span>
+                <em>People</em>
+                {machineDraftDefaults.visiblePeople}
+              </span>
+            ) : null}
+            {machineDraftDefaults.place ? (
+              <span>
+                <em>Place</em>
+                {machineDraftDefaults.place}
+              </span>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+      <Field label="Is the machine/scaffold description accurate?">
+        <Select
+          value={visionAccuracy}
+          onChange={setVisionAccuracy}
+          options={["no_issues", "minor_issues", "major_issues", "not_applicable"]}
+        />
+      </Field>
+      <Field
+        label="Reviewed visual description"
+        hint="What retrieval and gallery views should say about the visible image."
+        focusKey="reviewed_visual_description"
+      >
+        <TextArea rows={5} value={description} onChange={setDescription} />
+      </Field>
+      <Field label="Who is visible or represented?">
+        <input value={visiblePeople} onChange={(event) => setVisiblePeople(event.target.value)} />
+      </Field>
+      <Field label="Who matters but is not visible?">
+        <input value={absentPeople} onChange={(event) => setAbsentPeople(event.target.value)} />
+      </Field>
+      <Field label="Where is this?">
+        <input value={place} onChange={(event) => setPlace(event.target.value)} />
+      </Field>
+      <div className="field-pair">
+        <Field label="When is this from or about?">
+          <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
+        </Field>
+        <Field label="Date confidence">
+          <Select value={dateConfidence} onChange={setDateConfidence} options={["exact", "year", "decade", "unknown"]} />
+        </Field>
+      </div>
+      <Field label="Event or moment">
+        <input value={event} onChange={(event) => setEvent(event.target.value)} />
+      </Field>
+      <Field label="Tags and themes" hint="People, places, objects, and themes that should become searchable metadata.">
+        <input value={tags} onChange={(event) => setTags(event.target.value)} />
+      </Field>
+      <Field label="Concrete visible objects">
+        <input value={objects} onChange={(event) => setObjects(event.target.value)} />
+      </Field>
+      <Field label="What did the system get wrong?">
+        <input value={rejectedInferences} onChange={(event) => setRejectedInferences(event.target.value)} />
+      </Field>
+      <Field
+        label="Open questions for later"
+        hint="Unresolved details that should stay marked as uncertain in retrieval records."
+        focusKey="open_questions"
+      >
+        <input value={openQuestions} onChange={(event) => setOpenQuestions(event.target.value)} />
+      </Field>
+      <Field label="Why does Adam think it matters?" focusKey="why_it_matters">
+        <TextArea rows={4} value={adamContextNote} onChange={setAdamContextNote} />
+      </Field>
+      <Field label="Invisible context" hint="What a viewer could not know from the pixels alone." focusKey="invisible_context">
+        <TextArea rows={5} value={invisibleContext} onChange={setInvisibleContext} />
+      </Field>
+      {retrievalQuery ? (
+        <Field
+          label="Connection to retrieval query"
+          hint={`Why this photo should or should not answer "${retrievalQuery}".`}
+          focusKey="retrieval_query_relevance"
+        >
+          <TextArea rows={3} value={retrievalQueryAnswer} onChange={(value) => updateQuestionAnswer("retrieval_query_relevance", value)} />
+        </Field>
+      ) : null}
+      <section className="photo-memory-output-preview" aria-label="Downstream memory preview">
+        <header>
+          <div>
+            <span>Downstream memory preview</span>
+            <strong>{projection?.supported ? "Backend submit projection" : "Search text draft"}</strong>
+          </div>
+          <em>{projectionStatus}</em>
+        </header>
+        <section className="photo-context-submit-preview" aria-label="Photo context submit outcome preview">
+          <span>On Submit</span>
+          <strong>{submitOutcomePreview.label}</strong>
+          <em>{submitOutcomePreview.detail}</em>
+        </section>
+        <div className="photo-memory-consequence-grid" aria-label="Submit consequence preview">
+          {projectionConsequences.map((item) => (
+            <span key={item.label} data-tone={item.tone}>
+              <em>{item.label}</em>
+              <strong>{item.value}</strong>
+            </span>
+          ))}
+        </div>
+        <section className="photo-memory-promotion-checklist" aria-label="Promotion checklist">
+          <div>
+            <span>Promotion checklist</span>
+            <small>Fields that decide whether this photo becomes reviewed memory, held context, or boundary-excluded material.</small>
+          </div>
+          <div className="photo-promotion-progress" aria-label="Promotion progress">
+            <span data-tone="good">
+              <strong>{promotionCompleteCount}</strong>
+              <em>complete</em>
+            </span>
+            <span data-tone={promotionHeldCount > 0 ? "warning" : "good"}>
+              <strong>{promotionHeldCount}</strong>
+              <em>held</em>
+            </span>
+          </div>
+          <div className="photo-memory-consequence-grid">
+            {promotionChecklist.map((item) => (
+              <span key={item.key} data-tone={item.tone} title={item.reason}>
+                <em>{item.label}</em>
+                <strong>{labelFromKey(item.status || "unknown")}</strong>
+              </span>
+            ))}
+          </div>
+        </section>
+        {Object.keys(reviewSessionOrigin).length > 0 ? (
+          <section className="session-progress-impact-panel" aria-label="Session progress impact">
+            <header>
+              <div>
+                <span>Session progress impact</span>
+                <strong>Item {sessionPositionText}</strong>
+              </div>
+              <em>No memory claim until submit</em>
+            </header>
+            <div className="photo-memory-consequence-grid">
+              <span data-tone={sessionRequirementTotal > 0 && sessionRequirementCompleteCount === sessionRequirementTotal ? "good" : "warning"}>
+                <em>Fields complete</em>
+                <strong>
+                  {sessionRequirementCompleteCount} / {sessionRequirementTotal || retrievalReviewFields.length || 0}
+                </strong>
+              </span>
+              <span data-tone={sessionBlockers.length ? "warning" : "good"}>
+                <em>Remaining blockers</em>
+                <strong>{sessionBlockers.length ? sessionBlockers.map(labelFromKey).join(", ") : "None projected"}</strong>
+              </span>
+              <span data-tone={projectionVectorStatus === "eligible_reviewed_record" ? "good" : "warning"}>
+                <em>Session completion metric</em>
+                <strong>{sessionMetricImpact}</strong>
+              </span>
+            </div>
+            <small>{recordString(reviewSessionOrigin, "completion_signal", "create_or_open_context_tasks_then_submit_adam_context_until_needs_context_count_decreases")}</small>
+            <div className="session-safe-assist" aria-label="Session safe defaults assist">
+              <button type="button" onClick={applySessionSafeDefaults}>
+                Apply session-safe defaults
+              </button>
+              <small>Sets boundary/downstream controls only; Adam description, meaning, and query answers stay untouched.</small>
+            </div>
+          </section>
+        ) : null}
+        {retrievalQuery ? (
+          <section className="retrieval-payoff-panel" aria-label="Task retrieval payoff preview">
+            <div>
+              <span>Retrieval payoff preview</span>
+              <strong>No generated memory claim</strong>
+              <small>{recordString(retrievalReview, "review_policy", "retrieval_gap_no_claim_until_adam_context")}</small>
+            </div>
+            <div className="photo-memory-consequence-grid">
+              <span data-tone="warning">
+                <em>Query</em>
+                <strong>{retrievalQuery}</strong>
+              </span>
+              <span data-tone={projectionVectorStatus === "eligible_reviewed_record" ? "good" : "warning"}>
+                <em>After completion</em>
+                <strong>reviewed_only_vector_handoff_record</strong>
+              </span>
+              <span data-tone={retrievalIncompleteFields.length ? "warning" : "good"}>
+                <em>Still needed</em>
+                <strong>{retrievalIncompleteFields.slice(0, 3).join(", ") || "Ready for submit projection"}</strong>
+              </span>
+            </div>
+            <pre>{taskPayoffTemplate}</pre>
+          </section>
+        ) : null}
+        <LinePreview
+          text={projectionSearchText || "Add visual description or Adam context to create retrieval-ready memory text."}
+          className="memory-output-line-preview"
+        />
+        {projection?.export_preview_yaml ? (
+          <details className="photo-review-yaml">
+            <summary>Submit payload preview</summary>
+            <pre>{projection.export_preview_yaml}</pre>
+          </details>
+        ) : null}
+        {projection?.blocked_reasons.length ? (
+          <small>Held or blocked: {projection.blocked_reasons.map(labelFromKey).join(", ")}</small>
+        ) : null}
+        <small>
+          Preview only. Submit stores the reviewed annotation and keeps boundary/truth status separate from model or archival claims.
+        </small>
+      </section>
+      {questions.length > 0 ? (
+        <div className="dynamic-question-stack">
+          <FormHint title="Questions for Adam">
+            These answers are stored as Adam-provided context, separate from system inference.
+          </FormHint>
+          {questions.map((question, index) => {
+            const id = payloadString(question.id, `question_${index + 1}`);
+            return (
+              <Field
+                key={id}
+                label={payloadString(question.question, `Question ${index + 1}`)}
+                hint={payloadString(question.reason)}
+              >
+                <TextArea rows={3} value={questionAnswers[id] ?? ""} onChange={(value) => updateQuestionAnswer(id, value)} />
+              </Field>
+            );
+          })}
+        </div>
+      ) : null}
+      <section className="adam-required-focus-drawer" aria-label="Required Adam fields focus">
+        <header>
+          <div>
+            <span>Required Adam fields</span>
+            <strong>
+              {adamFocusCompleteCount} / {adamFocusItems.length} answered
+            </strong>
+          </div>
+          <em>No generated memory text here</em>
+        </header>
+        <div>
+          {adamFocusItems.map((item) => (
+            <span key={item.key} data-tone={item.status === "complete" ? "good" : "warning"}>
+              <em>{item.status === "complete" ? "Complete" : "Needs Adam"}</em>
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </span>
+          ))}
+        </div>
+        <div className="copy-review-prompt" aria-label="Copy Adam review prompt">
+          <button type="button" onClick={() => void copyAdamReviewPrompt()}>
+            Copy review prompt
+          </button>
+          <span>{copyReviewPromptStatus || "Plain-language prompt, no generated memory claims"}</span>
+          <details>
+            <summary>Prompt preview</summary>
+            <pre>{adamReviewPromptText}</pre>
+          </details>
+        </div>
+        <div className="paste-review-answers" aria-label="Adam answer paste parser">
+          <Field label="Paste Adam answers" hint="Uses the numbered labels from the copied prompt. It only fills Adam-authored review fields.">
+            <TextArea rows={5} value={adamReviewPasteText} onChange={setAdamReviewPasteText} />
+          </Field>
+          <div>
+            <button type="button" onClick={applyAdamReviewAnswers}>
+              Apply Adam answers
+            </button>
+            <small>{adamReviewPasteStatus}</small>
+          </div>
+        </div>
+      </section>
+      <div className="field-pair">
+        <Rating label="Memory potential" value={memoryPotential} onChange={setMemoryPotential} />
+        <Rating label="Privacy sensitivity" value={privacySensitivity} onChange={setPrivacySensitivity} />
+      </div>
+      <section className="reviewed-memory-readiness-controls" aria-label="Reviewed memory readiness controls">
+        <header>
+          <div>
+            <span>Reviewed memory readiness</span>
+            <strong>Boundary and downstream shortcuts</strong>
+          </div>
+        </header>
+        <p>
+          These shortcuts only adjust boundary, gallery, and downstream choices. Adam context or answers are still required before this becomes reviewed memory truth.
+        </p>
+        <div>
+          <button type="button" onClick={setRetrievalReadyDefaults}>
+            Set retrieval-ready defaults
+          </button>
+          <button type="button" onClick={holdForLater}>
+            Hold for later
+          </button>
+          <button type="button" onClick={keepSealed}>
+            Keep sealed
+          </button>
+        </div>
+      </section>
+      <FormHint title="Privacy and downstream use">
+        Search, chat retrieval, gallery use, and generated context all depend on these boundary choices.
+      </FormHint>
+      <div className="field-pair">
+        <Field label="Privacy level">
+          <Select
+            value={privacyLevel}
+            onChange={setPrivacyLevel}
+            options={["public_safe", "family_private", "private_sensitive", "sensitive_living_people", "sealed"]}
+          />
+        </Field>
+        <Field label="Ready downstream">
+          <Select value={readyForDownstream} onChange={setReadyForDownstream} options={["yes", "later", "no"]} />
+        </Field>
+      </div>
+      <Field label="Gallery eligibility">
+        <Select value={galleryEligibility} onChange={setGalleryEligibility} options={["none", "family_private", "public_candidate"]} />
+      </Field>
+      <Field label="Privacy notes">
+        <TextArea rows={4} value={privacyNotes} onChange={setPrivacyNotes} />
+      </Field>
+      <FormHint title="OCR or handwriting">
+        If the image contains text, keep the transcription as its own source artifact with a truth label.
+      </FormHint>
+      <div className="field-pair">
+        <Field label="OCR status">
+          <Select
+            value={ocrReviewStatus}
+            onChange={setOcrReviewStatus}
+            options={["not_present", "machine_draft_needs_review", "accepted_as_transcription", "adam_corrected"]}
+          />
+        </Field>
+        <Field label="OCR truth">
+          <Select
+            value={ocrTruthStatus}
+            onChange={setOcrTruthStatus}
+            options={["system_inference", "archival_source", "adam_expert_reconstruction", "adam_inference"]}
+          />
+        </Field>
+      </div>
+      {ocrReviewStatus !== "not_present" ? (
+        <Field label="Corrected OCR or handwriting text">
+          <TextArea rows={6} value={correctedOcrText} onChange={setCorrectedOcrText} />
+        </Field>
+      ) : null}
     </div>
   );
 }
@@ -1331,7 +3397,13 @@ function VisionDraftReviewForm({
       ocr_truth_status: ocrTruthStatus,
       corrected_ocr_text: correctedOcrText,
       source_genre: payloadString(task.input_payload.asset_type, "photo"),
-      truth_status: "system_inference",
+      truth_status: reviewedPhotoTruthStatus({
+        taskType: task.task_type,
+        description,
+        adamContextNote,
+        questionAnswers,
+        visionAccuracy
+      }),
       voice_presence: "absent"
     });
   }, [
@@ -1351,6 +3423,7 @@ function VisionDraftReviewForm({
     readyForDownstream,
     rejectedInferences,
     tags,
+    task.task_type,
     task.input_payload.asset_type,
     visionAccuracy
   ]);
@@ -1627,6 +3700,8 @@ function TextSegmentReviewForm({
           onChange={setSourceGenre}
           options={[
             "document",
+            "training_pair_corpus",
+            "prompt_pair_collection",
             "letter",
             "novel_draft",
             "essay",
@@ -1800,6 +3875,48 @@ function TextSegmentBoundaryReviewForm({
   const [segmentationNotes, setSegmentationNotes] = useState(
     decisionString(initialDecisions, "segmentation_notes")
   );
+  const [chunkQualityProfile, setChunkQualityProfile] = useState(
+    decisionString(
+      initialDecisions,
+      "chunk_quality_profile",
+      payloadString(task.input_payload.chunk_quality_profile, "uniform_reviewed")
+    )
+  );
+  const [readyReferenceRange, setReadyReferenceRange] = useState(
+    decisionString(
+      initialDecisions,
+      "ready_reference_chunk_range",
+      payloadString(task.input_payload.ready_reference_chunk_range)
+    )
+  );
+  const [needsAdamEditRange, setNeedsAdamEditRange] = useState(
+    decisionString(
+      initialDecisions,
+      "needs_adam_edit_chunk_range",
+      payloadString(task.input_payload.needs_adam_edit_chunk_range)
+    )
+  );
+  const [readyReferenceTruthStatus, setReadyReferenceTruthStatus] = useState(
+    decisionString(
+      initialDecisions,
+      "ready_reference_truth_status",
+      payloadString(task.input_payload.ready_reference_truth_status, payloadString(task.input_payload.truth_status, "interpretive_synthesis"))
+    )
+  );
+  const [needsAdamEditTruthStatus, setNeedsAdamEditTruthStatus] = useState(
+    decisionString(
+      initialDecisions,
+      "needs_adam_edit_truth_status",
+      payloadString(task.input_payload.needs_adam_edit_truth_status, "model_generated")
+    )
+  );
+  const [chunkQualityNotes, setChunkQualityNotes] = useState(
+    decisionString(
+      initialDecisions,
+      "chunk_quality_notes",
+      payloadString(task.input_payload.chunk_quality_notes)
+    )
+  );
   const [redactionInstructions, setRedactionInstructions] = useState(
     decisionString(initialDecisions, "redaction_instructions")
   );
@@ -1816,6 +3933,11 @@ function TextSegmentBoundaryReviewForm({
     const shouldGeneratePromptPair =
       promptPairDecision !== "no" && (canQuote || canGround) && privacyClearance !== "do_not_export";
     const effectiveRedactionRequired = redactionRequired || privacyClearance === "needs_redaction";
+    const pairingGate = needsAdamEditRange.trim()
+      ? readyReferenceRange.trim()
+        ? "route_ready_chunks_only_hold_needs_edit"
+        : "requires_adam_edit_before_pairing"
+      : "ready_for_pairing";
     const quotePolicy = privacyClearance === "do_not_export"
       ? "do_not_quote_or_export"
       : privacyClearance === "background_or_off_record"
@@ -1832,6 +3954,14 @@ function TextSegmentBoundaryReviewForm({
       source_use_modes: sourceUseModes,
       prompt_pair_decision: promptPairDecision,
       prompt_pair_potential: promptPairPotentialFromDecision(promptPairDecision),
+      chunk_quality_profile: chunkQualityProfile,
+      ready_reference_chunk_range: readyReferenceRange,
+      pairing_ready_chunk_range: readyReferenceRange,
+      needs_adam_edit_chunk_range: needsAdamEditRange,
+      ready_reference_truth_status: readyReferenceTruthStatus,
+      needs_adam_edit_truth_status: needsAdamEditTruthStatus,
+      chunk_quality_notes: chunkQualityNotes,
+      pairing_gate: pairingGate,
       privacy_clearance: privacyClearance,
       privacy_level: privacyLevel,
       privacy_notes: privacyNotes,
@@ -1848,11 +3978,17 @@ function TextSegmentBoundaryReviewForm({
     });
   }, [
     boundaryStatus,
+    chunkQualityNotes,
+    chunkQualityProfile,
+    needsAdamEditRange,
+    needsAdamEditTruthStatus,
     onChange,
     privacyClearance,
     privacyLevel,
     privacyNotes,
     promptPairDecision,
+    readyReferenceRange,
+    readyReferenceTruthStatus,
     redactionInstructions,
     redactionRequired,
     segmentationNotes,
@@ -1903,6 +4039,45 @@ function TextSegmentBoundaryReviewForm({
       </Field>
       <Field label="Should this become prompt/response material?" hint="Yes is the normal path. Use later/no only when the source should not feed Pair Factory yet.">
         <Select value={promptPairDecision} onChange={setPromptPairDecision} options={["yes", "later", "no"]} />
+      </Field>
+      <Field label="Quality split for Pair Factory" hint="Use this when a source contains both reference-ready and generated/edit-needed chunks.">
+        <Select
+          value={chunkQualityProfile}
+          onChange={setChunkQualityProfile}
+          options={[
+            "uniform_reviewed",
+            "mixed_reference_and_synthetic_needs_edit",
+            "all_needs_adam_edit",
+            "do_not_pair_until_reviewed"
+          ]}
+        />
+      </Field>
+      <div className="field-pair">
+        <Field label="Reference-ready chunk range" hint="Example: 1-206. These can be routed into Pair Factory as usable reference material.">
+          <input value={readyReferenceRange} onChange={(event) => setReadyReferenceRange(event.target.value)} />
+        </Field>
+        <Field label="Needs Adam edit range" hint="Example: 207-391. These stay visible but are gated before pairing/export.">
+          <input value={needsAdamEditRange} onChange={(event) => setNeedsAdamEditRange(event.target.value)} />
+        </Field>
+      </div>
+      <div className="field-pair">
+        <Field label="Ready-range truth status">
+          <Select
+            value={readyReferenceTruthStatus}
+            onChange={setReadyReferenceTruthStatus}
+            options={["interpretive_synthesis", "adam_expert_reconstruction", "archival_source", "spoken_source", "adam_memory"]}
+          />
+        </Field>
+        <Field label="Needs-edit truth status">
+          <Select
+            value={needsAdamEditTruthStatus}
+            onChange={setNeedsAdamEditTruthStatus}
+            options={["model_generated", "system_inference", "interpretive_synthesis", "adam_expert_reconstruction"]}
+          />
+        </Field>
+      </div>
+      <Field label="Quality split notes" hint="This travels into the prompt-pair candidate and gold-edit task.">
+        <TextArea rows={3} value={chunkQualityNotes} onChange={setChunkQualityNotes} />
       </Field>
       <Field label="Privacy clearance" hint="Needs redaction means local use is OK, but names/details need review before quoting or export. Background/off-record means context can help retrieval or synthesis, but it should not be quoted.">
         <Select
@@ -2181,11 +4356,26 @@ function GroundedPromptPairCandidateForm({
   const [truthMode, setTruthMode] = useState(
     decisionString(initialDecisions, "truth_mode", "adam_expert_reconstruction")
   );
+  const [conversationFamily, setConversationFamily] = useState(
+    decisionString(initialDecisions, "conversation_family", payloadString(payload.conversation_family, "adam_prompted_memory"))
+  );
+  const [systemPrompt, setSystemPrompt] = useState(
+    decisionString(initialDecisions, "system_prompt", payloadString(payload.system_prompt, "You are Charles Rotmil."))
+  );
   const [targetResponseShape, setTargetResponseShape] = useState(
     decisionString(initialDecisions, "target_response_shape", "short_voice_response")
   );
   const [promptText, setPromptText] = useState(decisionString(initialDecisions, "prompt_text"));
   const [modelDraft, setModelDraft] = useState(decisionString(initialDecisions, "model_draft"));
+  const payloadNoLiveModelCall =
+    typeof payload.no_live_model_call === "boolean"
+      ? payload.no_live_model_call
+      : typeof payload.no_live_model_call === "string"
+        ? payload.no_live_model_call !== "false"
+        : true;
+  const [noLiveModelCall, setNoLiveModelCall] = useState(
+    decisionBoolean(initialDecisions, "no_live_model_call", payloadNoLiveModelCall)
+  );
   const [boundaryClearance, setBoundaryClearance] = useState(
     decisionString(initialDecisions, "boundary_clearance_needed", "review_before_export")
   );
@@ -2201,20 +4391,22 @@ function GroundedPromptPairCandidateForm({
       prompt_intent: promptIntent,
       voice_mode: voiceMode,
       truth_mode: truthMode,
+      conversation_family: conversationFamily,
+      system_prompt: systemPrompt,
       target_response_shape: targetResponseShape,
       prompt_text: promptText,
       model_draft: modelDraft,
       boundary_clearance_needed: boundaryClearance,
       factory_notes: factoryNotes,
       source_chunks_to_use: sourceChunksToUse,
-      no_live_model_call: true
+      no_live_model_call: noLiveModelCall
     });
-  }, [boundaryClearance, factoryNotes, initialDecisions.selected_chunk_ids, modelDraft, onChange, payload.selected_chunk_ids, promptIntent, promptText, targetResponseShape, truthMode, voiceMode]);
+  }, [boundaryClearance, conversationFamily, factoryNotes, initialDecisions.selected_chunk_ids, modelDraft, noLiveModelCall, onChange, payload.no_live_model_call, payload.selected_chunk_ids, promptIntent, promptText, systemPrompt, targetResponseShape, truthMode, voiceMode]);
 
   return (
     <div className="form-grid">
       <FormHint title="Prompt Pair Factory">
-        Configure what kind of prompt pair this source should become. This stage creates the draft review task; the Gold Edit stage is where Adam rewrites, compares, and approves export artifacts.
+        Configure what kind of prompt pair this source should become. This stage creates the review ticket where Adam edits, compares, and approves export artifacts.
       </FormHint>
       <Field label="What kind of prompt/response pair should this become?">
         <Select
@@ -2255,6 +4447,25 @@ function GroundedPromptPairCandidateForm({
           options={["adam_expert_reconstruction", "interpretive_synthesis", "model_generated"]}
         />
       </Field>
+      <Field label="Conversation family">
+        <Select
+          value={conversationFamily}
+          onChange={setConversationFamily}
+          options={[
+            "verbatim_email_reply",
+            "adam_prompted_memory",
+            "source_based_story_recall",
+            "mundane_text_message",
+            "ps_digression",
+            "nb_digression",
+            "long_literary_source_excerpt",
+            "multi_turn_thread"
+          ]}
+        />
+      </Field>
+      <Field label="Exported system message" hint="Keep this minimal. Provenance, boundaries, and source rules stay backstage.">
+        <TextArea value={systemPrompt} onChange={setSystemPrompt} rows={2} />
+      </Field>
       <Field label="What shape should the response have?">
         <Select
           value={targetResponseShape}
@@ -2263,14 +4474,15 @@ function GroundedPromptPairCandidateForm({
         />
       </Field>
       <Field
-        label="Prompt text"
-        hint="Optional. Leave blank and the backend will create a conservative grounded prompt from the selected source."
+        label="User message"
+        hint="Optional. Leave blank and the backend will create a natural user prompt from the selected source."
       >
         <TextArea value={promptText} onChange={setPromptText} rows={5} />
       </Field>
-      <Field label="Draft rejected/pre-edit side" hint="Optional. Leave blank to create a deterministic stub for Adam to rewrite.">
+      <Field label="Draft rejected/pre-edit side" hint="Optional. Leave blank to create a model draft when live calls are enabled, otherwise a backstage scaffold.">
         <TextArea value={modelDraft} onChange={setModelDraft} rows={5} />
       </Field>
+      <Toggle label="no_live_model_call" checked={noLiveModelCall} onChange={setNoLiveModelCall} />
       <Field label="What privacy check is needed before export?">
         <Select
           value={boundaryClearance}
@@ -2278,7 +4490,7 @@ function GroundedPromptPairCandidateForm({
           options={["review_before_export", "source_boundary_clear", "needs_redaction", "do_not_export"]}
         />
       </Field>
-      <Field label="Factory notes" hint="Why this source should produce prompt pairs, or what Adam should watch for in the gold edit.">
+      <Field label="Factory notes" hint="Why this source should produce prompt pairs, or what Adam should watch for in review.">
         <TextArea value={factoryNotes} onChange={setFactoryNotes} rows={4} />
       </Field>
     </div>
@@ -2288,9 +4500,11 @@ function GroundedPromptPairCandidateForm({
 function GoldVoiceEditForm({
   task,
   initialDecisions,
+  assets,
   onChange
 }: {
   task: Task;
+  assets: Asset[];
   initialDecisions: Decisions;
   onChange: (value: Decisions) => void;
 }) {
@@ -2300,82 +4514,341 @@ function GoldVoiceEditForm({
       ? (initialDecisions.ratings as Record<string, unknown>)
       : {};
   const defaultRatings = { ...((payload.ratings ?? {}) as Record<string, unknown>), ...initialRatings };
-  const [prompt, setPrompt] = useState(decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")));
-  const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", payloadString(payload.voice_mode, "father_to_adam")));
-  const [truthMode, setTruthMode] = useState(
-    decisionString(initialDecisions, "truth_mode", payloadString(payload.truth_mode, "generative_reconstruction"))
+  const initialMode = validArtifactMode(
+    decisionString(initialDecisions, "artifact_mode", payloadString(payload.artifact_mode, "sft"))
   );
-  const [modelDraft, setModelDraft] = useState(decisionString(initialDecisions, "model_draft", payloadString(payload.model_draft, "")));
-  const [goldEdit, setGoldEdit] = useState(decisionString(initialDecisions, "adam_gold_edit", payloadString(payload.adam_gold_edit, "")));
-  const [authenticityRationale, setAuthenticityRationale] = useState(decisionString(initialDecisions, "authenticity_rationale"));
+  const initialSystemPrompt = decisionString(
+    initialDecisions,
+    "system_prompt",
+    payloadString(payload.system_prompt, defaultSystemPromptForMode(initialMode))
+  );
+  const initialSynthetic =
+    typeof initialDecisions.synthetic === "boolean"
+      ? initialDecisions.synthetic
+      : typeof payload.synthetic === "boolean"
+        ? payload.synthetic
+        : true;
+  const initialChosen =
+    decisionString(initialDecisions, "chosen", payloadString(payload.chosen)) ||
+    decisionString(initialDecisions, "adam_gold_edit", payloadString(payload.adam_gold_edit));
+  const initialContent =
+    decisionString(initialDecisions, "content", payloadString(payload.content)) ||
+    decisionString(initialDecisions, "adam_gold_edit", payloadString(payload.adam_gold_edit)) ||
+    initialChosen ||
+    payloadString(payload.model_draft);
+  const initialRejected =
+    decisionString(initialDecisions, "rejected", payloadString(payload.rejected)) ||
+    decisionString(initialDecisions, "model_draft", payloadString(payload.model_draft, ""));
+  const [prompt, setPrompt] = useState(decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")));
+  const [artifactMode, setArtifactMode] = useState<"sft" | "dpo">(initialMode);
+  const [editorMode, setEditorMode] = useState<PromptPairEditorMode>(
+    validEditorMode(decisionString(initialDecisions, "editor_mode", payloadString(payload.editor_mode, "plain")))
+  );
+  const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", payloadString(payload.voice_mode, "father_to_adam")));
+  const [voiceModes, setVoiceModes] = useState<VoiceMode[]>([]);
+  const [addingVoiceMode, setAddingVoiceMode] = useState(false);
+  const [newVoiceModeLabel, setNewVoiceModeLabel] = useState("");
+  const [synthetic, setSynthetic] = useState<"yes" | "no">(initialSynthetic ? "yes" : "no");
+  const [groundingAssetId, setGroundingAssetId] = useState(
+    decisionString(initialDecisions, "grounding_asset_id", payloadString(payload.grounding_asset_id, payloadString(payload.asset_id)))
+  );
+  const [context, setContext] = useState(decisionString(initialDecisions, "context", payloadString(payload.context)));
+  const [content, setContent] = useState(initialContent);
+  const [chosen, setChosen] = useState(initialChosen || initialContent);
+  const [rejected, setRejected] = useState(initialRejected);
+  const [systemPrompt, setSystemPrompt] = useState(initialSystemPrompt);
+  const [serverExportGate, setServerExportGate] = useState<PromptPairPreflightExportGate | null>(null);
+  const [serverExportGateStatus, setServerExportGateStatus] = useState<"pending" | "ready" | "error">("pending");
+  const [dpoRepairProjection, setDpoRepairProjection] = useState<DpoRejectedReasonRepairProjection | null>(null);
+  const [dpoRepairProjectionStatus, setDpoRepairProjectionStatus] = useState<"idle" | "pending" | "ready" | "error">("idle");
+  const [sftYamlDraft, setSftYamlDraft] = useState(() =>
+    buildPairYaml({
+      artifactMode: "sft",
+      systemPrompt: initialSystemPrompt,
+      prompt: decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")),
+      content: initialContent,
+      chosen: initialChosen || initialContent,
+      rejected: ""
+    })
+  );
+  const [dpoYamlDraft, setDpoYamlDraft] = useState(() =>
+    buildPairYaml({
+      artifactMode: "dpo",
+      systemPrompt: initialSystemPrompt,
+      prompt: decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")),
+      content: initialContent,
+      chosen: initialChosen || initialContent,
+      rejected: initialRejected
+    })
+  );
+  const yamlEditSourceRef = useRef(false);
   const initialFailureModes = parseList(decisionListText(initialDecisions, "failure_modes", payloadArray(payload.failure_modes).join(", ")));
   const [responseRubric, setResponseRubric] = useState<ResponseRubricState>(() =>
     responseRubricFromDecisions(initialDecisions, defaultRatings, initialFailureModes)
   );
-  const initialExportFlags =
-    initialDecisions.export_flags && typeof initialDecisions.export_flags === "object"
-      ? (initialDecisions.export_flags as Record<string, unknown>)
-      : {};
-  const [exportFlags, setExportFlags] = useState({
-    sft: typeof initialExportFlags.sft === "boolean" ? initialExportFlags.sft : true,
-    dpo: typeof initialExportFlags.dpo === "boolean" ? initialExportFlags.dpo : true,
-    eval: typeof initialExportFlags.eval === "boolean" ? initialExportFlags.eval : true,
-    anti_pattern:
-      typeof initialExportFlags.anti_pattern === "boolean" ? initialExportFlags.anti_pattern : initialFailureModes.length > 0,
-    style_rule: typeof initialExportFlags.style_rule === "boolean" ? initialExportFlags.style_rule : true
-  });
-  const isPromptPairDraft = Boolean(payload.prompt_pair_factory_no_model_call || payload.source_prompt_pair_task_id);
+  const payloadTruthStatus = payloadString(payload.truth_status);
+  const preservesSourceTruth =
+    Boolean(payload.source_photo_profile_id) || Boolean(payload.candidate_requires_adam_gold_edit);
+  const effectiveTruthStatus =
+    preservesSourceTruth && payloadTruthStatus
+      ? payloadTruthStatus
+      : synthetic === "yes"
+        ? "adam_expert_reconstruction"
+        : payloadString(payload.truth_status, "archival_source");
+  const boundarySnapshot = useMemo(
+    () =>
+      payload.boundary_snapshot && typeof payload.boundary_snapshot === "object"
+        ? (payload.boundary_snapshot as Record<string, unknown>)
+        : {},
+    [payload.boundary_snapshot]
+  );
+  const sourcePhotoId = payloadString(payload.source_photo_id);
+  const boundarySftBlocked = Boolean(sourcePhotoId) && boundarySnapshot.usable_for_sft === false;
   const sourceExcerpt = payloadString(payload.source_excerpt);
+  const sourceExcerptTitle = payloadString(payload.source_title, "Original reviewed chunk");
   const responseARubric = responseRubric.response_a;
   const responseBRubric = responseRubric.response_b;
   const rubricRatings = useMemo(() => deriveRubricRatings(responseBRubric), [responseBRubric]);
-  const failureModes = useMemo(() => deriveFailureModes(responseARubric), [responseARubric]);
+  const failureModes = useMemo(() => (artifactMode === "dpo" ? deriveFailureModes(responseARubric) : []), [artifactMode, responseARubric]);
   const preferredFailureModes = useMemo(() => deriveFailureModes(responseBRubric), [responseBRubric]);
   const rubricSummary = useMemo(
     () => deriveResponseRubricSummary(responseARubric, responseBRubric),
     [responseARubric, responseBRubric]
   );
-  const rubricNotes = useMemo(
-    () => [rubricNotesSummary(responseARubric), rubricNotesSummary(responseBRubric)].filter(Boolean).join("\n\n"),
-    [responseARubric, responseBRubric]
-  );
   const privacyExportBlocked = rubricSummary.preferred_export_blocked;
   const effectiveExportFlags = useMemo(
     () =>
-      privacyExportBlocked
-        ? {
-            sft: false,
-            dpo: false,
-            eval: false,
-            anti_pattern: false,
-            style_rule: false
-          }
-        : {
-            ...exportFlags,
-            anti_pattern: exportFlags.anti_pattern && failureModes.length > 0
-          },
-    [exportFlags, failureModes.length, privacyExportBlocked]
+      privacyExportBlocked || boundarySftBlocked
+        ? { sft: false, dpo: false, eval: false, anti_pattern: false, style_rule: false }
+        : artifactMode === "dpo"
+          ? { sft: false, dpo: true, eval: false, anti_pattern: false, style_rule: false }
+          : { sft: true, dpo: false, eval: false, anti_pattern: false, style_rule: false },
+    [artifactMode, boundarySftBlocked, privacyExportBlocked]
   );
-
-  useEffect(() => {
-    onChange({
+  const exportPreviewYaml = useMemo(
+    () =>
+      buildPairYaml({
+        artifactMode,
+        systemPrompt,
+        prompt,
+        content,
+        chosen,
+        rejected
+      }),
+    [artifactMode, chosen, content, prompt, rejected, systemPrompt]
+  );
+  const preflightPayload = useMemo<Record<string, unknown>>(
+    () => ({
+      artifact_mode: artifactMode,
+      system_prompt: systemPrompt,
       prompt,
       voice_mode: voiceMode,
-      truth_mode: truthMode,
+      synthetic: synthetic === "yes",
+      truth_status: effectiveTruthStatus,
+      grounding_asset_id: groundingAssetId,
+      context,
+      content,
+      chosen: artifactMode === "dpo" ? chosen : content,
+      rejected: artifactMode === "dpo" ? rejected : "",
+      rubric_summary: rubricSummary,
+      failure_modes: failureModes,
+      preferred_failure_modes: preferredFailureModes,
+      source_photo_id: sourcePhotoId,
+      boundary_snapshot: boundarySnapshot
+    }),
+    [
+      artifactMode,
+      boundarySnapshot,
+      chosen,
+      content,
+      context,
+      effectiveTruthStatus,
+      failureModes,
+      groundingAssetId,
+      preferredFailureModes,
+      prompt,
+      rejected,
+      rubricSummary,
+      sourcePhotoId,
+      synthetic,
+      systemPrompt,
+      voiceMode
+    ]
+  );
+  const promptPairExportReady = serverExportGate?.export_ready ?? false;
+  const promptPairGateBlockers =
+    serverExportGate?.blockers ??
+    (serverExportGateStatus === "error" ? ["server_preflight_unavailable"] : ["server_preflight_pending"]);
+  const promptPairGateOutcome =
+    serverExportGate?.submit_outcome ??
+    (serverExportGateStatus === "error" ? "Backend preflight unavailable" : "Checking backend preflight");
+  const promptPairDatasetOutcome =
+    serverExportGate?.dataset_outcome ??
+    (serverExportGateStatus === "error" ? "Cannot confirm export status" : "Awaiting server gate");
+  const promptPairHeldExplanation = promptPairExportReady
+    ? ""
+    : promptPairGateBlockers.length > 0
+      ? `${promptPairGateBlockers.map(labelFromKey).join(", ")} keeps this item in candidate dry-run until resolved.`
+      : "Backend preflight has not returned a blocker yet.";
+  const candidateWorkdownBlockers = promptPairGateBlockers.map((blocker) => ({
+    key: blocker,
+    label: labelFromKey(blocker),
+    action: promptPairBlockerAction(blocker)
+  }));
+  const needsDpoRejectedReason =
+    artifactMode === "dpo" && (failureModes.length === 0 || promptPairGateBlockers.includes("dpo_rejected_reason_empty"));
+  const dpoRepairInputPatchModes =
+    dpoRepairProjection && Array.isArray(dpoRepairProjection.input_patch.failure_modes)
+      ? dpoRepairProjection.input_patch.failure_modes.map(String).filter(Boolean)
+      : [];
+  const dpoRepairSuggestedFailureModes =
+    dpoRepairInputPatchModes.length > 0 ? dpoRepairInputPatchModes : dpoRepairProjection?.after.failure_modes ?? [];
+  const dpoRepairSuggestedFailureMode = dpoRepairSuggestedFailureModes[0] ?? "";
+  const displayExportPreviewYaml = serverExportGate?.yaml_preview || exportPreviewYaml;
+  const submitReceiptPreview =
+    serverExportGateStatus === "pending"
+      ? "Submit preview pending backend preflight"
+      : promptPairExportReady
+        ? `Creates approved ${artifactMode.toUpperCase()} artifact`
+        : `Creates ${artifactMode.toUpperCase()} review candidate`;
+  const submitReceiptPreviewDetail =
+    serverExportGateStatus === "pending"
+      ? "Waiting for backend preflight before predicting the receipt."
+      : promptPairExportReady
+        ? "Approved artifacts are eligible for final JSONL export after Submit."
+        : "Candidate artifacts keep their blockers and stay out of approved training export.";
+  const exportPreviewIntegrity = useMemo(() => {
+    if (serverExportGateStatus === "pending") {
+      return { status: "pending", label: "Checking backend sync" };
+    }
+    if (serverExportGateStatus === "error" || !serverExportGate) {
+      return { status: "warning", label: "Backend sync unavailable" };
+    }
+    return normalizePreviewYaml(serverExportGate.yaml_preview) === normalizePreviewYaml(exportPreviewYaml)
+      ? { status: "synced", label: "Backend synchronized" }
+      : { status: "warning", label: "Backend preview differs" };
+  }, [exportPreviewYaml, serverExportGate, serverExportGateStatus]);
+
+  useEffect(() => {
+    if (editorMode === "yaml" && yamlEditSourceRef.current) {
+      yamlEditSourceRef.current = false;
+      return;
+    }
+    if (artifactMode === "sft") {
+      setSftYamlDraft(displayExportPreviewYaml);
+    } else {
+      setDpoYamlDraft(displayExportPreviewYaml);
+    }
+  }, [artifactMode, displayExportPreviewYaml, editorMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setServerExportGate(null);
+    setServerExportGateStatus("pending");
+    const timeout = window.setTimeout(() => {
+      preflightPromptPairExportGate(preflightPayload)
+        .then((gate) => {
+          if (cancelled) {
+            return;
+          }
+          setServerExportGate(gate);
+          setServerExportGateStatus("ready");
+        })
+        .catch(() => {
+          if (cancelled) {
+            return;
+          }
+          setServerExportGate(null);
+          setServerExportGateStatus("error");
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [preflightPayload]);
+
+  useEffect(() => {
+    if (artifactMode !== "dpo" || !needsDpoRejectedReason) {
+      setDpoRepairProjection(null);
+      setDpoRepairProjectionStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setDpoRepairProjection(null);
+    setDpoRepairProjectionStatus("pending");
+    getDpoRejectedReasonRepairProjection(task.id)
+      .then((projection) => {
+        if (!cancelled) {
+          setDpoRepairProjection(projection);
+          setDpoRepairProjectionStatus("ready");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDpoRepairProjection(null);
+          setDpoRepairProjectionStatus("error");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactMode, needsDpoRejectedReason, task.id]);
+
+  useEffect(() => {
+    getVoiceModes()
+      .then(setVoiceModes)
+      .catch(() => {
+        setVoiceModes([]);
+      });
+  }, []);
+
+  useEffect(() => {
+    const response_rubric =
+      artifactMode === "dpo"
+        ? responseRubric
+        : {
+            response_a: emptyGoldRubricState(),
+            response_b: responseBRubric
+          };
+    onChange({
+      artifact_mode: artifactMode,
+      editor_mode: editorMode,
+      prompt,
+      system_prompt: systemPrompt,
+      voice_mode: voiceMode,
+      synthetic: synthetic === "yes",
+      truth_status: effectiveTruthStatus,
+      truth_mode: effectiveTruthStatus,
+      grounding_asset_id: groundingAssetId,
+      context,
       context_pack_id: payloadString(payload.context_pack_id),
       prompt_spec_id: payloadString(payload.prompt_spec_id),
       generation_id: payloadString(payload.generation_id),
-      model_draft: modelDraft,
-      adam_gold_edit: goldEdit,
-      authenticity_rationale: authenticityRationale || rubricNotes,
-      response_rubric: responseRubric,
+      content,
+      chosen: artifactMode === "dpo" ? chosen : content,
+      rejected: artifactMode === "dpo" ? rejected : "",
+      model_draft: artifactMode === "dpo" ? rejected : "",
+      adam_gold_edit: artifactMode === "dpo" ? chosen : content,
+      response_rubric,
       rubric_summary: rubricSummary,
       ratings: rubricRatings,
       failure_modes: failureModes,
       preferred_failure_modes: preferredFailureModes,
-      export_flags: effectiveExportFlags
+      ...(serverExportGate
+        ? {
+            export_gate_preview: {
+              submit_outcome: serverExportGate.submit_outcome,
+              dataset_outcome: serverExportGate.dataset_outcome,
+              blockers: serverExportGate.blockers,
+              source: "backend_preflight"
+            }
+          }
+        : {}),
+      export_flags: effectiveExportFlags,
+      export_preview_yaml: displayExportPreviewYaml
     });
-  }, [authenticityRationale, effectiveExportFlags, failureModes, goldEdit, modelDraft, onChange, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, preferredFailureModes, prompt, responseARubric, responseBRubric, responseRubric, rubricNotes, rubricRatings, rubricSummary, truthMode, voiceMode]);
+  }, [artifactMode, chosen, content, context, displayExportPreviewYaml, editorMode, effectiveExportFlags, effectiveTruthStatus, failureModes, groundingAssetId, onChange, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, preferredFailureModes, prompt, rejected, responseBRubric, responseRubric, rubricRatings, rubricSummary, serverExportGate, synthetic, systemPrompt, voiceMode]);
 
   function updateRubricDecision(responseKey: keyof ResponseRubricState, key: GoldRubricKey, decision: RubricDecision) {
     setResponseRubric((current) => ({
@@ -2387,120 +4860,411 @@ function GoldVoiceEditForm({
     }));
   }
 
+  async function handleCreateVoiceMode() {
+    const label = newVoiceModeLabel.trim();
+    if (!label) {
+      return;
+    }
+    const created = await createVoiceMode({ label, family: "adam_defined" });
+    setVoiceModes((current) => [...current.filter((mode) => mode.slug !== created.slug), created]);
+    setVoiceMode(created.slug);
+    setNewVoiceModeLabel("");
+    setAddingVoiceMode(false);
+  }
+
+  function handleEditorModeChange(nextMode: PromptPairEditorMode) {
+    if (nextMode === "yaml") {
+      if (artifactMode === "sft") {
+        setSftYamlDraft(exportPreviewYaml);
+      } else {
+        setDpoYamlDraft(exportPreviewYaml);
+      }
+    }
+    setEditorMode(nextMode);
+  }
+
+  function handleSftYamlDraftChange(value: string) {
+    yamlEditSourceRef.current = true;
+    setSftYamlDraft(value);
+    const parsed = parseSftYamlEditor(value);
+    if (!parsed) {
+      return;
+    }
+    setSystemPrompt(parsed.systemPrompt || defaultSystemPromptForMode("sft"));
+    setPrompt(parsed.prompt);
+    setContent(parsed.content);
+  }
+
+  function handleDpoYamlDraftChange(value: string) {
+    yamlEditSourceRef.current = true;
+    setDpoYamlDraft(value);
+    const parsed = parseDpoYamlEditor(value);
+    if (!parsed) {
+      return;
+    }
+    setSystemPrompt(parsed.systemPrompt || defaultSystemPromptForMode("dpo"));
+    setPrompt(parsed.prompt);
+    setChosen(parsed.chosen);
+    setRejected(parsed.rejected);
+  }
+
+  function applyDpoRejectedReasonScaffold() {
+    const currentDecision = responseRubric.response_a.voice_authenticity;
+    const suggestedFailureMode = dpoRepairSuggestedFailureMode || "too_generic_not_charles_voice";
+    updateRubricDecision("response_a", "voice_authenticity", {
+      ...currentDecision,
+      status: "minor_issues",
+      notes:
+        currentDecision.notes.trim() ||
+        `Rejected response needs Adam's concrete note for ${labelFromKey(suggestedFailureMode)}: explain why it is less Charles-like than Chosen. Replace this scaffold with the actual failure.`,
+      issue_tags: uniqueValues([...currentDecision.issue_tags, "not_charles_voice", suggestedFailureMode])
+    });
+  }
+
   return (
     <div className="gold-grid">
-      <FormHint title={isPromptPairDraft ? "Gold edit review" : "Generated/model output review"}>
-        This is the acceptance step: compare the draft with Adam's preferred version, explain the nuanced differences in prose, then decide whether the preferred version is ready for SFT, DPO, eval, style-rule, and anti-pattern records.
+      <FormHint title="Prompt Pair">
+        Edit one prompt-pair artifact at a time. The preview below is the exact YAML that Submit will create.
       </FormHint>
+      <PhotoPromptPairSourceCard task={task} asset={assets.find((candidate) => candidate.id === (payloadString(payload.source_photo_id) || groundingAssetId))} />
       {sourceExcerpt ? (
         <section className="prompt-pair-source-card">
           <div>
-            <span>Grounding source</span>
-            <strong>{payloadString(payload.source_title, "Reviewed source")}</strong>
+            <span>Source excerpt</span>
+            <strong>{sourceExcerptTitle}</strong>
           </div>
           <LinePreview text={sourceExcerpt} />
         </section>
       ) : null}
+      <div className="prompt-pair-mode-bar">
+        <div className="mode-control">
+          <span>Artifact</span>
+          <div className="segmented-control" aria-label="Training artifact mode">
+            <button type="button" className={artifactMode === "sft" ? "active" : ""} onClick={() => setArtifactMode("sft")}>
+              SFT
+            </button>
+            <button type="button" className={artifactMode === "dpo" ? "active" : ""} onClick={() => setArtifactMode("dpo")}>
+              DPO
+            </button>
+          </div>
+        </div>
+        <div className="mode-control">
+          <span>Editing</span>
+          <div className="segmented-control" aria-label="Prompt pair editing mode">
+            <button type="button" className={editorMode === "plain" ? "active" : ""} onClick={() => handleEditorModeChange("plain")}>
+              Plain
+            </button>
+            <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => handleEditorModeChange("yaml")}>
+              YAML
+            </button>
+          </div>
+        </div>
+      </div>
       <div className="prompt-grid">
-        <Field label="What was the model asked to do?">
+        <Field label="Voice Mode">
+          <select
+            value={addingVoiceMode ? "__add_new__" : voiceMode}
+            onChange={(event) => {
+              if (event.target.value === "__add_new__") {
+                setAddingVoiceMode(true);
+                return;
+              }
+              setAddingVoiceMode(false);
+              setVoiceMode(event.target.value);
+            }}
+          >
+            {voiceModes.length === 0 ? <option value={voiceMode}>{labelFromKey(voiceMode)}</option> : null}
+            {voiceModes.map((mode) => (
+              <option key={mode.slug} value={mode.slug}>
+                {mode.label}
+              </option>
+            ))}
+            <option value="__add_new__">+ Add New</option>
+          </select>
+        </Field>
+        <Field label="Synthetic">
+          <select value={synthetic} onChange={(event) => setSynthetic(event.target.value === "no" ? "no" : "yes")}>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </Field>
+        <Field label="Grounding Source" hint="Optional imported asset that should act as RAG/source context.">
+          <select value={groundingAssetId} onChange={(event) => setGroundingAssetId(event.target.value)}>
+            <option value="">None</option>
+            {assets.map((asset) => (
+              <option key={asset.id} value={asset.id}>
+                {assetOptionLabel(asset)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {addingVoiceMode ? (
+          <Field label="New Voice Mode">
+            <div className="inline-create-row">
+              <input value={newVoiceModeLabel} onChange={(event) => setNewVoiceModeLabel(event.target.value)} />
+              <button type="button" onClick={() => void handleCreateVoiceMode()}>
+                Add
+              </button>
+            </div>
+          </Field>
+        ) : null}
+        <Field label="Prompt">
           <TextArea value={prompt} onChange={setPrompt} rows={5} />
         </Field>
-        <Field label="Which voice mode was requested?">
-          <Select
-            value={voiceMode}
-            onChange={setVoiceMode}
-            options={[
-              "casual_email",
-              "father_to_adam",
-              "memoir_scene",
-              "argument",
-              "comic_observation",
-              "grief_memory",
-              "photography_reflection",
-              "philosophical_fragment",
-              "spoken_interview",
-              "logistical_note"
-            ]}
-          />
-        </Field>
-        <Field label="What kind of reconstruction is this?">
-          <Select value={truthMode} onChange={setTruthMode} options={["generative_reconstruction", "simulation", "interpretive", "adam_expert_reconstruction"]} />
+        <Field label="Context" hint="Freeform context for smart models, reviewers, and future RAG pack builders.">
+          <TextArea value={context} onChange={setContext} rows={5} />
         </Field>
       </div>
-      <div className="voice-compare-grid">
-        <Field label={isPromptPairDraft ? "Draft candidate" : "What did the model write?"} hint="This becomes the rejected side if exported as DPO.">
-          <TextArea value={modelDraft} onChange={setModelDraft} rows={14} />
-        </Field>
-        <Field label="What did Adam change it into?" hint="This is the preferred version and the SFT assistant target.">
-          <TextArea value={goldEdit} onChange={setGoldEdit} rows={14} />
-        </Field>
-      </div>
-      <Field label="Why is the preferred version more authentic?" hint="Name the specific voice, restraint, detail, or truth difference.">
-        <TextArea value={authenticityRationale} onChange={setAuthenticityRationale} rows={4} />
-      </Field>
-      <FormHint title="Issue rubric">
-        Mark issues on the same axes for Response A and Response B. When something is wrong, describe it in your own words; those notes become the DPO rationale and anti-pattern explanation.
-      </FormHint>
-      <div className="response-rubric-grid">
-        <section className="response-rubric-column">
-          <div className="response-rubric-heading">
-            <strong>Response A</strong>
-            <span>Rejected/model draft</span>
+      {artifactMode === "sft" ? (
+        <>
+          {editorMode === "yaml" ? (
+            <Field label="SFT YAML" hint="Advanced mode: edit the full exported message structure directly.">
+              <LineNumberedTextArea className="prompt-pair-yaml-editor" value={sftYamlDraft} onChange={handleSftYamlDraftChange} rows={22} />
+            </Field>
+          ) : (
+            <Field label="Content" hint="Plain assistant response editor. Prompt is above; the YAML preview below shows the exact export.">
+              <LineNumberedTextArea className="prompt-pair-plain-editor" value={content} onChange={setContent} rows={18} />
+            </Field>
+          )}
+          <FormHint title="Issue rubric">
+            Mark issues only if this SFT content still needs work before export.
+          </FormHint>
+          <section className="response-rubric-column single-rubric-column">
+            <div className="response-rubric-heading">
+              <strong>Content</strong>
+              <span>{preferredFailureModes.length === 0 ? "No issues marked" : `${preferredFailureModes.length} issue(s)`}</span>
+            </div>
+            <div className="rubric-stack">
+              {goldReviewRubric.map((criterion) => (
+                <RubricIssueCard
+                  key={criterion.key}
+                  criterion={criterion}
+                  decision={responseBRubric[criterion.key]}
+                  noteLabel="What still needs work?"
+                  noteHint="Use plain language; this stays with the draft until resolved."
+                  onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
+                />
+              ))}
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          {editorMode === "yaml" ? (
+            <Field label="DPO YAML" hint="Advanced mode: edit the full chosen/rejected export structure directly.">
+              <LineNumberedTextArea className="prompt-pair-yaml-editor" value={dpoYamlDraft} onChange={handleDpoYamlDraftChange} rows={22} />
+            </Field>
+          ) : (
+            <div className="voice-compare-grid">
+              <Field label="Chosen" hint="Preferred response. This is the side you want the model to learn.">
+                <LineNumberedTextArea value={chosen} onChange={setChosen} rows={16} />
+              </Field>
+              <Field label="Rejected" hint="Less authentic or lower-quality response.">
+                <LineNumberedTextArea value={rejected} onChange={setRejected} rows={16} />
+              </Field>
+            </div>
+          )}
+          {needsDpoRejectedReason ? (
+            <section className="dpo-rejected-reason-focus" aria-label="DPO rejected reason focus aid">
+              <div>
+                <span>DPO rejected reason</span>
+                <strong>Rejected side needs a concrete issue note</strong>
+                <p>
+                  Add a Minor or Major issue under the Rejected rubric. The note becomes the DPO reason; it is comparison metadata, not a new memory claim.
+                </p>
+              </div>
+              <div className="dpo-repair-inline-projection" aria-label="DPO rejected reason repair projection">
+                <span>Repair projection</span>
+                {dpoRepairProjectionStatus === "pending" ? (
+                  <strong>Loading non-mutating YAML delta</strong>
+                ) : dpoRepairProjectionStatus === "error" ? (
+                  <strong>Projection unavailable; rubric scaffold still works</strong>
+                ) : dpoRepairProjection?.found ? (
+                  <>
+                    <strong>Top rejected-side gap: {labelFromKey(dpoRepairSuggestedFailureMode || "dpo rejected reason empty")}</strong>
+                    <p>
+                      Before: {dpoRepairProjection.before.blockers.map(labelFromKey).join(", ") || "No blockers"} / After:{" "}
+                      {dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers"}.
+                      {dpoRepairProjection.target_blocker_cleared ? " Rejected-reason blocker clears." : " Rejected-reason blocker remains."}
+                    </p>
+                    <small>
+                      Non-mutating projection. Adam gold review still required. Hash {dpoRepairProjection.content_sha256.slice(0, 16)}.
+                    </small>
+                    <details>
+                      <summary>YAML delta preview</summary>
+                      <pre>{dpoRepairProjection.yaml_diff_preview}</pre>
+                    </details>
+                  </>
+                ) : (
+                  <strong>No matching backend repair projection for this ticket yet</strong>
+                )}
+              </div>
+              <button type="button" onClick={applyDpoRejectedReasonScaffold}>
+                Apply projected review-note scaffold
+              </button>
+            </section>
+          ) : null}
+          <FormHint title="Issue rubric">
+            Use the same rubric on both responses. The rejected side can carry Minor Issues or Major Issues plus context explaining why.
+          </FormHint>
+          <div className="response-rubric-grid">
+            <section className="response-rubric-column">
+              <div className="response-rubric-heading">
+                <strong>Chosen</strong>
+                <span>Preferred</span>
+              </div>
+              <div className="rubric-stack">
+                {goldReviewRubric.map((criterion) => (
+                  <RubricIssueCard
+                    key={criterion.key}
+                    criterion={criterion}
+                    decision={responseBRubric[criterion.key]}
+                    noteLabel="Any remaining issue in Chosen?"
+                    noteHint="Usually this should be No issues before submit."
+                    onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
+                  />
+                ))}
+              </div>
+            </section>
+            <section className="response-rubric-column">
+              <div className="response-rubric-heading">
+                <strong>Rejected</strong>
+                <span>Comparison target</span>
+              </div>
+              <div className="rubric-stack">
+                {goldReviewRubric.map((criterion) => (
+                  <RubricIssueCard
+                    key={criterion.key}
+                    criterion={criterion}
+                    decision={responseARubric[criterion.key]}
+                    noteLabel="What was wrong with Rejected?"
+                    noteHint="This explanatory context becomes the DPO reason."
+                    onChange={(decision) => updateRubricDecision("response_a", criterion.key, decision)}
+                  />
+                ))}
+              </div>
+            </section>
           </div>
-          <div className="rubric-stack">
-            {goldReviewRubric.map((criterion) => (
-              <RubricIssueCard
-                key={criterion.key}
-                criterion={criterion}
-                decision={responseARubric[criterion.key]}
-                noteLabel="What was wrong with Response A?"
-                noteHint="This note becomes the DPO rejection reason and anti-pattern explanation."
-                onChange={(decision) => updateRubricDecision("response_a", criterion.key, decision)}
-              />
+        </>
+      )}
+      <section
+        className="prompt-pair-export-gate"
+        aria-label="Prompt pair export gate"
+        aria-busy={serverExportGateStatus === "pending"}
+        data-ready={promptPairExportReady ? "true" : "false"}
+        data-source={serverExportGateStatus === "ready" ? "backend" : "pending"}
+      >
+        <div>
+          <span>Gate source</span>
+          <strong>
+            {serverExportGateStatus === "ready"
+              ? "Backend preflight"
+              : serverExportGateStatus === "error"
+                ? "Backend preflight unavailable"
+                : "Checking backend preflight"}
+          </strong>
+        </div>
+        <div>
+          <span>Submit outcome</span>
+          <strong>{promptPairGateOutcome}</strong>
+        </div>
+        <div>
+          <span>Dataset outcome</span>
+          <strong>{promptPairDatasetOutcome}</strong>
+        </div>
+        <div>
+          <span>Gate notes</span>
+          <strong>{promptPairGateBlockers.length ? `${promptPairGateBlockers.length} blocker(s)` : "No blockers"}</strong>
+        </div>
+        {promptPairGateBlockers.length > 0 ? (
+          <div className="prompt-pair-export-blockers">
+            {promptPairGateBlockers.slice(0, 4).map((blocker) => (
+              <em key={blocker}>{labelFromKey(blocker)}</em>
             ))}
           </div>
-        </section>
-        <section className="response-rubric-column">
-          <div className="response-rubric-heading">
-            <strong>Response B</strong>
-            <span>Preferred/Adam edit</span>
+        ) : null}
+        {promptPairHeldExplanation ? (
+          <div className="prompt-pair-held-explanation" aria-label="Prompt pair held explanation">
+            <span>Why held?</span>
+            <strong>{promptPairHeldExplanation}</strong>
           </div>
-          <div className="rubric-stack">
-            {goldReviewRubric.map((criterion) => (
-              <RubricIssueCard
-                key={criterion.key}
-                criterion={criterion}
-                decision={responseBRubric[criterion.key]}
-                noteLabel="What still needs work in Response B?"
-                noteHint="Only add a note if the preferred version still has an issue before export."
-                onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
-              />
+        ) : null}
+        <div className="prompt-pair-submit-preview" aria-label="Prompt pair submit receipt preview">
+          <span>On Submit</span>
+          <strong>{submitReceiptPreview}</strong>
+          <em>{submitReceiptPreviewDetail}</em>
+        </div>
+      </section>
+      {!promptPairExportReady ? (
+        <section className="prompt-pair-candidate-workdown" aria-label="Prompt pair candidate workdown">
+          <header>
+            <div>
+              <span>Candidate workdown</span>
+              <strong>
+                {candidateWorkdownBlockers.length} blocker{candidateWorkdownBlockers.length === 1 ? "" : "s"}{" "}
+                {candidateWorkdownBlockers.length === 1 ? "remains" : "remain"}
+              </strong>
+            </div>
+            <em>Not approved training export</em>
+          </header>
+          <p>Submit saves review progress as candidate material. It does not create an approved SFT/DPO row until backend blockers clear.</p>
+          <ol>
+            {candidateWorkdownBlockers.map((blocker) => (
+              <li key={blocker.key}>
+                <strong>{blocker.label}</strong>
+                <span>{blocker.action}</span>
+              </li>
             ))}
-          </div>
+          </ol>
         </section>
-      </div>
-      <FormHint title="Export artifacts">
-        Choose which downstream records this edit should create. Major Response B privacy/export safety issues block downstream exports until resolved.
-      </FormHint>
+      ) : null}
+      <section className="gold-outcome-strip" aria-label="Gold edit downstream outcomes">
+        <div>
+          <span>Export Artifact</span>
+          <strong>
+            {privacyExportBlocked
+              ? "Held until privacy issue is resolved"
+              : boundarySftBlocked
+                ? "Held until source boundary allows training"
+                : artifactMode.toUpperCase()}
+          </strong>
+        </div>
+        <div>
+          <span data-enabled="true">Gold voice</span>
+          {Object.entries(effectiveExportFlags).map(([key, enabled]) => (
+            <span key={key} data-enabled={enabled ? "true" : "false"}>
+              {labelFromKey(key)}
+            </span>
+          ))}
+        </div>
+      </section>
       <div className="rubric-summary">
-        <span className={rubricSummary.sft_ready ? "ready" : "needs-work"}>
-          {rubricSummary.sft_ready ? "Response B ready: no major issues" : "Response B held: major issue present"}
+        <span className={promptPairExportReady ? "ready" : "needs-work"}>
+          {promptPairExportReady ? "Chosen/content ready" : "Resolve boundary, rubric, or structure issues before export"}
         </span>
-        <span>Response A: {failureModes.length} DPO reason{failureModes.length === 1 ? "" : "s"}</span>
-        <span>Response B: {preferredFailureModes.length} remaining issue{preferredFailureModes.length === 1 ? "" : "s"}</span>
+        {artifactMode === "dpo" ? <span>Rejected: {failureModes.length} DPO reason{failureModes.length === 1 ? "" : "s"}</span> : null}
+        <span>Chosen/content: {preferredFailureModes.length} remaining issue{preferredFailureModes.length === 1 ? "" : "s"}</span>
+        {promptPairGateBlockers.map((blocker: string) => (
+          <span key={blocker} className="blocked">
+            {labelFromKey(blocker)}
+          </span>
+        ))}
         {privacyExportBlocked ? <span className="blocked">Privacy block active</span> : null}
       </div>
-      <div className="toggle-grid">
-        {Object.entries(exportFlags).map(([key, checked]) => (
-          <Toggle
-            key={key}
-            label={key}
-            checked={privacyExportBlocked ? false : checked}
-            disabled={privacyExportBlocked}
-            onChange={(value) => setExportFlags((current) => ({ ...current, [key]: value }))}
-          />
-        ))}
-      </div>
+      <section className="export-preview-card">
+        <div className="export-preview-header">
+          <span>Export Artifacts</span>
+          <strong>YAML preview</strong>
+          <em
+            className="export-preview-integrity"
+            aria-label="Export preview integrity"
+            data-status={exportPreviewIntegrity.status}
+          >
+            {exportPreviewIntegrity.label}
+          </em>
+        </div>
+        <LinePreview text={displayExportPreviewYaml} className="export-line-preview" />
+      </section>
     </div>
   );
 }
@@ -2510,11 +5274,11 @@ export function TaskWorkbench({
   asset,
   queuePosition,
   queueTotal,
-  qualityScore,
   completedThisSession,
   memoriesCount,
   goldExamplesCount,
   assetsCount,
+  assets,
   onSubmit,
   onSkip,
   onFlag,
@@ -2532,6 +5296,9 @@ export function TaskWorkbench({
     selected_chunk_ids: [],
     selected_chunk_count: 0
   });
+  const [sourceSpans, setSourceSpans] = useState<SourceSpanDraft[]>([]);
+  const [sourcePairPreview, setSourcePairPreview] = useState<SourcePairGenerationPreview | null>(null);
+  const [sourcePairPreviewStatus, setSourcePairPreviewStatus] = useState("");
   const [activeChunk, setActiveChunk] = useState<Segment | undefined>();
   const [textEdits, setTextEdits] = useState<Decisions>({});
   const [notes, setNotes] = useState("");
@@ -2550,6 +5317,9 @@ export function TaskWorkbench({
     setDecisions({});
     setNotes("");
     setChunkSelection({ chunk_scope: "preview_only", selected_chunk_ids: [], selected_chunk_count: 0 });
+    setSourceSpans([]);
+    setSourcePairPreview(null);
+    setSourcePairPreviewStatus("");
     setActiveChunk(undefined);
     setTextEdits({});
     setDraftStatus("Loading draft");
@@ -2581,9 +5351,13 @@ export function TaskWorkbench({
         setDecisions(nextDecisions);
         setNotes(draft?.notes ?? "");
         setChunkSelection(nextSelection);
+        setSourceSpans(spansFromDecision(nextDecisions.source_spans));
         setDraftUpdatedAt(draft?.updated_at ?? null);
         setDraftStatus(draft ? "Draft restored" : "No draft yet");
-        lastSavedDraftRef.current = JSON.stringify({ decisions: { ...nextDecisions, ...nextSelection }, notes: draft?.notes ?? "" });
+        lastSavedDraftRef.current = JSON.stringify({
+          decisions: { ...nextDecisions, ...nextSelection, source_spans: spansFromDecision(nextDecisions.source_spans) },
+          notes: draft?.notes ?? ""
+        });
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
@@ -2602,8 +5376,8 @@ export function TaskWorkbench({
   }, [task.id, task.input_payload.selected_chunk_ids]);
 
   const autosaveDecisions = useMemo(
-    () => ({ ...decisions, ...chunkSelection, ...textEdits }),
-    [chunkSelection, decisions, textEdits]
+    () => ({ ...decisions, ...chunkSelection, ...textEdits, source_spans: sourceSpans }),
+    [chunkSelection, decisions, sourceSpans, textEdits]
   );
 
   useEffect(() => {
@@ -2638,11 +5412,45 @@ export function TaskWorkbench({
     };
   }, [autosaveDecisions, busy, draftLoaded, notes, task.id]);
 
+  useEffect(() => {
+    if (!draftLoaded || !isGeneratePairsTask(task)) {
+      setSourcePairPreview(null);
+      setSourcePairPreviewStatus("");
+      return;
+    }
+    let cancelled = false;
+    setSourcePairPreviewStatus("Updating generation preview");
+    const timeout = window.setTimeout(() => {
+      previewSourcePairGeneration(task.id, { ...autosaveDecisions, generate_pairs_on_submit: "yes" })
+        .then((preview) => {
+          if (cancelled) {
+            return;
+          }
+          setSourcePairPreview(preview);
+          setSourcePairPreviewStatus("Preview ready");
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled) {
+            setSourcePairPreview(null);
+            setSourcePairPreviewStatus(caught instanceof Error ? `Preview failed: ${caught.message}` : "Preview failed");
+          }
+        });
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [autosaveDecisions, draftLoaded, task]);
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      await onSubmit(autosaveDecisions, notes);
+      const submitDecisions = isGeneratePairsTask(task)
+        ? { ...autosaveDecisions, generate_pairs_on_submit: "yes" }
+        : autosaveDecisions;
+      await onSubmit(submitDecisions, notes);
     } finally {
       setBusy(false);
     }
@@ -2655,6 +5463,10 @@ export function TaskWorkbench({
 
   const handleTextEditChange = useCallback((value: Decisions) => {
     setTextEdits((current) => (sameDecisionRecord(current, value) ? current : value));
+  }, []);
+
+  const handleSourceSpansChange = useCallback((nextSpans: SourceSpanDraft[]) => {
+    setSourceSpans(nextSpans);
   }, []);
 
   const handleDecisionChange = useCallback((value: Decisions) => {
@@ -2726,9 +5538,8 @@ export function TaskWorkbench({
       case "asset_triage":
         return <AssetTriageForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "photo_context":
-        return <PhotoContextForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "vision_draft_review":
-        return <VisionDraftReviewForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
+        return <PhotoMemoryReviewForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "text_segment_review":
         return <TextSegmentReviewForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "text_segment_boundary_review":
@@ -2740,7 +5551,7 @@ export function TaskWorkbench({
       case "grounded_prompt_pair_candidate":
         return <GroundedPromptPairCandidateForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "gold_voice_edit":
-        return <GoldVoiceEditForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
+        return <GoldVoiceEditForm task={task} assets={assets} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       default:
         return (
           <Field label="Decision payload">
@@ -2765,15 +5576,14 @@ export function TaskWorkbench({
     payloadString(task.input_payload.asset_title) ||
     task.target_id;
   const formInCanvas = task.task_type === "gold_voice_edit";
-  const sourceReviewInCanvas = ["text_segment_review", "vision_draft_review"].includes(task.task_type);
+  const sourceReviewInCanvas = ["text_segment_review", "photo_context", "vision_draft_review"].includes(task.task_type);
   const segmentationInCanvas = task.task_type === "text_segment_boundary_review";
   const formInCenter = formInCanvas || sourceReviewInCanvas || segmentationInCanvas;
   const showSourceReviewCanvas = !formInCanvas;
-  const taskSourceType = payloadString(task.input_payload.source_type) || payloadString(task.input_payload.asset_type);
-  const showPhotoPreview =
-    task.task_type === "photo_context" || task.task_type === "vision_draft_review" || taskSourceType === "photo";
+  const showPhotoPreview = isPhotoLikeTask(task, asset);
   const showChunkBrowser =
-    showSourceReviewCanvas && ["text_segment_boundary_review", "grounded_prompt_pair_candidate"].includes(task.task_type);
+    showSourceReviewCanvas &&
+    ["text_segment_review", "text_segment_boundary_review", "grounded_prompt_pair_candidate"].includes(task.task_type);
   const showEditableExtraction = false;
   const reviewCanvasClass = [
     "review-canvas",
@@ -2783,7 +5593,7 @@ export function TaskWorkbench({
   ]
     .filter(Boolean)
     .join(" ");
-  const draftMetadataItems = task.task_type === "vision_draft_review"
+  const draftMetadataItems = task.task_type === "vision_draft_review" || task.task_type === "photo_context"
     ? visionDigestItems(autosaveDecisions)
     : sourceReviewInCanvas
     ? sourceReviewDigestItems(autosaveDecisions)
@@ -2817,8 +5627,8 @@ export function TaskWorkbench({
             </Link>
           ) : null}
           <div className="quality-score">
-            <strong>{qualityScore}</strong>
-            <span>Quality score</span>
+            <strong>{readinessBadges[0]?.label ?? "Ready"}</strong>
+            <span>Readiness</span>
           </div>
           <select
             value={reviewStatus}
@@ -2866,14 +5676,18 @@ export function TaskWorkbench({
           {formInCanvas ? <section className="canvas-form-panel">{form}</section> : null}
           {showSourceReviewCanvas ? (
             <>
-              {showPhotoPreview ? <PhotoAssetPreview task={task} /> : <SourcePreview task={task} />}
-              {segmentationInCanvas ? (
+              {showPhotoPreview ? <PhotoAssetPreview task={task} asset={asset} /> : <SourcePreview task={task} />}
+              {showPhotoPreview ? <PhotoGroupContextCard task={task} /> : null}
+              {isGeneratePairsTask(task) ? (
+                <>
+                  <SourcePairGenerationPreviewPanel preview={sourcePairPreview} status={sourcePairPreviewStatus} />
+                  <SourceSpanCoder task={task} spans={sourceSpans} onChange={handleSourceSpansChange} />
+                </>
+              ) : null}
+              {showChunkBrowser ? (
                 <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
               ) : null}
               {sourceReviewInCanvas || segmentationInCanvas ? <section className="canvas-form-panel source-questionnaire-panel">{form}</section> : null}
-              {!segmentationInCanvas && showChunkBrowser ? (
-                <ChunkBrowser task={task} initialSelection={initialChunkSelection} onChange={handleChunkChange} />
-              ) : null}
               {showEditableExtraction ? (
                 <EditableExtraction
                   task={task}
@@ -2955,8 +5769,8 @@ export function TaskWorkbench({
                   <>
                     <MetadataValueList
                       title={
-                        task.task_type === "vision_draft_review"
-                          ? "Current vision labels"
+                        task.task_type === "vision_draft_review" || task.task_type === "photo_context"
+                          ? "Current photo labels"
                           : sourceReviewInCanvas
                           ? "Current source labels"
                           : segmentationInCanvas
@@ -2969,9 +5783,9 @@ export function TaskWorkbench({
                       <FormHint title="Main editor">
                         Prompt, rejected draft, preferred version, rubric, and export flags are in the center editor so the comparison has enough room.
                       </FormHint>
-                    ) : task.task_type === "vision_draft_review" ? (
-                      <FormHint title="Vision questions">
-                        Answer the vision review questions in the center pane below the image; this rail stays as a compact metadata readout.
+                    ) : task.task_type === "vision_draft_review" || task.task_type === "photo_context" ? (
+                      <FormHint title="Photo questions">
+                        Answer the photo-memory questions in the center pane below the image; this rail stays as a compact metadata readout.
                       </FormHint>
                     ) : task.task_type === "text_segment_boundary_review" ? (
                       <FormHint title="Segmentation questions">
@@ -3061,7 +5875,7 @@ export function TaskWorkbench({
         </span>
         <button className="primary-action" type="submit" disabled={busy} {...tooltip("Built: submit the task, create a durable annotation, and trigger any downstream records for this workflow.")}>
           <Save size={16} />
-          {busy ? "Submitting" : "Submit"}
+          {isGeneratePairsTask(task) ? (busy ? "Generating" : "Generate Pairs") : busy ? "Submitting" : "Submit"}
         </button>
         <span className="status-chip" {...tooltip("Status: current form is idle, busy, or recently autosaved.")}>
           <CheckCircle2 size={14} />
