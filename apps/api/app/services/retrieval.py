@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 from sqlmodel import Session, select
 
 from app.models import Asset, Boundary, EmbeddingRecord, Memory, MetadataProfile, Task
+from app.services.photo_constants import (
+    PHOTO_MEMORY_PROFILE_TYPE,
+    PHOTO_SENSITIVE_PRIVACY_LEVELS,
+    PHOTO_STATUS_MACHINE_DRAFT,
+)
 
 
 STOPWORDS = {
@@ -94,14 +99,14 @@ def _query_term_weights(query_tokens: List[str]) -> Dict[str, int]:
 def _boundary_allows(snapshot: Dict[str, Any], *, scope: str) -> bool:
     if not snapshot or snapshot.get("boundary_status") == "missing":
         return False
-    if snapshot.get("privacy_level") == "sealed":
+    if snapshot.get("privacy_level") in PHOTO_SENSITIVE_PRIVACY_LEVELS:
         return False
     if not snapshot.get("searchable") and not snapshot.get("retrievable_in_chat"):
         return False
     if scope == "public":
-        return bool(snapshot.get("usable_for_gallery_public")) or snapshot.get("privacy_level") == "public_candidate"
+        return bool(snapshot.get("usable_for_gallery_public")) or snapshot.get("privacy_level") in {"public_candidate", "public_safe"}
     if scope == "family_private":
-        return snapshot.get("privacy_level") in {"family_private", "public_candidate"} or bool(
+        return snapshot.get("privacy_level") in {"family_private", "public_candidate", "public_safe"} or bool(
             snapshot.get("retrievable_in_chat")
         )
     return bool(snapshot.get("retrievable_in_chat") or snapshot.get("searchable"))
@@ -391,7 +396,7 @@ def _retrieval_gap(
             select(MetadataProfile)
             .where(MetadataProfile.target_type == "asset")
             .where(MetadataProfile.target_id.in_(photo_ids))
-            .where(MetadataProfile.profile_type == "photo_memory")
+            .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
         ).all()
         if photo_ids
         else []
@@ -412,7 +417,7 @@ def _retrieval_gap(
             profile
             for asset in assets
             for profile in profiles_by_asset_id.get(asset.id, [])
-            if profile.profile_type == "photo_memory"
+            if profile.profile_type == PHOTO_MEMORY_PROFILE_TYPE
         ]
         if any(_is_reviewed_photo_profile(profile) for profile in group_profiles):
             continue
@@ -425,7 +430,7 @@ def _retrieval_gap(
         candidate_groups[key] = {
             "assets": assets,
             "profile": candidate_profile,
-            "candidate_status": "machine_draft_needs_adam_review" if candidate_profile else "needs_photo_context",
+            "candidate_status": PHOTO_STATUS_MACHINE_DRAFT if candidate_profile else "needs_photo_context",
         }
     query_terms = set(expanded_query_terms)
 
@@ -448,7 +453,7 @@ def _retrieval_gap(
         title_tokens = set(_tokens(evidence_text(key, assets, data.get("profile"))))
         overlap = len(query_terms.intersection(title_tokens))
         if overlap:
-            status_rank = 0 if data["candidate_status"] == "machine_draft_needs_adam_review" else 1
+            status_rank = 0 if data["candidate_status"] == PHOTO_STATUS_MACHINE_DRAFT else 1
         else:
             status_rank = 0 if data["candidate_status"] == "needs_photo_context" else 1
         media_rank = 0 if _group_media_kind(assets) == "photograph_like" else 1
@@ -838,6 +843,32 @@ def _photo_memory_embedding_rows(
         if (rank(row), row["embedding_record_id"]) < (rank(current), current["embedding_record_id"]):
             target[source_photo_id] = row
 
+    def exclusion_rank(row: Dict[str, Any]) -> tuple[int, int, str]:
+        is_reviewed_boundary_hold = (
+            row.get("review_status") == "excluded_by_boundary"
+            and row.get("metadata_source") == "photo_memory_review"
+            and row.get("boundary_reviewed_by") == "adam"
+        )
+        if is_reviewed_boundary_hold:
+            status_rank = 0
+        elif row.get("review_status") == "excluded_by_boundary":
+            status_rank = 1
+        elif row.get("review_status") == "held_for_adam_review":
+            status_rank = 2
+        else:
+            status_rank = 3
+        return (status_rank, rank(row), str(row.get("embedding_record_id") or ""))
+
+    def keep_best_excluded(row: Dict[str, Any]) -> None:
+        source_photo_id = str(row["source_photo_id"])
+        if source_photo_id not in excluded_by_photo:
+            excluded_by_photo[source_photo_id] = row
+            excluded_order.append(source_photo_id)
+            return
+        current = excluded_by_photo[source_photo_id]
+        if exclusion_rank(row) < exclusion_rank(current):
+            excluded_by_photo[source_photo_id] = row
+
     def reviewed_for_vector_handoff(record: EmbeddingRecord, metadata: Dict[str, Any], boundary_snapshot: Dict[str, Any]) -> bool:
         if include_machine_drafts:
             return True
@@ -859,9 +890,7 @@ def _photo_memory_embedding_rows(
         if not _boundary_allows(boundary_snapshot, scope=scope):
             boundary_snapshot = _asset_boundary_snapshot(session, source_photo_id)
         if not _boundary_allows(boundary_snapshot, scope=scope):
-            keep_best(
-                excluded_by_photo,
-                excluded_order,
+            keep_best_excluded(
                 {
                     "embedding_record_id": record.id,
                     "target_type": record.target_type,
@@ -869,6 +898,9 @@ def _photo_memory_embedding_rows(
                     "source_photo_id": source_photo_id,
                     "title": _title_for_record(session, record, source_photo_id),
                     "source_photo_title": _source_photo_title(session, source_photo_id),
+                    "truth_status": record.truth_status,
+                    "metadata_source": metadata.get("source"),
+                    "boundary_reviewed_by": boundary_snapshot.get("reviewed_by"),
                     "privacy_level": boundary_snapshot.get("privacy_level"),
                     "review_status": "excluded_by_boundary",
                     "suggested_next_action": "Adjust boundary clearance before using this photo memory in downstream vector exports.",
@@ -878,9 +910,7 @@ def _photo_memory_embedding_rows(
             continue
         if not reviewed_for_vector_handoff(record, metadata, boundary_snapshot):
             review_task_reference = _photo_review_task_reference(session, source_photo_id)
-            keep_best(
-                excluded_by_photo,
-                excluded_order,
+            keep_best_excluded(
                 {
                     "embedding_record_id": record.id,
                     "target_type": record.target_type,
@@ -938,7 +968,11 @@ def _photo_memory_embedding_rows(
             },
         )
     rows = [rows_by_photo[source_photo_id] for source_photo_id in row_order]
-    excluded = [excluded_by_photo[source_photo_id] for source_photo_id in excluded_order]
+    excluded = [
+        excluded_by_photo[source_photo_id]
+        for source_photo_id in excluded_order
+        if source_photo_id not in rows_by_photo
+    ]
     return rows, excluded
 
 
@@ -1107,7 +1141,7 @@ def photo_memory_embedding_export(
             "live_embedding_call": False,
             "boundary_policy_snapshot": {
                 "requires_searchable_or_retrievable": True,
-                "excluded_privacy_levels": ["sealed"],
+                "excluded_privacy_levels": sorted(PHOTO_SENSITIVE_PRIVACY_LEVELS),
                 "scope": scope,
             },
             "dedupe_policy_snapshot": {

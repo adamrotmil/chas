@@ -24,6 +24,13 @@ from pathlib import Path
 from typing import Any
 
 
+ROOT = Path(__file__).resolve().parents[1]
+PROMPT_PAIRS_VISUAL_CHECKPOINT = ROOT / "updates" / "prompt_pairs_work_queue_2026-04-29.png"
+PROMPT_PAIRS_VISUAL_METADATA = ROOT / "updates" / "prompt_pairs_work_queue_2026-04-29.json"
+PHOTO_CONTEXT_VISUAL_CHECKPOINT = ROOT / "updates" / "photo_context_workbench_2026-04-29.png"
+PHOTO_CONTEXT_VISUAL_METADATA = ROOT / "updates" / "photo_context_workbench_2026-04-29.json"
+
+
 @dataclass
 class Check:
     name: str
@@ -80,6 +87,17 @@ def get_status(url: str, timeout: float = 10) -> int:
     request = urllib.request.Request(url, headers={"Accept": "text/html,application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return int(response.status)
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def png_dimensions(path: Path) -> tuple[int, int]:
+    data = path.read_bytes()[:24]
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise ValueError("not a PNG file")
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
 def safe_check(name: str, fn) -> Check:
@@ -376,6 +394,31 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
 
     checks.append(
         safe_check(
+            "Production slice stabilization regressions are protected",
+            lambda: command_check(
+                "Production slice stabilization regressions are protected",
+                [
+                    "docker",
+                    "compose",
+                    "exec",
+                    "-T",
+                    "api",
+                    "pytest",
+                    "-q",
+                    "tests/test_context_packs.py::test_context_pack_builder_excludes_missing_boundaries_by_default",
+                    "tests/test_context_packs.py::test_real_photo_context_submit_feeds_context_pack_with_photo_memory_profile_shape",
+                    "tests/test_task_submit.py::test_task_submit_rejects_non_ready_resubmission_without_duplicate_artifacts",
+                    "tests/test_ralph_phase2_photo_spine.py::test_family_private_retrieval_excludes_sensitive_privacy_even_if_flags_are_wrong",
+                    "tests/test_dataset_exports.py::test_approved_actual_rows_with_quality_or_structural_blockers_are_excluded",
+                    "tests/test_ralph_phase3_prompt_pair_audit.py::test_prompt_pair_source_boundary_preflight_respects_artifact_mode_permissions",
+                ],
+                timeout=180,
+            ),
+        )
+    )
+
+    checks.append(
+        safe_check(
             "Web app is reachable",
             lambda: Check(
                 "Web app is reachable",
@@ -404,6 +447,216 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 ["npx", "--prefix", "apps/web", "playwright", "test", "--config", "apps/web/playwright.config.ts"],
                 timeout=180,
             ),
+        )
+    )
+
+    def prompt_pairs_visual_checkpoint() -> Check:
+        audit = get_json(args.api_base, "/prompt-pairs/audit", {"sample_limit": 1}, timeout=30)
+        dpo_packet = get_json(args.api_base, "/prompt-pairs/dpo-rejected-reason-repair-pack", {"limit": 25}, timeout=30)
+        failures: list[str] = []
+        metadata: dict[str, Any] = {}
+        width = 0
+        height = 0
+        screenshot_sha = ""
+        if not PROMPT_PAIRS_VISUAL_CHECKPOINT.exists():
+            failures.append("prompt-pairs visual checkpoint PNG is missing")
+        else:
+            try:
+                width, height = png_dimensions(PROMPT_PAIRS_VISUAL_CHECKPOINT)
+                if width < 1200 or height < 900:
+                    failures.append(f"prompt-pairs visual checkpoint is too small: {width}x{height}")
+                if PROMPT_PAIRS_VISUAL_CHECKPOINT.stat().st_size < 25_000:
+                    failures.append("prompt-pairs visual checkpoint file is unexpectedly small")
+                screenshot_sha = file_sha256(PROMPT_PAIRS_VISUAL_CHECKPOINT)
+            except Exception as exc:  # noqa: BLE001 - gate should explain artifact corruption.
+                failures.append(f"prompt-pairs visual checkpoint is not a valid PNG: {exc}")
+        if not PROMPT_PAIRS_VISUAL_METADATA.exists():
+            failures.append("prompt-pairs visual checkpoint metadata is missing")
+        else:
+            try:
+                metadata = json.loads(PROMPT_PAIRS_VISUAL_METADATA.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                failures.append(f"prompt-pairs visual checkpoint metadata is invalid JSON: {exc}")
+        if metadata:
+            if metadata.get("checkpoint_type") != "prompt_pairs_work_queue_visual_checkpoint":
+                failures.append("prompt-pairs visual metadata has unexpected checkpoint_type")
+            if metadata.get("screenshot_path") != str(PROMPT_PAIRS_VISUAL_CHECKPOINT.relative_to(ROOT)):
+                failures.append("prompt-pairs visual metadata screenshot_path does not match checkpoint path")
+            captured_at_raw = str(metadata.get("captured_at") or "")
+            try:
+                captured_at = datetime.fromisoformat(captured_at_raw.replace("Z", "+00:00"))
+                age_seconds = (datetime.now(timezone.utc) - captured_at.astimezone(timezone.utc)).total_seconds()
+                if age_seconds > 20 * 60:
+                    failures.append(f"prompt-pairs visual checkpoint is stale: {int(age_seconds)} seconds old")
+                if age_seconds < -60:
+                    failures.append("prompt-pairs visual checkpoint timestamp is in the future")
+            except ValueError:
+                failures.append("prompt-pairs visual checkpoint metadata captured_at is malformed")
+            for field in ["total_pairs", "inspectable_pair_count"]:
+                if int(metadata.get(field) or 0) != int(audit.get(field) or 0):
+                    failures.append(f"prompt-pairs visual metadata {field} does not match live audit")
+            if metadata.get("preflight_gate_counts") != audit.get("preflight_gate_counts"):
+                failures.append("prompt-pairs visual metadata gate counts do not match live audit")
+            if metadata.get("preflight_blocker_counts") != audit.get("preflight_blocker_counts"):
+                failures.append("prompt-pairs visual metadata blocker counts do not match live audit")
+            if int(metadata.get("dpo_rejected_reason_total_candidate_count") or 0) != int(
+                dpo_packet.get("total_candidate_count") or 0
+            ):
+                failures.append("prompt-pairs visual metadata DPO repair total does not match live packet")
+            required_assertions = {
+                "prompt_pair_filters_visible",
+                "prompt_pair_readiness_counts_visible",
+                "dpo_rejected_reason_repair_queue_visible",
+                "prompt_pair_ticket_selected",
+                "prompt_pair_export_gate_visible",
+            }
+            actual_assertions = set(metadata.get("ui_assertions") or [])
+            missing_assertions = sorted(required_assertions - actual_assertions)
+            if missing_assertions:
+                failures.append(f"prompt-pairs visual metadata missing UI assertions: {missing_assertions}")
+        return Check(
+            "Prompt Pairs working surface has a fresh visual checkpoint",
+            not failures,
+            "; ".join(failures)
+            if failures
+            else "Prompt Pairs screenshot and sidecar match the live queue counts from this gate run",
+            {
+                "screenshot_path": str(PROMPT_PAIRS_VISUAL_CHECKPOINT.relative_to(ROOT)),
+                "metadata_path": str(PROMPT_PAIRS_VISUAL_METADATA.relative_to(ROOT)),
+                "width": width,
+                "height": height,
+                "screenshot_sha256": screenshot_sha,
+                "metadata_captured_at": metadata.get("captured_at"),
+                "preflight_gate_counts": metadata.get("preflight_gate_counts"),
+                "preflight_blocker_counts": metadata.get("preflight_blocker_counts"),
+            },
+        )
+
+    checks.append(
+        safe_check(
+            "Prompt Pairs working surface has a fresh visual checkpoint",
+            prompt_pairs_visual_checkpoint,
+        )
+    )
+
+    def photo_context_visual_checkpoint() -> Check:
+        session_plan = get_json(
+            args.api_base,
+            "/assets/photo-context-review-pack/review-session-plan",
+            {"scope": "family_private", "limit": 5, "source_query": "Old Orchard beach"},
+            timeout=30,
+        )
+        session_progress = get_json(
+            args.api_base,
+            "/assets/photo-context-review-pack/session-progress",
+            {"scope": "family_private", "limit": 100},
+            timeout=30,
+        )
+        top_slice = get_json(
+            args.api_base,
+            "/assets/photo-context-review-pack/top-context-slice",
+            {"scope": "family_private", "limit": 5},
+            timeout=30,
+        )
+        failures: list[str] = []
+        metadata: dict[str, Any] = {}
+        width = 0
+        height = 0
+        screenshot_sha = ""
+        if not PHOTO_CONTEXT_VISUAL_CHECKPOINT.exists():
+            failures.append("photo-context visual checkpoint PNG is missing")
+        else:
+            try:
+                width, height = png_dimensions(PHOTO_CONTEXT_VISUAL_CHECKPOINT)
+                if width < 1200 or height < 900:
+                    failures.append(f"photo-context visual checkpoint is too small: {width}x{height}")
+                if PHOTO_CONTEXT_VISUAL_CHECKPOINT.stat().st_size < 25_000:
+                    failures.append("photo-context visual checkpoint file is unexpectedly small")
+                screenshot_sha = file_sha256(PHOTO_CONTEXT_VISUAL_CHECKPOINT)
+            except Exception as exc:  # noqa: BLE001 - gate should explain artifact corruption.
+                failures.append(f"photo-context visual checkpoint is not a valid PNG: {exc}")
+        if not PHOTO_CONTEXT_VISUAL_METADATA.exists():
+            failures.append("photo-context visual checkpoint metadata is missing")
+        else:
+            try:
+                metadata = json.loads(PHOTO_CONTEXT_VISUAL_METADATA.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                failures.append(f"photo-context visual checkpoint metadata is invalid JSON: {exc}")
+        if metadata:
+            if metadata.get("checkpoint_type") != "photo_context_workbench_visual_checkpoint":
+                failures.append("photo-context visual metadata has unexpected checkpoint_type")
+            if metadata.get("screenshot_path") != str(PHOTO_CONTEXT_VISUAL_CHECKPOINT.relative_to(ROOT)):
+                failures.append("photo-context visual metadata screenshot_path does not match checkpoint path")
+            captured_at_raw = str(metadata.get("captured_at") or "")
+            try:
+                captured_at = datetime.fromisoformat(captured_at_raw.replace("Z", "+00:00"))
+                age_seconds = (datetime.now(timezone.utc) - captured_at.astimezone(timezone.utc)).total_seconds()
+                if age_seconds > 20 * 60:
+                    failures.append(f"photo-context visual checkpoint is stale: {int(age_seconds)} seconds old")
+                if age_seconds < -60:
+                    failures.append("photo-context visual checkpoint timestamp is in the future")
+            except ValueError:
+                failures.append("photo-context visual checkpoint metadata captured_at is malformed")
+            if metadata.get("source_query") != session_plan.get("source_query"):
+                failures.append("photo-context visual metadata source query does not match live session plan")
+            if metadata.get("session_plan_content_sha256") != session_plan.get("content_sha256"):
+                failures.append("photo-context visual metadata plan hash does not match live session plan")
+            if metadata.get("session_progress_content_sha256") != session_progress.get("content_sha256"):
+                failures.append("photo-context visual metadata progress hash does not match live session progress")
+            if metadata.get("top_slice_content_sha256") != top_slice.get("content_sha256"):
+                failures.append("photo-context visual metadata top-slice hash does not match live top slice")
+            for metadata_field, live_field in [
+                ("selected_count", session_plan.get("selected_count")),
+                ("candidate_count", session_plan.get("candidate_count")),
+                ("reported_task_count", session_progress.get("reported_task_count")),
+                ("submit_ready_count", session_progress.get("submit_ready_count")),
+                ("retrieval_gap_task_count", session_progress.get("retrieval_gap_task_count")),
+                ("review_session_task_count", session_progress.get("review_session_task_count")),
+                ("top_slice_candidate_count", top_slice.get("candidate_count")),
+                ("top_slice_reported_candidate_count", top_slice.get("reported_candidate_count")),
+            ]:
+                if int(metadata.get(metadata_field) or 0) != int(live_field or 0):
+                    failures.append(f"photo-context visual metadata {metadata_field} does not match live API")
+            if not metadata.get("selected_task_title"):
+                failures.append("photo-context visual metadata lacks selected task title")
+            required_assertions = {
+                "photo_preview_visible",
+                "review_seed_visible_as_workflow_provenance",
+                "completion_payoff_visible",
+                "required_adam_fields_visible",
+                "ready_submit_checklist_visible",
+                "optional_search_note_not_required",
+                "downstream_memory_preview_visible",
+                "adam_review_prompt_says_photo_sparks_memories",
+            }
+            actual_assertions = set(metadata.get("ui_assertions") or [])
+            missing_assertions = sorted(required_assertions - actual_assertions)
+            if missing_assertions:
+                failures.append(f"photo-context visual metadata missing UI assertions: {missing_assertions}")
+        return Check(
+            "Photo Context workbench has a fresh visual checkpoint",
+            not failures,
+            "; ".join(failures)
+            if failures
+            else "Photo Context screenshot and sidecar match live review seed, progress, and field hashes",
+            {
+                "screenshot_path": str(PHOTO_CONTEXT_VISUAL_CHECKPOINT.relative_to(ROOT)),
+                "metadata_path": str(PHOTO_CONTEXT_VISUAL_METADATA.relative_to(ROOT)),
+                "width": width,
+                "height": height,
+                "screenshot_sha256": screenshot_sha,
+                "metadata_captured_at": metadata.get("captured_at"),
+                "source_query": metadata.get("source_query"),
+                "selected_task_title": metadata.get("selected_task_title"),
+                "reported_task_count": metadata.get("reported_task_count"),
+                "review_session_task_count": metadata.get("review_session_task_count"),
+            },
+        )
+
+    checks.append(
+        safe_check(
+            "Photo Context workbench has a fresh visual checkpoint",
+            photo_context_visual_checkpoint,
         )
     )
 
@@ -523,11 +776,14 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             "photo_context_session_progress_json",
             "photo_context_retrieval_gap_field_worklist_yaml",
             "photo_context_retrieval_gap_payoff_preview_yaml",
+            "photo_review_priority_yaml",
             "photo_vector_handoff_jsonl",
             "photo_vector_handoff_manifest",
             "morning_handoff_yaml",
             "dpo_rejected_reason_repair_yaml",
+            "source_boundary_training_review_yaml",
             "source_review_pair_generation_preview_json",
+            "demo_generation_request_preview_yaml",
         }
         failures = []
         if manifest.get("manifest_type") != "downstream_artifact_manifest":
@@ -646,12 +902,29 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("retrieval-gap field worklist must not create memory claims")
         if by_key.get("photo_context_retrieval_gap_field_worklist_yaml", {}).get("policy", {}).get("requires_adam_context") is not True:
             failures.append("retrieval-gap field worklist must require Adam context")
+        if by_key.get("photo_context_retrieval_gap_field_worklist_yaml", {}).get("policy", {}).get("has_field_guidance") is not True:
+            failures.append("retrieval-gap field worklist must include field guidance")
+        if int(by_key.get("photo_context_retrieval_gap_field_worklist_yaml", {}).get("policy", {}).get("field_guidance_count") or 0) < 1:
+            failures.append("retrieval-gap field worklist field guidance count must be positive")
         if by_key.get("photo_context_retrieval_gap_payoff_preview_yaml", {}).get("format") != "yaml":
             failures.append("retrieval-gap payoff preview artifact must be YAML")
         if by_key.get("photo_context_retrieval_gap_payoff_preview_yaml", {}).get("policy", {}).get("does_not_create_memory_claim") is not True:
             failures.append("retrieval-gap payoff preview must not create memory claims")
         if by_key.get("photo_context_retrieval_gap_payoff_preview_yaml", {}).get("policy", {}).get("uses_placeholders_for_missing_adam_context") is not True:
             failures.append("retrieval-gap payoff preview must preserve Adam-context placeholders")
+        if by_key.get("photo_review_priority_yaml", {}).get("format") != "yaml":
+            failures.append("photo review priority artifact must be YAML")
+        priority_policy = by_key.get("photo_review_priority_yaml", {}).get("policy", {})
+        if priority_policy.get("throughput_policy") != "rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff":
+            failures.append("photo review priority artifact lacks throughput policy")
+        if priority_policy.get("does_not_create_memory_claim") is not True:
+            failures.append("photo review priority artifact must not create memory claims")
+        if priority_policy.get("no_live_embedding_call") is not True:
+            failures.append("photo review priority artifact must not call embeddings")
+        if priority_policy.get("completion_signal") != "open_top_photo_task_and_reduce_missing_adam_fields_or_submit_ready_count_increases":
+            failures.append("photo review priority artifact lacks completion signal")
+        if len(str(priority_policy.get("priority_content_sha256") or "")) != 64:
+            failures.append("photo review priority artifact lacks domain hash")
         if by_key.get("morning_handoff_yaml", {}).get("artifact_family") != "operator_handoff":
             failures.append("morning handoff YAML artifact must be in operator_handoff family")
         if by_key.get("morning_handoff_yaml", {}).get("format") != "yaml":
@@ -662,6 +935,19 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("DPO rejected reason repair artifact must be in prompt_pair_repair family")
         if by_key.get("dpo_rejected_reason_repair_yaml", {}).get("policy", {}).get("blocker") != "dpo_rejected_reason_empty":
             failures.append("DPO repair artifact must target dpo_rejected_reason_empty")
+        if by_key.get("source_boundary_training_review_yaml", {}).get("artifact_family") != "prompt_pair_repair":
+            failures.append("source-boundary review artifact must be in prompt_pair_repair family")
+        if by_key.get("source_boundary_training_review_yaml", {}).get("format") != "yaml":
+            failures.append("source-boundary review artifact must be YAML")
+        source_boundary_policy = by_key.get("source_boundary_training_review_yaml", {}).get("policy", {})
+        if source_boundary_policy.get("blocker") != "source_boundary_blocks_training":
+            failures.append("source-boundary review artifact must target source_boundary_blocks_training")
+        if source_boundary_policy.get("does_not_mutate_source") is not True:
+            failures.append("source-boundary review artifact must not mutate source asset boundaries")
+        if source_boundary_policy.get("does_not_promote_to_training_export") is not True:
+            failures.append("source-boundary review artifact must not promote training export")
+        if source_boundary_policy.get("requires_adam_boundary_review") is not True:
+            failures.append("source-boundary review artifact must require Adam boundary review")
         if by_key.get("source_review_pair_generation_preview_json", {}).get("artifact_family") != "source_review_preview":
             failures.append("Source Review pair generation preview artifact must be in source_review_preview family")
         if by_key.get("source_review_pair_generation_preview_json", {}).get("format") != "json":
@@ -670,6 +956,23 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("Source Review pair generation preview must be non-mutating")
         if by_key.get("source_review_pair_generation_preview_json", {}).get("policy", {}).get("no_live_model_call") is not True:
             failures.append("Source Review pair generation preview must avoid live model calls")
+        if by_key.get("demo_generation_request_preview_yaml", {}).get("artifact_family") != "model_generation_preview":
+            failures.append("demo generation request preview artifact must be in model_generation_preview family")
+        if by_key.get("demo_generation_request_preview_yaml", {}).get("format") != "yaml":
+            failures.append("demo generation request preview artifact must be YAML")
+        demo_request_policy = by_key.get("demo_generation_request_preview_yaml", {}).get("policy", {})
+        if demo_request_policy.get("no_live_model_call") is not True:
+            failures.append("demo generation request preview must not call live models")
+        if demo_request_policy.get("no_generation_created") is not True:
+            failures.append("demo generation request preview must not create generations")
+        if demo_request_policy.get("does_not_promote_to_training_export") is not True:
+            failures.append("demo generation request preview must not promote training export")
+        if demo_request_policy.get("model_name") != args.required_text_model:
+            failures.append("demo generation request preview lost required model")
+        if demo_request_policy.get("reasoning_effort") != args.required_text_reasoning:
+            failures.append("demo generation request preview lost required reasoning effort")
+        if demo_request_policy.get("store") is not False:
+            failures.append("demo generation request preview must preserve store=false")
         return Check(
             "Downstream artifact manifest lists inspectable outputs",
             not failures,
@@ -726,10 +1029,24 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("artifact audit lacks DPO rejected reason repair YAML check")
         if by_key.get("dpo_rejected_reason_repair_yaml", {}).get("hash_matches") is not True:
             failures.append("DPO rejected reason repair YAML hash mismatch")
+        if by_key.get("source_boundary_training_review_yaml", {}).get("format") != "yaml":
+            failures.append("artifact audit lacks source-boundary training review YAML check")
+        if by_key.get("source_boundary_training_review_yaml", {}).get("hash_matches") is not True:
+            failures.append("source-boundary training review YAML hash mismatch")
+        if by_key.get("source_boundary_training_review_yaml", {}).get("policy", {}).get("does_not_mutate_source") is not True:
+            failures.append("source-boundary training review YAML must preserve no-source-mutation policy")
         if by_key.get("source_review_pair_generation_preview_json", {}).get("format") != "json":
             failures.append("artifact audit lacks Source Review pair generation preview JSON check")
         if by_key.get("source_review_pair_generation_preview_json", {}).get("hash_matches") is not True:
             failures.append("Source Review pair generation preview JSON hash mismatch")
+        if by_key.get("demo_generation_request_preview_yaml", {}).get("format") != "yaml":
+            failures.append("artifact audit lacks demo generation request preview YAML check")
+        if by_key.get("demo_generation_request_preview_yaml", {}).get("hash_matches") is not True:
+            failures.append("demo generation request preview YAML hash mismatch")
+        if by_key.get("demo_generation_request_preview_yaml", {}).get("policy", {}).get("no_live_model_call") is not True:
+            failures.append("demo generation request preview YAML must preserve no-live-model policy")
+        if by_key.get("demo_generation_request_preview_yaml", {}).get("policy", {}).get("no_generation_created") is not True:
+            failures.append("demo generation request preview YAML must be non-generating")
         if by_key.get("prompt_pair_review_progress_json", {}).get("format") != "json":
             failures.append("artifact audit lacks prompt pair review progress JSON check")
         if by_key.get("prompt_pair_review_progress_json", {}).get("hash_matches") is not True:
@@ -758,6 +1075,17 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("artifact audit lacks retrieval-gap payoff preview YAML check")
         if by_key.get("photo_context_retrieval_gap_payoff_preview_yaml", {}).get("hash_matches") is not True:
             failures.append("retrieval-gap payoff preview YAML hash mismatch")
+        if by_key.get("photo_review_priority_yaml", {}).get("format") != "yaml":
+            failures.append("artifact audit lacks photo review priority YAML check")
+        if by_key.get("photo_review_priority_yaml", {}).get("hash_matches") is not True:
+            failures.append("photo review priority YAML hash mismatch")
+        if (
+            by_key.get("photo_review_priority_yaml", {})
+            .get("policy", {})
+            .get("throughput_policy")
+            != "rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff"
+        ):
+            failures.append("photo review priority YAML must preserve throughput policy")
         return Check(
             "Downstream artifact hash audit verifies manifest outputs",
             not failures,
@@ -802,14 +1130,37 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("photo context-pack audit lacks stable hash")
         if audit.get("completion_signal") != "reviewed_photo_context_assets_have_non_filename_context_or_are_boundary_blocked":
             failures.append("photo context-pack audit lacks completion signal")
+        held_for_adam_review_count = int(audit.get("held_for_adam_review_count") or 0)
+        next_review_actions = audit.get("next_review_actions") or []
+        if held_for_adam_review_count > 0 and not next_review_actions:
+            failures.append("held machine photo-memory drafts must surface next review actions")
+        if held_for_adam_review_count > 0 and audit.get("readiness_status") not in {
+            "needs_adam_review",
+            "partially_ready_needs_adam_review",
+        }:
+            failures.append("photo context-pack audit readiness status must reflect held Adam review work")
+        if next_review_actions:
+            first_action = next_review_actions[0]
+            if first_action.get("action_type") not in {
+                "open_photo_memory_review_task",
+                "create_photo_memory_review_task",
+            }:
+                failures.append("photo context-pack next review action lacks actionable photo-memory task type")
+            if not first_action.get("source_photo_id") or not first_action.get("metadata_profile_id"):
+                failures.append("photo context-pack next review action lacks source photo or profile id")
         contract_fields = (
             (contract.get("required_response_fields") or {}).get("/api/context-packs/photo-context-readiness-audit")
             if isinstance(contract.get("required_response_fields"), dict)
             else []
         )
         for field in [
+            "readiness_status",
             "uses_reviewed_photo_context",
             "excludes_system_inference_drafts",
+            "machine_draft_profile_count",
+            "held_for_adam_review_count",
+            "next_review_action_count",
+            "next_review_actions",
             "system_inference_leak_count",
             "content_sha256",
         ]:
@@ -825,6 +1176,9 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 "candidate_photo_asset_count": audit.get("candidate_photo_asset_count"),
                 "ready_context_pack_asset_count": audit.get("ready_context_pack_asset_count"),
                 "blocked_context_pack_asset_count": audit.get("blocked_context_pack_asset_count"),
+                "readiness_status": audit.get("readiness_status"),
+                "held_for_adam_review_count": audit.get("held_for_adam_review_count"),
+                "next_review_action_count": audit.get("next_review_action_count"),
                 "filename_only_fallback_count": audit.get("filename_only_fallback_count"),
                 "system_inference_leak_count": audit.get("system_inference_leak_count"),
                 "content_sha256": audit.get("content_sha256"),
@@ -842,6 +1196,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 "prompt_sample_limit": 200,
                 "vector_limit": 20,
                 "bottleneck_limit": 4,
+                "retrieval_gap_query": args.honest_gap_query,
             },
             timeout=30,
         )
@@ -1275,6 +1630,93 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
 
     checks.append(safe_check("Prompt-pair top blocker session plan is actionable", prompt_pair_top_blocker_session_plan))
 
+    def prompt_pair_source_boundary_blocker_slice() -> Check:
+        pack = get_json(args.api_base, "/prompt-pairs/held-candidates", {"limit": 30}, timeout=30)
+        blocker_counts = pack.get("blocker_counts") if isinstance(pack.get("blocker_counts"), dict) else {}
+        source_boundary_count = int(blocker_counts.get("source_boundary_blocks_training") or 0)
+        if source_boundary_count <= 0:
+            return Check(
+                "Prompt-pair source-boundary blocker slice is directly addressable",
+                True,
+                "no current source-boundary prompt-pair blockers to inspect",
+                {"source_boundary_blocks_training": 0},
+            )
+
+        blocker_slice = get_json(
+            args.api_base,
+            "/prompt-pairs/top-blocker-slice",
+            {"limit": 5, "blocker": "source_boundary_blocks_training"},
+            timeout=30,
+        )
+        plan = get_json(
+            args.api_base,
+            "/prompt-pairs/top-blocker-review-session-plan",
+            {"limit": 5, "blocker": "source_boundary_blocks_training"},
+            timeout=30,
+        )
+        items = blocker_slice.get("items") if isinstance(blocker_slice.get("items"), list) else []
+        plan_items = plan.get("items") if isinstance(plan.get("items"), list) else []
+        field_plan = plan.get("field_plan") if isinstance(plan.get("field_plan"), list) else []
+        yaml_preview = plan.get("export_preview_yaml") if isinstance(plan.get("export_preview_yaml"), str) else ""
+        failures: list[str] = []
+        if blocker_slice.get("selection_policy") != "requested_backend_blocker_exact_match":
+            failures.append("source-boundary slice did not use requested-blocker selection")
+        if blocker_slice.get("requested_blocker") != "source_boundary_blocks_training":
+            failures.append("source-boundary slice lost requested blocker")
+        if blocker_slice.get("blocker") != "source_boundary_blocks_training":
+            failures.append("source-boundary slice returned the wrong blocker")
+        if int(blocker_slice.get("candidate_count") or 0) != source_boundary_count:
+            failures.append("source-boundary slice candidate count does not match held pack")
+        if not items:
+            failures.append("source-boundary slice lacks items")
+        for item in items[:5]:
+            summary = item.get("source_boundary_summary") if isinstance(item.get("source_boundary_summary"), dict) else {}
+            if summary.get("status") != "source_boundary_blocks_training":
+                failures.append(f"{item.get('task_human_id')} lacks source-boundary block summary")
+            if not summary.get("source_photo_id"):
+                failures.append(f"{item.get('task_human_id')} lacks source photo id in boundary summary")
+            if "sft" not in (summary.get("blocked_training_uses") or []):
+                failures.append(f"{item.get('task_human_id')} boundary summary does not explain SFT block")
+            if "dpo" not in (summary.get("blocked_training_uses") or []):
+                failures.append(f"{item.get('task_human_id')} boundary summary does not explain DPO block")
+            if summary.get("does_not_mutate_source") is not True:
+                failures.append(f"{item.get('task_human_id')} boundary summary lacks no-source-mutation flag")
+            if not summary.get("remediation_options"):
+                failures.append(f"{item.get('task_human_id')} boundary summary lacks remediation options")
+        if plan.get("selection_policy") != "requested_backend_blocker_exact_match":
+            failures.append("source-boundary session plan did not use requested-blocker selection")
+        if plan.get("requested_blocker") != "source_boundary_blocks_training":
+            failures.append("source-boundary session plan lost requested blocker")
+        if int(plan.get("selected_count") or 0) != len(plan_items):
+            failures.append("source-boundary session plan selected count does not match items")
+        if not field_plan or field_plan[0].get("field") != "source_boundary":
+            failures.append("source-boundary session plan does not prompt for source_boundary field")
+        if "requested_blocker: \"source_boundary_blocks_training\"" not in yaml_preview:
+            failures.append("source-boundary session plan YAML does not preserve requested blocker")
+        if "source_boundary_summary:" not in yaml_preview or "blocked_training_uses:" not in yaml_preview:
+            failures.append("source-boundary session plan YAML lacks boundary summary")
+        return Check(
+            "Prompt-pair source-boundary blocker slice is directly addressable",
+            not failures,
+            "; ".join(failures)
+            if failures
+            else "source-boundary prompt-pair blockers can be selected even when they are not the largest worklist",
+            {
+                "source_boundary_blocks_training": source_boundary_count,
+                "selection_policy": blocker_slice.get("selection_policy"),
+                "reported_candidate_count": blocker_slice.get("reported_candidate_count"),
+                "session_selected_count": plan.get("selected_count"),
+                "sample_tasks": [item.get("task_human_id") for item in items[:5] if isinstance(item, dict)],
+            },
+        )
+
+    checks.append(
+        safe_check(
+            "Prompt-pair source-boundary blocker slice is directly addressable",
+            prompt_pair_source_boundary_blocker_slice,
+        )
+    )
+
     def dpo_rejected_reason_repair_packet() -> Check:
         packet = get_json(args.api_base, "/prompt-pairs/dpo-rejected-reason-repair-pack", {"limit": 25}, timeout=30)
         items = packet.get("items") if isinstance(packet.get("items"), list) else []
@@ -1302,10 +1744,16 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("DPO repair packet lacks YAML preview")
         if "dpo_rejected_reason_empty" not in yaml_preview:
             failures.append("DPO repair YAML does not name the blocker")
+        if "projected_after_export_status: \"candidate\"" not in yaml_preview:
+            failures.append("DPO repair YAML must show rejected-reason repair still leaves a candidate")
+        if "needs_adam_gold_edit" not in yaml_preview:
+            failures.append("DPO repair YAML must show Adam gold edit remains as a blocker")
         if items:
             first = items[0]
             preflight = first.get("backend_preflight") if isinstance(first.get("backend_preflight"), dict) else {}
             projection = first.get("repair_projection") if isinstance(first.get("repair_projection"), dict) else {}
+            suggested_modes = first.get("suggested_failure_modes") if isinstance(first.get("suggested_failure_modes"), list) else []
+            suggested_issue = first.get("suggested_rejected_issue") if isinstance(first.get("suggested_rejected_issue"), dict) else {}
             single_projection = get_json(
                 args.api_base,
                 "/prompt-pairs/dpo-rejected-reason-repair-projection",
@@ -1320,6 +1768,12 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 failures.append("DPO repair item preflight does not expose rejected reason blocker")
             if "failure_modes" not in (first.get("repair_fields") or []):
                 failures.append("DPO repair item does not tell the operator which field to repair")
+            if not suggested_modes:
+                failures.append("DPO repair item lacks suggested failure modes")
+            if suggested_modes == ["too_generic_not_charles_voice"]:
+                failures.append("DPO repair item still uses only a generic failure-mode scaffold")
+            if not suggested_issue.get("note") or not suggested_issue.get("issue_tag"):
+                failures.append("DPO repair item lacks a concrete rejected-side issue note")
             if projection.get("does_not_mutate_task") is not True:
                 failures.append("DPO repair projection must be non-mutating")
             if projection.get("target_blocker_cleared") is not True:
@@ -1330,6 +1784,12 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 failures.append("DPO repair projection still has rejected reason blocker after patch")
             if projection.get("still_requires_adam_gold_edit") is not True:
                 failures.append("DPO repair projection must keep Adam review requirement visible")
+            if projection.get("after_export_status") != "candidate":
+                failures.append("DPO repair projection must keep projected after-status as candidate")
+            if projection.get("after_dataset_outcome") != "Candidate dry-run only":
+                failures.append("DPO repair projection must keep projected dataset outcome as candidate dry-run")
+            if "needs_adam_gold_edit" not in (projection.get("after_blockers") or []):
+                failures.append("DPO repair projection must keep needs_adam_gold_edit after target blocker clears")
             if single_projection.get("projection_type") != "dpo_rejected_reason_repair_projection":
                 failures.append("single DPO repair projection has unexpected type")
             if single_projection.get("does_not_mutate_task") is not True:
@@ -1342,6 +1802,25 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 failures.append("single DPO repair projection lacks before blocker")
             if "dpo_rejected_reason_empty" in (single_after.get("blockers") or []):
                 failures.append("single DPO repair projection still has target blocker after patch")
+            if single_after.get("export_status") != "candidate":
+                failures.append("single DPO repair projection must keep after-status as candidate")
+            if single_after.get("dataset_outcome") != "Candidate dry-run only":
+                failures.append("single DPO repair projection must keep dataset outcome as candidate dry-run")
+            if "needs_adam_gold_edit" not in (single_after.get("blockers") or []):
+                failures.append("single DPO repair projection must keep Adam gold edit blocker")
+            single_input_patch = (
+                single_projection.get("input_patch") if isinstance(single_projection.get("input_patch"), dict) else {}
+            )
+            single_modes = single_input_patch.get("failure_modes") if isinstance(single_input_patch.get("failure_modes"), list) else []
+            if single_modes == ["too_generic_not_charles_voice"]:
+                failures.append("single DPO repair projection still uses only the generic scaffold")
+            single_issue = (
+                single_projection.get("suggested_rejected_issue")
+                if isinstance(single_projection.get("suggested_rejected_issue"), dict)
+                else {}
+            )
+            if not single_issue.get("note") or not single_issue.get("issue_tag"):
+                failures.append("single DPO repair projection lacks suggested rejected-side issue note")
             if not str(single_projection.get("yaml_diff_preview") or "").startswith("--- before_dpo_repair.yaml"):
                 failures.append("single DPO repair projection lacks exact YAML diff preview")
             if len(str(single_projection.get("content_sha256") or "")) != 64:
@@ -1362,6 +1841,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 "reported_candidate_count": packet.get("reported_candidate_count"),
                 "content_sha256": packet.get("content_sha256"),
                 "export_preview_sha256": packet.get("export_preview_sha256"),
+                "first_suggested_failure_modes": items[0].get("suggested_failure_modes") if items else [],
                 "sample_tasks": [item.get("task_human_id") for item in items[:5] if isinstance(item, dict)],
             },
         )
@@ -1557,6 +2037,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                     "pytest",
                     "-q",
                     "tests/test_dataset_exports.py::test_export_dry_run_excludes_boundary_blocked_and_candidate_items",
+                    "tests/test_dataset_exports.py::test_candidate_export_dry_run_preserves_prompt_pair_provenance_backstage",
                     "tests/test_ralph_phase1_training_spine.py::test_sft_export_guard_blocks_filename_placeholder_prompt_even_with_clean_rubric",
                     "tests/test_ralph_phase1_training_spine.py::test_dpo_export_guard_blocks_identical_or_unexplained_rejected_response",
                     "tests/test_ralph_phase3_prompt_pair_audit.py::test_prompt_pair_audit_and_reference_pack_exclude_structural_sft_blockers",
@@ -1588,6 +2069,16 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
 
     def text_model_status() -> Check:
         payload = get_json(args.api_base, "/model-status")
+        requirements = (
+            payload.get("credential_requirements")
+            if isinstance(payload.get("credential_requirements"), dict)
+            else {}
+        )
+        required_env = {
+            item.get("name"): item
+            for item in requirements.get("required_env", [])
+            if isinstance(item, dict) and item.get("name")
+        }
         failures = []
         if payload.get("text_generation_model") != args.required_text_model:
             failures.append(f"text model should be {args.required_text_model}")
@@ -1595,6 +2086,27 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append(f"reasoning effort should be {args.required_text_reasoning}")
         if payload.get("fine_tuning_enabled_in_mvp") is not False:
             failures.append("fine-tuning must remain disabled in MVP")
+        if requirements.get("api") != "responses":
+            failures.append("credential requirements must target the Responses API")
+        if requirements.get("model_name") != args.required_text_model:
+            failures.append("credential requirements lost text generation model")
+        if requirements.get("reasoning_effort") != args.required_text_reasoning:
+            failures.append("credential requirements lost reasoning effort")
+        if "OPENAI_API_KEY" not in required_env:
+            failures.append("credential requirements must include OPENAI_API_KEY")
+        elif required_env["OPENAI_API_KEY"].get("secret") is not True:
+            failures.append("OPENAI_API_KEY requirement must be marked secret")
+        if "TEXT_GENERATION_LIVE_CALLS_ENABLED" not in required_env:
+            failures.append("credential requirements must include TEXT_GENERATION_LIVE_CALLS_ENABLED")
+        elif required_env["TEXT_GENERATION_LIVE_CALLS_ENABLED"].get("required_value") != "true":
+            failures.append("live-call opt-in requirement must state required_value=true")
+        requirement_safety = (
+            requirements.get("safety_policy")
+            if isinstance(requirements.get("safety_policy"), dict)
+            else {}
+        )
+        if requirement_safety.get("fine_tuning_api_calls_allowed") is not False:
+            failures.append("credential requirements must preserve no-fine-tuning policy")
         return Check(
             "Text generation model configuration is visible and gated",
             not failures,
@@ -1606,6 +2118,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 "openai_api_key_configured": payload.get("openai_api_key_configured"),
                 "text_generation_live_ready": payload.get("text_generation_live_ready"),
                 "fine_tuning_enabled_in_mvp": payload.get("fine_tuning_enabled_in_mvp"),
+                "required_env": sorted(required_env),
             },
         )
 
@@ -1615,6 +2128,17 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
         payload = get_json(args.api_base, "/model-status/demo-readiness", {"limit": args.min_demo_prompts})
         prompts = payload.get("held_out_prompts") if isinstance(payload.get("held_out_prompts"), list) else []
         blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
+        requirements = (
+            payload.get("credential_requirements")
+            if isinstance(payload.get("credential_requirements"), dict)
+            else {}
+        )
+        plan = payload.get("generation_input_plan") if isinstance(payload.get("generation_input_plan"), dict) else {}
+        plan_requirements = (
+            plan.get("credential_requirements")
+            if isinstance(plan.get("credential_requirements"), dict)
+            else {}
+        )
         failures = []
         if payload.get("demo_type") != "charles_voice_model_demo":
             failures.append("unexpected demo readiness type")
@@ -1629,6 +2153,12 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("demo safety policy must keep outputs model-generated and Adam-reviewed")
         if payload.get("can_generate") is False and not blockers:
             failures.append("blocked demo readiness must state blockers")
+        if requirements.get("api") != "responses" or plan_requirements.get("api") != "responses":
+            failures.append("demo readiness must expose Responses API credential requirements")
+        if (requirements.get("safety_policy") or {}).get("fine_tuning_api_calls_allowed") is not False:
+            failures.append("demo credential requirements must block fine-tuning calls")
+        if (plan_requirements.get("safety_policy") or {}).get("fine_tuning_api_calls_allowed") is not False:
+            failures.append("demo input plan credential requirements must block fine-tuning calls")
         return Check(
             "Model demo generation is honestly gated",
             not failures,
@@ -1640,11 +2170,78 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 "can_generate": payload.get("can_generate"),
                 "blockers": blockers,
                 "held_out_prompt_count": len(prompts),
+                "credential_requirement_api": requirements.get("api"),
                 "sample_prompts": [item.get("prompt") for item in prompts[:3]],
             },
         )
 
     checks.append(safe_check("Model demo generation is honestly gated", demo_generation_readiness))
+
+    def demo_generation_request_preview() -> Check:
+        payload = get_json(args.api_base, "/model-status/demo-generation-request-preview", {"limit": args.min_demo_prompts})
+        requests = payload.get("requests") if isinstance(payload.get("requests"), list) else []
+        contract = get_json(args.api_base, "/runtime-contract")
+        contract_fields = (contract.get("required_response_fields") or {}).get(
+            "/api/model-status/demo-generation-request-preview",
+            [],
+        )
+        failures = []
+        if payload.get("preview_type") != "charles_voice_model_demo_generation_request_preview":
+            failures.append("unexpected demo request preview type")
+        if payload.get("does_not_mutate_state") is not True:
+            failures.append("demo request preview must be non-mutating")
+        if payload.get("no_live_model_call") is not True:
+            failures.append("demo request preview must avoid live model calls")
+        if payload.get("no_generation_created") is not True:
+            failures.append("demo request preview must not create generation rows")
+        if payload.get("does_not_promote_to_training_export") is not True:
+            failures.append("demo request preview must not promote training export")
+        if payload.get("model_name") != args.required_text_model:
+            failures.append(f"preview model should be {args.required_text_model}")
+        if payload.get("reasoning_effort") != args.required_text_reasoning:
+            failures.append(f"preview reasoning should be {args.required_text_reasoning}")
+        if payload.get("store") is not False:
+            failures.append("preview must preserve Responses API store=false")
+        if len(requests) < args.min_demo_prompts:
+            failures.append(f"needs {args.min_demo_prompts} request previews, found {len(requests)}")
+        if len(str(payload.get("content_sha256") or "")) != 64:
+            failures.append("preview lacks stable content hash")
+        if len(str(payload.get("export_preview_sha256") or "")) != 64:
+            failures.append("preview lacks YAML hash")
+        if "export_preview_yaml" not in payload or "request_body_json: |-" not in str(payload.get("export_preview_yaml") or ""):
+            failures.append("preview YAML must include exact request body JSON blocks")
+        if not contract_fields:
+            failures.append("runtime contract lacks demo request preview endpoint")
+        for request in requests[: args.min_demo_prompts]:
+            body = request.get("request_body") if isinstance(request.get("request_body"), dict) else {}
+            safety = request.get("safety_checks") if isinstance(request.get("safety_checks"), dict) else {}
+            if body.get("model") != args.required_text_model:
+                failures.append("request body lost required model")
+            if (body.get("reasoning") or {}).get("effort") != args.required_text_reasoning:
+                failures.append("request body lost required reasoning effort")
+            if body.get("store") is not False:
+                failures.append("request body must use store=false")
+            if safety.get("held_out_answer_excluded_from_request") is not True:
+                failures.append("held-out answer leaked into request preview")
+            if safety.get("rejected_response_excluded_from_request") is not True:
+                failures.append("rejected DPO response leaked into request preview")
+            if safety.get("fine_tuning_api_calls_allowed") is not False:
+                failures.append("request safety policy must block fine-tuning APIs")
+        return Check(
+            "Model demo request preview is exact and non-mutating",
+            not failures,
+            "; ".join(failures)
+            if failures
+            else "demo generation has inspectable no-live Responses API request bodies before credentials are enabled",
+            {
+                "request_count": payload.get("request_count"),
+                "content_sha256": payload.get("content_sha256"),
+                "export_preview_sha256": payload.get("export_preview_sha256"),
+                "sample_request_hashes": [request.get("request_body_sha256") for request in requests[:3]],
+            },
+        )
+
+    checks.append(safe_check("Model demo request preview is exact and non-mutating", demo_generation_request_preview))
 
     checks.append(
         safe_check(
@@ -1680,7 +2277,10 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                     "pytest",
                     "-q",
                     "tests/test_ralph_phase1_training_spine.py::test_plain_text_extraction_prefers_natural_sections_over_single_arbitrary_chunk",
+                    "tests/test_ralph_phase1_training_spine.py::test_docx_extraction_uses_natural_sections_with_exact_locators",
+                    "tests/test_ralph_phase1_training_spine.py::test_eml_extraction_uses_body_natural_sections_not_headers",
                     "tests/test_ralph_phase1_training_spine.py::test_source_review_generate_pairs_from_natural_sections_creates_singleton_prompt_pair_tasks",
+                    "tests/test_ralph_phase1_training_spine.py::test_natural_section_generation_holds_split_sections_and_blocks_contextless_export",
                 ],
             ),
         )
@@ -1813,6 +2413,11 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             "/assets/photo-context-review-pack/session-progress",
             {"scope": "family_private", "limit": 100},
         )
+        progress_artifact = get_json(
+            args.api_base,
+            "/assets/photo-context-review-pack/session-progress/artifact",
+            {"scope": "family_private", "limit": 100},
+        )
         contract = get_json(args.api_base, "/runtime-contract")
         field_worklist = get_json(
             args.api_base,
@@ -1827,7 +2432,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
         dry_session = post_json(
             args.api_base,
             "/assets/photo-context-review-pack/review-session",
-            {"scope": "family_private", "limit": 3, "dry_run": "true", "source_query": "airplane in Maine"},
+            {"scope": "family_private", "limit": 3, "dry_run": "true", "source_query": args.honest_gap_query},
         )
         manifest = pack.get("manifest") if isinstance(pack.get("manifest"), dict) else {}
         no_claim_groups = (
@@ -1921,6 +2526,56 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("photo context progress lacks status counts")
         if not isinstance(progress.get("blocked_reason_counts"), dict):
             failures.append("photo context progress lacks blocker counts")
+        provenance_policy = progress.get("provenance_policy") if isinstance(progress.get("provenance_policy"), dict) else {}
+        if provenance_policy.get("retrieval_gap_origin_is_not_memory_claim") is not True:
+            failures.append("photo context progress must mark retrieval-gap origins as not-memory-claim")
+        if provenance_policy.get("review_session_origin_is_not_memory_claim") is not True:
+            failures.append("photo context progress must mark review-session origins as not-memory-claim")
+        if provenance_policy.get("query_is_context_prioritization_only") is not True:
+            failures.append("photo context progress must preserve query-as-prioritization policy")
+        if provenance_policy.get("vector_ready_requires_submit") is not True:
+            failures.append("photo context progress must require submit before vector readiness")
+        progress_items = progress.get("items") if isinstance(progress.get("items"), list) else []
+        session_origin_items = [
+            item
+            for item in progress_items
+            if isinstance(item, dict) and isinstance(item.get("review_session_origin"), dict)
+        ]
+        for item in progress_items[:10]:
+            retrieval_origin = item.get("retrieval_gap_origin") if isinstance(item.get("retrieval_gap_origin"), dict) else {}
+            review_origin = item.get("review_session_origin") if isinstance(item.get("review_session_origin"), dict) else {}
+            provenance_boundary = item.get("provenance_boundary") if isinstance(item.get("provenance_boundary"), dict) else {}
+            if retrieval_origin:
+                if retrieval_origin.get("truth_status") != "no_claim" or retrieval_origin.get("not_memory_claim") is not True:
+                    failures.append("photo context progress item retrieval origin lacks no-claim boundary")
+                if provenance_boundary.get("retrieval_origin_not_memory_claim") is not True:
+                    failures.append("photo context progress item provenance boundary lost retrieval no-claim flag")
+            if review_origin:
+                if review_origin.get("not_memory_claim") is not True:
+                    failures.append("photo context progress item review-session origin lacks not-memory-claim")
+                if review_origin.get("query_is_context_prioritization_only") is not True:
+                    failures.append("photo context progress item review-session origin lost query policy")
+                if not review_origin.get("candidate_match_quality") or not review_origin.get("candidate_selection_reason"):
+                    failures.append("photo context progress item review-session origin lacks candidate basis")
+                if provenance_boundary.get("review_session_origin_not_memory_claim") is not True:
+                    failures.append("photo context progress item provenance boundary lost review-session no-claim flag")
+        if int(progress.get("review_session_task_count") or 0) <= 0:
+            failures.append("photo context progress should expose at least one review-session-origin task after browser proof")
+        if not session_origin_items and int(progress.get("review_session_task_count") or 0) > 0:
+            failures.append("photo context progress review-session count is not represented in returned items")
+        if progress_artifact.get("artifact_type") != "photo_context_session_progress_artifact":
+            failures.append("photo context progress artifact has unexpected type")
+        if progress_artifact.get("source_progress_content_sha256") != progress.get("content_sha256"):
+            failures.append("photo context progress artifact does not point at source progress hash")
+        if progress_artifact.get("does_not_create_memory_claim") is not True:
+            failures.append("photo context progress artifact must not create memory claims")
+        if progress_artifact.get("does_not_create_embedding_record") is not True:
+            failures.append("photo context progress artifact must not create embedding records")
+        if progress_artifact.get("provenance_policy") != provenance_policy:
+            failures.append("photo context progress artifact provenance policy diverges from progress endpoint")
+        artifact_items = progress_artifact.get("items") if isinstance(progress_artifact.get("items"), list) else []
+        if not any(isinstance(item, dict) and isinstance(item.get("review_session_origin"), dict) for item in artifact_items):
+            failures.append("photo context progress artifact lacks review-session origin samples")
         if field_worklist.get("worklist_type") != "photo_context_retrieval_gap_field_worklist":
             failures.append("retrieval-gap field worklist has unexpected type")
         if field_worklist.get("review_policy") != "retrieval_gap_missing_fields_no_memory_claim_until_adam_context":
@@ -2164,7 +2819,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
     )
 
     def photo_context_review_session_plan_readiness() -> Check:
-        source_query = "airplane in Maine"
+        source_query = args.honest_gap_query
         plan = get_json(
             args.api_base,
             "/assets/photo-context-review-pack/review-session-plan",
@@ -2206,6 +2861,9 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             first = items[0]
             query_origin = first.get("query_origin") if isinstance(first.get("query_origin"), dict) else {}
             action = first.get("action") if isinstance(first.get("action"), dict) else {}
+            action_request = action.get("request") if isinstance(action.get("request"), dict) else {}
+            action_body = action_request.get("body") if isinstance(action_request.get("body"), dict) else {}
+            query_provenance = action.get("query_provenance") if isinstance(action.get("query_provenance"), dict) else {}
             criteria = first.get("completion_criteria") if isinstance(first.get("completion_criteria"), list) else []
             if first.get("truth_status") != "no_claim" or first.get("not_memory_claim") is not True:
                 failures.append("photo context session item lacks no-claim boundary")
@@ -2215,6 +2873,27 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 failures.append("photo context session item does not mark query as prioritization-only")
             if action.get("action_type") not in {"create_photo_context_task", "open_existing_photo_context_task"}:
                 failures.append("photo context session item lacks create/open context action")
+            if query_provenance.get("source_query") != source_query:
+                failures.append("photo context session action lacks source-query provenance")
+            if query_provenance.get("query_is_context_prioritization_only") is not True:
+                failures.append("photo context session action must mark query as prioritization-only")
+            if query_provenance.get("not_memory_claim") is not True:
+                failures.append("photo context session action must remain not-memory-claim")
+            if query_provenance.get("candidate_match_quality") != "backlog_only":
+                failures.append("photo context session action must distinguish backlog selection from visual evidence")
+            if query_provenance.get("candidate_selection_reason") != "selected_from_photo_context_review_session_plan":
+                failures.append("photo context session action lacks candidate selection reason")
+            if action.get("action_type") == "create_photo_context_task":
+                if action_body.get("source_query") != source_query:
+                    failures.append("photo context create action body does not preserve source query")
+                if action_body.get("query_is_context_prioritization_only") is not True:
+                    failures.append("photo context create action body must mark query as prioritization-only")
+                if action_body.get("not_memory_claim") is not True:
+                    failures.append("photo context create action body must remain not-memory-claim")
+                if action_body.get("candidate_match_quality") != "backlog_only":
+                    failures.append("photo context create action body must distinguish backlog selection from visual evidence")
+                if action_body.get("candidate_selection_reason") != "selected_from_photo_context_review_session_plan":
+                    failures.append("photo context create action body lacks candidate selection reason")
             if not any("Adam-authored" in str(item) for item in criteria):
                 failures.append("photo context session item lacks Adam-authored completion criterion")
         else:
@@ -2444,10 +3123,24 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
             failures.append("unexpected photo priority summary type")
         if summary.get("review_policy") != "prioritization_only_no_memory_claim_until_submit":
             failures.append("photo priority summary lacks no-claim review policy")
+        if summary.get("throughput_policy") != "rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff":
+            failures.append("photo priority summary lacks throughput ranking policy")
         if summary.get("does_not_mutate_state") is not True:
             failures.append("photo priority summary must be non-mutating")
+        if summary.get("does_not_create_memory_claim") is not True:
+            failures.append("photo priority summary must not create memory claims")
         if summary.get("no_live_model_call") is not True:
             failures.append("photo priority summary must not call live models")
+        if summary.get("no_live_embedding_call") is not True:
+            failures.append("photo priority summary must not call live embeddings")
+        if not summary.get("completion_signal"):
+            failures.append("photo priority summary lacks completion signal")
+        if not summary.get("content_sha256"):
+            failures.append("photo priority summary lacks stable content hash")
+        if "photo_review_priority:" not in str(summary.get("export_preview_yaml") or ""):
+            failures.append("photo priority summary lacks YAML export preview")
+        if not summary.get("export_preview_sha256"):
+            failures.append("photo priority summary lacks YAML export hash")
         if int(summary.get("reported_count") or 0) <= 0:
             failures.append("photo priority summary has no reported review tasks")
         ranks = [int(item.get("rank", 99)) for item in items if isinstance(item, dict)]
@@ -2460,6 +3153,16 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 continue
             if item.get("not_memory_claim") is not True:
                 failures.append(f"{item.get('task_human_id')} lacks no-memory-claim flag")
+            if item.get("preview_ready") is not True:
+                failures.append(f"{item.get('task_human_id')} lacks preview-ready ranking input")
+            if int(item.get("missing_adam_field_count") or 0) <= 0:
+                failures.append(f"{item.get('task_human_id')} lacks missing Adam field count")
+            if int(item.get("downstream_payoff_score") or 0) <= 0:
+                failures.append(f"{item.get('task_human_id')} lacks downstream payoff score")
+            ranking_inputs = item.get("ranking_inputs") if isinstance(item.get("ranking_inputs"), dict) else {}
+            for required_input in ["path_rank", "preview_ready", "missing_adam_field_count", "downstream_payoff_score"]:
+                if required_input not in ranking_inputs:
+                    failures.append(f"{item.get('task_human_id')} lacks ranking input {required_input}")
             if "No memory claim yet" not in (item.get("safeguards") or []):
                 failures.append(f"{item.get('task_human_id')} lacks no-memory-claim safeguard")
             if not item.get("missing_fields"):
@@ -2479,6 +3182,7 @@ def run_gate(args: argparse.Namespace) -> list[Check]:
                 "total_candidate_count": summary.get("total_candidate_count"),
                 "sample_paths": [item.get("path_label") for item in items[:5] if isinstance(item, dict)],
                 "sample_tasks": [item.get("task_human_id") for item in items[:5] if isinstance(item, dict)],
+                "content_sha256": summary.get("content_sha256"),
             },
         )
 
@@ -3378,7 +4082,7 @@ def checkpoint_markdown(payload: dict[str, Any]) -> str:
         marker = "PASS" if check.get("passed") else "FAIL"
         lines.append(f"- `{marker}` {check.get('name')}: {check.get('detail')}")
     lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip()
 
 
 def write_checkpoint(checks: list[Check], checkpoint_dir: Path) -> dict[str, str]:
@@ -3435,7 +4139,7 @@ def main() -> int:
         action="append",
         default=["Japanese flute", "honors ceremony", "Adam flowers"],
     )
-    parser.add_argument("--honest-gap-query", default="airplane in Maine")
+    parser.add_argument("--honest-gap-query", default="Old Orchard beach")
     parser.add_argument("--write-checkpoint", action="store_true", help="Write JSON and Markdown checkpoint artifacts.")
     parser.add_argument("--checkpoint-dir", default="updates", help="Directory for checkpoint artifacts.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of Markdown.")

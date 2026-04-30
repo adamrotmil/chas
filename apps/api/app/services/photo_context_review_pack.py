@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 from sqlmodel import Session, select
 
 from app.models import Asset, Boundary, Gallery, GalleryItem, MetadataProfile, Task
+from app.services.photo_constants import (
+    PHOTO_MEMORY_PROFILE_TYPE,
+    PHOTO_STATUS_ADAM_REVIEWED,
+    PHOTO_STATUS_MACHINE_DRAFT,
+)
 from app.services.retrieval import REVIEWED_PHOTO_MEMORY_TRUTH_STATUSES, photo_memory_embedding_export
 
 
@@ -97,7 +102,7 @@ def _boundary_for_asset(session: Session, asset_id: str) -> Optional[Boundary]:
 
 
 def _gallery_review_status(profile: Optional[MetadataProfile], gallery: Optional[Gallery]) -> str:
-    if profile and (profile.metadata_status in {"reviewed", "adam_reviewed"} or profile.reviewed_by == "adam"):
+    if profile and (profile.metadata_status == PHOTO_STATUS_ADAM_REVIEWED or profile.reviewed_by == "adam"):
         return "reviewed"
     if gallery and gallery.human_id == "GALLERY_MACHINE_DRAFT_PHOTOS":
         return "machine_draft"
@@ -440,7 +445,7 @@ def build_photo_context_review_pack(
             select(MetadataProfile)
             .where(MetadataProfile.target_type == "asset")
             .where(MetadataProfile.target_id.in_(photo_ids))
-            .where(MetadataProfile.profile_type == "photo_memory")
+            .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
             .order_by(MetadataProfile.updated_at.desc())
         ).all()
         if photo_ids
@@ -513,7 +518,7 @@ def build_photo_context_review_pack(
 
     machine_drafts_held: List[Dict[str, Any]] = []
     for profile in profiles:
-        if profile.metadata_status != "machine_draft_needs_adam_review":
+        if profile.metadata_status != PHOTO_STATUS_MACHINE_DRAFT:
             continue
         asset = session.get(Asset, profile.target_id)
         if asset is None:
@@ -807,6 +812,9 @@ def _review_session_plan_yaml(plan: Dict[str, Any]) -> str:
             continue
         query_origin = item.get("query_origin") if isinstance(item.get("query_origin"), dict) else {}
         action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        action_request = action.get("request") if isinstance(action.get("request"), dict) else {}
+        action_body = action_request.get("body") if isinstance(action_request.get("body"), dict) else {}
+        query_provenance = action.get("query_provenance") if isinstance(action.get("query_provenance"), dict) else {}
         lines.extend(
             [
                 f"    - sequence_number: {_yaml_scalar(item.get('sequence_number'))}",
@@ -818,9 +826,52 @@ def _review_session_plan_yaml(plan: Dict[str, Any]) -> str:
                 f"      query_is_context_prioritization_only: {_yaml_scalar(query_origin.get('query_is_context_prioritization_only'))}",
                 f"      action: {_yaml_scalar(action.get('action_type'))}",
                 f"      task_human_id: {_yaml_scalar(action.get('task_human_id'))}",
+                f"      action_source_query: {_yaml_scalar(action_body.get('source_query') or query_provenance.get('source_query'))}",
+                f"      candidate_match_quality: {_yaml_scalar(action_body.get('candidate_match_quality') or query_provenance.get('candidate_match_quality'))}",
+                f"      candidate_selection_reason: {_yaml_scalar(action_body.get('candidate_selection_reason') or query_provenance.get('candidate_selection_reason'))}",
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _session_plan_action(
+    *,
+    action: Dict[str, Any],
+    item: Dict[str, Any],
+    source_query: str,
+    session_selected_count: int,
+) -> Dict[str, Any]:
+    action_type = str(action.get("action_type") or "unknown_action")
+    query_provenance = {
+        "source_query": source_query,
+        "query_is_context_prioritization_only": True,
+        "not_memory_claim": True,
+        "candidate_match_quality": "backlog_only",
+        "candidate_selection_reason": "selected_from_photo_context_review_session_plan",
+    }
+    enriched_action: Dict[str, Any] = {
+        **action,
+        "query_provenance": query_provenance,
+        "session_sequence_number": item.get("sequence_number"),
+        "session_selected_count": session_selected_count,
+    }
+    if action_type == "create_photo_context_task":
+        request = action.get("request") if isinstance(action.get("request"), dict) else {}
+        body = request.get("body") if isinstance(request.get("body"), dict) else {}
+        enriched_action["request"] = {
+            **request,
+            "body": {
+                **body,
+                "source_query": source_query,
+                "query_is_context_prioritization_only": True,
+                "not_memory_claim": True,
+                "candidate_match_quality": query_provenance["candidate_match_quality"],
+                "candidate_selection_reason": query_provenance["candidate_selection_reason"],
+                "session_sequence_number": item.get("sequence_number"),
+                "session_selected_count": session_selected_count,
+            },
+        }
+    return enriched_action
 
 
 def build_photo_context_review_session_plan(
@@ -828,16 +879,17 @@ def build_photo_context_review_session_plan(
     session: Session,
     scope: str = "family_private",
     limit: int = 5,
-    source_query: str = "airplane in Maine",
+    source_query: str = "Old Orchard beach",
 ) -> Dict[str, Any]:
     safe_limit = max(1, min(limit, 25))
     top_slice = build_photo_context_top_slice(session=session, scope=scope, limit=safe_limit)
+    top_items = [item for item in (top_slice.get("items") if isinstance(top_slice.get("items"), list) else []) if isinstance(item, dict)]
+    selected_count = len(top_items)
     items = []
     action_counts: Dict[str, int] = {}
-    for item in (top_slice.get("items") if isinstance(top_slice.get("items"), list) else []):
-        if not isinstance(item, dict):
-            continue
-        action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    for item in top_items:
+        raw_action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        action = _session_plan_action(action=raw_action, item=item, source_query=source_query, session_selected_count=selected_count)
         action_type = str(action.get("action_type") or "unknown_action")
         action_counts[action_type] = action_counts.get(action_type, 0) + 1
         items.append(

@@ -10,18 +10,21 @@ from sqlmodel import Session, select
 from app.config import Settings
 from app.exports.jsonl import dpo_export_items, export_dry_run, sft_export_items, to_jsonl
 from app.models import Task, utcnow
+from app.services.demo_generation import compile_demo_generation_request_preview
 from app.services.photo_context_progress import (
     build_photo_context_retrieval_gap_field_worklist,
     build_photo_context_retrieval_gap_payoff_preview,
     build_photo_context_session_progress_artifact,
 )
 from app.services.photo_context_review_pack import build_photo_context_review_pack, build_photo_context_review_session_plan
+from app.services.photo_review_priority import build_photo_review_priority_summary
 from app.services.prompt_pair_audit import (
     compile_dpo_rejected_reason_repair_packet,
     compile_prompt_pair_audit,
     compile_prompt_pair_audit_pack,
     compile_prompt_pair_review_progress,
     compile_prompt_pair_top_blocker_review_session_plan,
+    compile_source_boundary_training_review_packet,
 )
 from app.services.prompt_pair_reference_pack import compile_prompt_pair_reference_pack
 from app.services.pair_generation import (
@@ -236,7 +239,7 @@ def compile_downstream_artifact_manifest(
     vector_limit: int = 20,
     app_settings: Settings | None = None,
     include_handoff_artifact: bool = True,
-    photo_session_query: str = "airplane in Maine",
+    photo_session_query: str = "Old Orchard beach",
 ) -> Dict[str, Any]:
     prompt_limit = max(1, min(prompt_sample_limit, 500))
     safe_vector_limit = max(1, min(vector_limit, 1000))
@@ -244,6 +247,7 @@ def compile_downstream_artifact_manifest(
     prompt_review_progress = compile_prompt_pair_review_progress(session=session)
     prompt_session_plan = compile_prompt_pair_top_blocker_review_session_plan(session=session, limit=5)
     dpo_repair_pack = compile_dpo_rejected_reason_repair_packet(session=session, limit=25)
+    source_boundary_pack = compile_source_boundary_training_review_packet(session=session, limit=25)
     reference_pack = compile_prompt_pair_reference_pack(session=session, sample_limit=prompt_limit)
     photo_pack = build_photo_context_review_pack(session=session, scope=scope, limit=safe_vector_limit)
     photo_session_plan = build_photo_context_review_session_plan(
@@ -267,6 +271,7 @@ def compile_downstream_artifact_manifest(
         scope=scope,
         limit=10,
     )
+    photo_review_priority = build_photo_review_priority_summary(session=session, focus="fastest_vector", limit=10)
     photo_context_pack_audit = compile_photo_context_pack_readiness_audit(
         session=session,
         scope=scope,
@@ -279,6 +284,11 @@ def compile_downstream_artifact_manifest(
     sft_dry_run = export_dry_run(session, "sft", include_candidates=True)
     dpo_dry_run = export_dry_run(session, "dpo", include_candidates=True)
     source_preview, source_preview_endpoint = _source_review_pair_preview_payload(session)
+    demo_request_preview = compile_demo_generation_request_preview(
+        session=session,
+        app_settings=app_settings or Settings(),
+        limit=5,
+    )
     prompt_review_progress_json = _stable_json(prompt_review_progress)
     photo_session_progress_json = _stable_json(photo_session_progress_artifact)
     photo_context_pack_audit_json = _stable_json(photo_context_pack_audit)
@@ -372,6 +382,30 @@ def compile_downstream_artifact_manifest(
             },
         ),
         _artifact_item(
+            artifact_key="source_boundary_training_review_yaml",
+            label="Source-boundary training review YAML",
+            artifact_family="prompt_pair_repair",
+            format="yaml",
+            source_endpoint="/api/prompt-pairs/source-boundary-training-review-pack?limit=25",
+            download_endpoint="/api/prompt-pairs/source-boundary-training-review-pack/yaml?limit=25",
+            content_sha256=str(
+                source_boundary_pack.get("export_preview_sha256")
+                or _content_hash(source_boundary_pack.get("export_preview_yaml") or "")
+            ),
+            record_count=int(source_boundary_pack.get("reported_candidate_count") or 0),
+            preview_char_count=len(source_boundary_pack.get("export_preview_yaml") or ""),
+            eligibility=review_only,
+            policy={
+                "blocker": source_boundary_pack.get("blocker"),
+                "does_not_mutate_source": source_boundary_pack.get("does_not_mutate_source") is True,
+                "does_not_promote_to_training_export": source_boundary_pack.get("does_not_promote_to_training_export") is True,
+                "requires_adam_boundary_review": source_boundary_pack.get("requires_adam_boundary_review") is True,
+                "requires_adam_gold_edit": source_boundary_pack.get("requires_adam_gold_edit") is True,
+                "completion_signal": source_boundary_pack.get("completion_signal"),
+                "repair_packet": True,
+            },
+        ),
+        _artifact_item(
             artifact_key="source_review_pair_generation_preview_json",
             label="Source Review Generate Pairs preview JSON",
             artifact_family="source_review_preview",
@@ -393,6 +427,33 @@ def compile_downstream_artifact_manifest(
                 "source_sections": source_preview.get("source_section_count"),
                 "source_span_draft_count": source_preview.get("source_span_draft_count"),
                 "strategy_counts": source_preview.get("strategy_counts"),
+            },
+        ),
+        _artifact_item(
+            artifact_key="demo_generation_request_preview_yaml",
+            label="Demo generation request preview YAML",
+            artifact_family="model_generation_preview",
+            format="yaml",
+            source_endpoint="/api/model-status/demo-generation-request-preview?limit=5",
+            download_endpoint="/api/model-status/demo-generation-request-preview/yaml?limit=5",
+            content_sha256=str(
+                demo_request_preview.get("export_preview_sha256")
+                or _content_hash(demo_request_preview.get("export_preview_yaml") or "")
+            ),
+            record_count=int(demo_request_preview.get("request_count") or 0),
+            preview_char_count=len(demo_request_preview.get("export_preview_yaml") or ""),
+            eligibility=review_only,
+            policy={
+                "review_policy": demo_request_preview.get("review_policy"),
+                "does_not_mutate_state": demo_request_preview.get("does_not_mutate_state") is True,
+                "no_live_model_call": demo_request_preview.get("no_live_model_call") is True,
+                "no_generation_created": demo_request_preview.get("no_generation_created") is True,
+                "does_not_promote_to_training_export": demo_request_preview.get("does_not_promote_to_training_export") is True,
+                "model_name": demo_request_preview.get("model_name"),
+                "reasoning_effort": demo_request_preview.get("reasoning_effort"),
+                "store": demo_request_preview.get("store"),
+                "request_count": demo_request_preview.get("request_count"),
+                "preview_content_sha256": demo_request_preview.get("content_sha256"),
             },
         ),
         _artifact_item(
@@ -606,6 +667,8 @@ def compile_downstream_artifact_manifest(
                 "completion_signal": retrieval_field_worklist.get("completion_signal"),
                 "retrieval_gap_task_count": retrieval_field_worklist.get("retrieval_gap_task_count"),
                 "missing_field_counts": retrieval_field_worklist.get("missing_field_counts"),
+                "field_guidance_count": len(retrieval_field_worklist.get("field_guidance") or []),
+                "has_field_guidance": bool(retrieval_field_worklist.get("field_guidance")),
             },
         ),
         _artifact_item(
@@ -628,6 +691,34 @@ def compile_downstream_artifact_manifest(
                 "uses_placeholders_for_missing_adam_context": True,
                 "no_live_embedding_call": True,
                 "source_worklist_content_sha256": retrieval_payoff_preview.get("source_worklist_content_sha256"),
+            },
+        ),
+        _artifact_item(
+            artifact_key="photo_review_priority_yaml",
+            label="Photo review throughput priority YAML",
+            artifact_family="photo_context_review",
+            format="yaml",
+            source_endpoint="/api/assets/photo-review-priority?focus=fastest_vector&limit=10",
+            download_endpoint="/api/assets/photo-review-priority/yaml?focus=fastest_vector&limit=10",
+            content_sha256=str(
+                photo_review_priority.get("export_preview_sha256")
+                or _content_hash(photo_review_priority.get("export_preview_yaml") or "")
+            ),
+            record_count=int(photo_review_priority.get("reported_count") or 0),
+            preview_char_count=len(photo_review_priority.get("export_preview_yaml") or ""),
+            eligibility=review_only,
+            policy={
+                "review_policy": photo_review_priority.get("review_policy"),
+                "throughput_policy": photo_review_priority.get("throughput_policy"),
+                "does_not_mutate_state": photo_review_priority.get("does_not_mutate_state") is True,
+                "does_not_create_memory_claim": photo_review_priority.get("does_not_create_memory_claim") is True,
+                "no_live_model_call": photo_review_priority.get("no_live_model_call") is True,
+                "no_live_embedding_call": photo_review_priority.get("no_live_embedding_call") is True,
+                "completion_signal": photo_review_priority.get("completion_signal"),
+                "ranking_inputs": photo_review_priority.get("ranking_inputs"),
+                "total_candidate_count": photo_review_priority.get("total_candidate_count"),
+                "reported_count": photo_review_priority.get("reported_count"),
+                "priority_content_sha256": photo_review_priority.get("content_sha256"),
             },
         ),
         _artifact_item(
@@ -729,7 +820,7 @@ def compile_downstream_artifact_audit(
     vector_limit: int = 20,
     app_settings: Settings | None = None,
     include_handoff_artifact: bool = True,
-    photo_session_query: str = "airplane in Maine",
+    photo_session_query: str = "Old Orchard beach",
 ) -> Dict[str, Any]:
     prompt_limit = max(1, min(prompt_sample_limit, 500))
     safe_vector_limit = max(1, min(vector_limit, 1000))
@@ -747,6 +838,12 @@ def compile_downstream_artifact_audit(
     prompt_review_progress = compile_prompt_pair_review_progress(session=session)
     prompt_session_plan = compile_prompt_pair_top_blocker_review_session_plan(session=session, limit=5)
     dpo_repair_pack = compile_dpo_rejected_reason_repair_packet(session=session, limit=25)
+    source_boundary_pack = compile_source_boundary_training_review_packet(session=session, limit=25)
+    demo_request_preview = compile_demo_generation_request_preview(
+        session=session,
+        app_settings=app_settings or Settings(),
+        limit=5,
+    )
     reference_pack = compile_prompt_pair_reference_pack(session=session, sample_limit=prompt_limit)
     photo_pack = build_photo_context_review_pack(session=session, scope=scope, limit=safe_vector_limit)
     photo_session_plan = build_photo_context_review_session_plan(
@@ -770,6 +867,7 @@ def compile_downstream_artifact_audit(
         scope=scope,
         limit=10,
     )
+    photo_review_priority = build_photo_review_priority_summary(session=session, focus="fastest_vector", limit=10)
     photo_context_pack_audit = compile_photo_context_pack_readiness_audit(
         session=session,
         scope=scope,
@@ -783,7 +881,9 @@ def compile_downstream_artifact_audit(
         "prompt_pair_review_progress_json": _stable_json(prompt_review_progress),
         "prompt_pair_top_blocker_session_plan_yaml": prompt_session_plan.get("export_preview_yaml") or "",
         "dpo_rejected_reason_repair_yaml": dpo_repair_pack.get("export_preview_yaml") or "",
+        "source_boundary_training_review_yaml": source_boundary_pack.get("export_preview_yaml") or "",
         "source_review_pair_generation_preview_json": _stable_json(source_preview),
+        "demo_generation_request_preview_yaml": demo_request_preview.get("export_preview_yaml") or "",
         "prompt_pair_reference_jsonl": reference_pack.get("jsonl") or "",
         "prompt_pair_reference_markdown": reference_pack.get("markdown") or "",
         "dataset_sft_approved_jsonl": to_jsonl(sft_export_items(session)),
@@ -796,6 +896,7 @@ def compile_downstream_artifact_audit(
         "photo_context_session_progress_json": _stable_json(photo_session_progress_artifact),
         "photo_context_retrieval_gap_field_worklist_yaml": retrieval_field_worklist.get("export_preview_yaml") or "",
         "photo_context_retrieval_gap_payoff_preview_yaml": retrieval_payoff_preview.get("export_preview_yaml") or "",
+        "photo_review_priority_yaml": photo_review_priority.get("export_preview_yaml") or "",
         "photo_vector_handoff_jsonl": vector_export.get("jsonl") or "",
         "photo_vector_handoff_manifest": _stable_json(vector_manifest),
     }
@@ -855,7 +956,7 @@ def compile_morning_handoff(
     prompt_sample_limit: int = 200,
     vector_limit: int = 20,
     bottleneck_limit: int = 4,
-    retrieval_gap_query: str = "airplane in Maine",
+    retrieval_gap_query: str = "Old Orchard beach",
 ) -> Dict[str, Any]:
     prompt_limit = max(1, min(prompt_sample_limit, 500))
     safe_vector_limit = max(1, min(vector_limit, 1000))
@@ -898,6 +999,7 @@ def compile_morning_handoff(
     gate_counts = prompt_summary.get("preflight_gate_counts") if isinstance(prompt_summary.get("preflight_gate_counts"), dict) else {}
     ordered_keys = queue.get("ordered_area_keys") if isinstance(queue.get("ordered_area_keys"), list) else []
     primary_key = str(ordered_keys[0]) if ordered_keys else "none"
+    manifest_artifact_count = _int(manifest.get("artifact_count"))
 
     readiness_summary = [
         {
@@ -932,7 +1034,7 @@ def compile_morning_handoff(
             "area_key": "artifacts",
             "label": "Downstream artifacts",
             "status": "hash_audited" if audit.get("all_hashes_match") is True else "hash_mismatch",
-            "metric": f"{manifest.get('artifact_count')} artifacts / {audit.get('mismatch_count')} hash mismatches",
+            "metric": f"{manifest_artifact_count} artifacts + handoff / {audit.get('mismatch_count')} hash mismatches",
             "truth_policy": "manifest is inspectable output metadata, not a training API call",
         },
     ]
@@ -1020,6 +1122,9 @@ def compile_morning_handoff(
         )
     artifact_summary = {
         "artifact_count": manifest.get("artifact_count"),
+        "self_excluded_artifact_count": 1,
+        "full_manifest_artifact_count": manifest_artifact_count + 1,
+        "count_note": "Morning handoff summarizes the artifact manifest without counting the morning_handoff_yaml artifact itself.",
         "formats": manifest.get("formats"),
         "artifact_families": manifest.get("artifact_families"),
         "manifest_content_sha256": manifest.get("content_sha256"),
@@ -1031,12 +1136,18 @@ def compile_morning_handoff(
     downstream_links = [
         {
             "label": "Artifact manifest",
-            "endpoint": f"/api/downstream-readiness/artifact-manifest?scope={scope}&prompt_sample_limit={prompt_limit}&vector_limit={safe_vector_limit}",
+            "endpoint": (
+                f"/api/downstream-readiness/artifact-manifest?scope={scope}&prompt_sample_limit={prompt_limit}"
+                f"&vector_limit={safe_vector_limit}&photo_session_query={quote(retrieval_gap_query)}"
+            ),
             "format": "json",
         },
         {
             "label": "Artifact hash audit",
-            "endpoint": f"/api/downstream-readiness/artifact-audit?scope={scope}&prompt_sample_limit={prompt_limit}&vector_limit={safe_vector_limit}",
+            "endpoint": (
+                f"/api/downstream-readiness/artifact-audit?scope={scope}&prompt_sample_limit={prompt_limit}"
+                f"&vector_limit={safe_vector_limit}&photo_session_query={quote(retrieval_gap_query)}"
+            ),
             "format": "json",
         },
         {
@@ -1135,7 +1246,7 @@ def compile_morning_handoff_yaml(
     prompt_sample_limit: int = 200,
     vector_limit: int = 20,
     bottleneck_limit: int = 4,
-    retrieval_gap_query: str = "airplane in Maine",
+    retrieval_gap_query: str = "Old Orchard beach",
 ) -> str:
     handoff = compile_morning_handoff(
         session=session,

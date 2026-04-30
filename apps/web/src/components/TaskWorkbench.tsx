@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
@@ -16,7 +17,8 @@ import {
   ShieldCheck,
   SkipForward,
   Sparkles,
-  TextCursorInput
+  TextCursorInput,
+  Trash2
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -26,6 +28,7 @@ import {
   getAssetTextChunks,
   getDpoRejectedReasonRepairProjection,
   getEntities,
+  getOperatorAssistantSuggestion,
   getTaskDraft,
   getVoiceModes,
   preflightPromptPairExportGate,
@@ -39,6 +42,7 @@ import type {
   DpoRejectedReasonRepairProjection,
   Entity,
   PhotoContextSubmitProjection,
+  OperatorAssistantSuggestion,
   PromptPairPreflightExportGate,
   Segment,
   SourcePairGenerationPreview,
@@ -66,6 +70,38 @@ type SourceUseMode =
   | "grounded_synthesis_allowed"
   | "context_only"
   | "exclude";
+type OperatorChatMessage = {
+  role: "assistant" | "user" | "system";
+  content: string;
+  detail?: string;
+};
+
+function operatorMessagesFromDecisions(decisions: Decisions): OperatorChatMessage[] {
+  const value = decisions.operator_assistant_log;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const role = record.role === "assistant" || record.role === "user" || record.role === "system" ? record.role : "system";
+      const content = typeof record.content === "string" ? record.content.trim() : "";
+      const detail = typeof record.detail === "string" ? record.detail.trim() : "";
+      if (!content) {
+        return null;
+      }
+      return {
+        role,
+        content,
+        ...(detail ? { detail } : {})
+      } satisfies OperatorChatMessage;
+    })
+    .filter((entry): entry is OperatorChatMessage => entry !== null)
+    .slice(-8);
+}
 
 function sameChunkSelection(left: ChunkSelection, right: ChunkSelection): boolean {
   return (
@@ -87,6 +123,10 @@ function isGeneratePairsTask(task: Task): boolean {
   return ["text_segment_review", "text_segment_boundary_review", "email_voice_sample"].includes(task.task_type);
 }
 
+function isPromptPairCandidateTask(task: Task): boolean {
+  return ["gold_voice_edit", "grounded_prompt_pair_candidate"].includes(task.task_type);
+}
+
 interface TaskWorkbenchProps {
   task: Task;
   asset?: Asset;
@@ -100,6 +140,7 @@ interface TaskWorkbenchProps {
   onSubmit: (decisions: Decisions, notes?: string) => Promise<void>;
   onSkip: () => Promise<void>;
   onFlag: () => Promise<void>;
+  onDeleteCandidate?: (reason?: string) => Promise<void>;
   onPrevious: () => void;
   onNext: () => void;
 }
@@ -320,6 +361,46 @@ function parseList(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function updateText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map(String).filter(Boolean).join(", ");
+  }
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return typeof value === "string" ? value : "";
+}
+
+function updateBooleanYesNo(value: unknown, fallback: "yes" | "no" = "yes"): "yes" | "no" {
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+  if (typeof value === "string") {
+    return value.toLowerCase() === "no" || value.toLowerCase() === "false" ? "no" : "yes";
+  }
+  return fallback;
+}
+
+function fieldUpdatesFromSuggestion(suggestion: OperatorAssistantSuggestion | null): Decisions {
+  const updates = suggestion?.field_updates;
+  return updates && typeof updates === "object" && !Array.isArray(updates) ? updates : {};
+}
+
+function submitRecommendationStatus(suggestion: OperatorAssistantSuggestion | null): string {
+  const recommendation = suggestion?.submit_recommendation;
+  if (!recommendation?.requested) {
+    return "";
+  }
+  if (recommendation.ready) {
+    return recommendation.reason || "Assistant thinks this ticket is ready to submit.";
+  }
+  const missing = recommendation.missing_fields?.map(promptFromDecisionKey).join(", ");
+  return [recommendation.reason, missing ? `Still needed: ${missing}` : ""].filter(Boolean).join(" ");
 }
 
 function questionAnswersHaveMemoryContext(questionAnswers: Record<string, string>): boolean {
@@ -918,6 +999,39 @@ function FormHint({ title, children }: { title: string; children: React.ReactNod
   );
 }
 
+function ReviewAccordionPanel({
+  title,
+  detail,
+  defaultOpen = true,
+  children
+}: {
+  title: string;
+  detail?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="review-accordion-panel" data-open={open ? "true" : "false"}>
+      <header className="review-accordion-header">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${title}`}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <ChevronDown size={15} />
+        </button>
+        <div>
+          <span>{title}</span>
+          {detail ? <strong>{detail}</strong> : null}
+        </div>
+      </header>
+      {open ? <div className="review-accordion-body">{children}</div> : null}
+    </section>
+  );
+}
+
 function MetadataValueList({
   title,
   items
@@ -948,6 +1062,71 @@ function TextArea({
   rows?: number;
 }) {
   return <textarea rows={rows} value={value} onChange={(event) => onChange(event.target.value)} />;
+}
+
+function OperatorAssistantPanel({
+  suggestion,
+  status,
+  messages,
+  answer,
+  applyStatus,
+  onAnswerChange,
+  onSend,
+  onShowField
+}: {
+  suggestion: OperatorAssistantSuggestion | null;
+  status: string;
+  messages: OperatorChatMessage[];
+  answer: string;
+  applyStatus: string;
+  onAnswerChange: (value: string) => void;
+  onSend: () => void;
+  onShowField?: () => void;
+}) {
+  const visibleMessages =
+    messages.length > 0
+      ? messages
+      : suggestion
+        ? [{ role: "assistant" as const, content: suggestion.next_question, detail: suggestion.target_label }]
+        : [{ role: "assistant" as const, content: "Looking at the current draft and choosing the next useful review question." }];
+  return (
+    <section className="operator-assistant-panel" aria-label="Operator assistant">
+      <header>
+        <div>
+          <span>Operator assistant</span>
+          <strong>{suggestion?.target_label ?? "Next best question"}</strong>
+        </div>
+        <em>{status}</em>
+      </header>
+      <div className="operator-chat-thread" aria-label="Operator chat transcript">
+        {visibleMessages.slice(-8).map((message, index) => (
+          <article key={`${message.role}-${index}-${message.content.slice(0, 16)}`} data-role={message.role}>
+            <span>{message.role === "assistant" ? "Assistant" : message.role === "user" ? "You" : "Applied"}</span>
+            <p>{message.content}</p>
+            {message.detail ? <small>{message.detail}</small> : null}
+          </article>
+        ))}
+      </div>
+      {suggestion?.rationale ? <small>{suggestion.rationale}</small> : null}
+      {suggestion?.field_update_summary ? <small>{suggestion.field_update_summary}</small> : null}
+      {submitRecommendationStatus(suggestion) ? <small>{submitRecommendationStatus(suggestion)}</small> : null}
+      <TextArea rows={4} value={answer} onChange={onAnswerChange} />
+      <div>
+        <button type="button" onClick={onSend} disabled={!suggestion}>
+          Send & apply
+        </button>
+        {suggestion && onShowField ? (
+          <button type="button" onClick={onShowField}>
+            Show field
+          </button>
+        ) : null}
+        <small>
+          {applyStatus || "Neutral helper only. It does not write as Charles, mutate source files, or approve downstream export."}
+        </small>
+        {messages.length > 0 ? <small aria-label="Draft evidence receipt">Draft evidence saved with this review.</small> : null}
+      </div>
+    </section>
+  );
 }
 
 function LineNumberedTextArea({
@@ -1663,10 +1842,21 @@ function PhotoGroupContextCard({ task }: { task: Task }) {
     : [];
   const retrievalQuery = payloadString(retrievalOrigin.query);
   const retrievalQuality = payloadString(retrievalOrigin.candidate_match_quality);
+  const isBacklogOnlyReviewSeed = retrievalQuality === "backlog_only"
+    || payloadString(retrievalOrigin.selection_reason) === "backlog_sample_no_semantic_match";
+  const queryContextLabel = isBacklogOnlyReviewSeed ? "Review seed" : "Search seed";
+  const displayRetrievalReviewFields = isBacklogOnlyReviewSeed
+    ? retrievalReviewFields.filter((field) => recordString(field, "field_key") !== "retrieval_query_relevance")
+    : retrievalReviewFields;
   const sessionSequence = Number(reviewSessionOrigin.sequence_number || 0);
   const sessionSelectedCount = Number(reviewSessionOrigin.selected_count || 0);
   const sessionCompletionSignal = payloadString(reviewSessionOrigin.completion_signal);
   const sessionPlanHash = payloadString(reviewSessionOrigin.plan_content_sha256);
+  const sessionMatchQuality = payloadString(reviewSessionOrigin.candidate_match_quality, retrievalQuality || "backlog_only");
+  const sessionSelectionReason = payloadString(
+    reviewSessionOrigin.candidate_selection_reason,
+    payloadString(retrievalOrigin.selection_reason, "selected_from_photo_context_review_session_plan")
+  );
   if (!groupKey && variants.length === 0) {
     return null;
   }
@@ -1689,9 +1879,10 @@ function PhotoGroupContextCard({ task }: { task: Task }) {
         {payload.source_photo_inventory === true ? <span>Created from inventory</span> : null}
         {retrievalQuery ? (
           <span>
-            Retrieval gap
+            {queryContextLabel}
             <strong>{retrievalQuery}</strong>
             {retrievalQuality ? <em>{labelFromKey(retrievalQuality)}</em> : null}
+            {isBacklogOnlyReviewSeed ? <small>workflow provenance only</small> : null}
           </span>
         ) : null}
       </div>
@@ -1706,8 +1897,16 @@ function PhotoGroupContextCard({ task }: { task: Task }) {
             </strong>
           </span>
           <span>
-            <em>Query context</em>
+            <em>{queryContextLabel}</em>
             <strong>{payloadString(reviewSessionOrigin.source_query, retrievalQuery || "not set")}</strong>
+          </span>
+          <span>
+            <em>Selection basis</em>
+            <strong>{labelFromKey(sessionMatchQuality)}</strong>
+          </span>
+          <span>
+            <em>Selection reason</em>
+            <strong>{labelFromKey(sessionSelectionReason)}</strong>
           </span>
           {sessionCompletionSignal ? (
             <span>
@@ -1730,10 +1929,10 @@ function PhotoGroupContextCard({ task }: { task: Task }) {
             <strong>No memory claim yet</strong>
             <em>{recordString(retrievalReview, "review_policy", "retrieval_gap_no_claim_until_adam_context")}</em>
           </span>
-          {retrievalReviewFields.length > 0 ? (
+          {displayRetrievalReviewFields.length > 0 ? (
             <small>
-              Answer before retrieval use:{" "}
-              {retrievalReviewFields
+              Review before downstream use:{" "}
+              {displayRetrievalReviewFields
                 .map((field) => recordString(field, "label", recordString(field, "field_key")))
                 .filter(Boolean)
                 .join(", ")}
@@ -1785,6 +1984,9 @@ function PhotoPromptPairSourceCard({
     "Source photo";
   const profileStatus = payloadString(payload.source_profile_status, "unknown");
   const truthStatus = payloadString(payload.source_truth_status, payloadString(payload.truth_status, "unknown"));
+  const variantLabel = payloadString(payload.photo_pair_variant_label);
+  const variantKey = payloadString(payload.photo_pair_variant_key);
+  const generationBatchId = payloadString(payload.photo_pair_generation_batch_id);
   const privacyLevel = typeof boundary.privacy_level === "string" ? boundary.privacy_level : "unreviewed";
   const sftAllowed = boundary.usable_for_sft === true;
   const retrievalOrigin = payload.retrieval_gap_origin && typeof payload.retrieval_gap_origin === "object"
@@ -1802,14 +2004,22 @@ function PhotoPromptPairSourceCard({
         <span>Photo grounding source</span>
         <strong>{title}</strong>
         <div>
+          {variantLabel ? <em>{variantLabel}</em> : null}
+          {generationBatchId ? <em>{generationBatchId}</em> : null}
           <em>{labelFromKey(profileStatus)}</em>
           <em>{labelFromKey(truthStatus)}</em>
           <em>{labelFromKey(privacyLevel)}</em>
           <em data-tone={sftAllowed ? "good" : "warning"}>{sftAllowed ? "SFT allowed" : "SFT held"}</em>
         </div>
+        {variantKey ? (
+          <p className="source-card-note">
+            Generated as the <strong>{variantLabel || labelFromKey(variantKey)}</strong> candidate from this reviewed photo. Keep the best
+            variants, edit them hard, and delete the weak ones.
+          </p>
+        ) : null}
         {retrievalQuery ? (
           <p className="source-card-note">
-            Entered from retrieval gap: <strong>{retrievalQuery}</strong>
+            Review seed: <strong>{retrievalQuery}</strong>
             {retrievalQuality ? ` (${labelFromKey(retrievalQuality)})` : ""}. This is workflow provenance, not a memory claim.
           </p>
         ) : null}
@@ -2258,11 +2468,13 @@ function AssetTriageForm({
 function PhotoMemoryReviewForm({
   task,
   initialDecisions,
-  onChange
+  onChange,
+  onOperatorSubmit
 }: {
   task: Task;
   initialDecisions: Decisions;
   onChange: (value: Decisions) => void;
+  onOperatorSubmit?: (decisionsOverride?: Decisions) => Promise<void>;
 }) {
   const payload = task.input_payload;
   const draft = payload.vision_draft && typeof payload.vision_draft === "object"
@@ -2340,6 +2552,11 @@ function PhotoMemoryReviewForm({
   const [copyReviewPromptStatus, setCopyReviewPromptStatus] = useState("");
   const [adamReviewPasteText, setAdamReviewPasteText] = useState("");
   const [adamReviewPasteStatus, setAdamReviewPasteStatus] = useState("Paste numbered answers from Adam, then apply.");
+  const [operatorSuggestion, setOperatorSuggestion] = useState<OperatorAssistantSuggestion | null>(null);
+  const [operatorStatus, setOperatorStatus] = useState("Assistant loading");
+  const [operatorAnswer, setOperatorAnswer] = useState("");
+  const [operatorApplyStatus, setOperatorApplyStatus] = useState("");
+  const [operatorMessages, setOperatorMessages] = useState<OperatorChatMessage[]>(() => operatorMessagesFromDecisions(initialDecisions));
   const downstreamTruthStatus = reviewedPhotoTruthStatus({
     taskType: task.task_type,
     description,
@@ -2407,7 +2624,8 @@ function PhotoMemoryReviewForm({
       source_genre: payloadString(payload.asset_type, "photo"),
       downstream_search_text_preview: downstreamSearchText,
       truth_status: downstreamTruthStatus,
-      voice_presence: "absent"
+      voice_presence: "absent",
+      operator_assistant_log: operatorMessages
     };
   }, [
     absentPeople,
@@ -2425,6 +2643,7 @@ function PhotoMemoryReviewForm({
     ocrTruthStatus,
     onChange,
     openQuestions,
+    operatorMessages,
     place,
     privacyLevel,
     privacyNotes,
@@ -2444,6 +2663,30 @@ function PhotoMemoryReviewForm({
   useEffect(() => {
     onChange(currentDecisions);
   }, [currentDecisions, onChange]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setOperatorStatus("Finding next best question");
+    const timeout = window.setTimeout(() => {
+      getOperatorAssistantSuggestion(task.id, currentDecisions)
+        .then((suggestion) => {
+          if (!cancelled) {
+            setOperatorSuggestion(suggestion);
+            setOperatorStatus(suggestion.live_model_call_used ? "Model-assisted" : "Deterministic helper");
+          }
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled) {
+            setOperatorSuggestion(null);
+            setOperatorStatus(caught instanceof Error ? `Assistant unavailable: ${caught.message}` : "Assistant unavailable");
+          }
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [currentDecisions, task.id]);
 
   useEffect(() => {
     if (task.task_type !== "photo_context") {
@@ -2483,6 +2726,13 @@ function PhotoMemoryReviewForm({
     ? (payload.retrieval_gap_origin as Record<string, unknown>)
     : {};
   const retrievalQuery = payloadString(retrievalOrigin.query);
+  const retrievalQuality = payloadString(retrievalOrigin.candidate_match_quality);
+  const retrievalSelectionReason = payloadString(retrievalOrigin.selection_reason);
+  const isBacklogOnlyReviewSeed = retrievalQuality === "backlog_only" || retrievalSelectionReason === "backlog_sample_no_semantic_match";
+  const retrievalQueryLabel = isBacklogOnlyReviewSeed ? "Review session seed" : "Search seed";
+  const reviewQuestions = isBacklogOnlyReviewSeed
+    ? questions.filter((question, index) => payloadString(question.id, `question_${index + 1}`) !== "retrieval_query_relevance")
+    : questions;
   const retrievalReview = payload.retrieval_gap_review && typeof payload.retrieval_gap_review === "object"
     ? (payload.retrieval_gap_review as Record<string, unknown>)
     : {};
@@ -2496,14 +2746,23 @@ function PhotoMemoryReviewForm({
     ? projection.field_requirements
         .filter((item) => recordString(item, "status") !== "complete")
         .map((item) => recordString(item, "label", recordString(item, "field_key")))
-    : retrievalReviewFields.map((field) => recordString(field, "label", recordString(field, "field_key"))).filter(Boolean);
+    : retrievalReviewFields
+        .filter((field) => !isBacklogOnlyReviewSeed || recordString(field, "field_key") !== "retrieval_query_relevance")
+        .map((field) => recordString(field, "label", recordString(field, "field_key")))
+        .filter(Boolean);
   const retrievalQueryAnswer = String(questionAnswers.retrieval_query_relevance ?? "").trim();
   const taskPayoffTemplate = retrievalQuery
     ? [
         `Photo memory: ${payloadString(payload.asset_title, payloadString(payload.title, "Untitled photo"))}`,
-        `Retrieval query: ${retrievalQuery}`,
+        `${retrievalQueryLabel}: ${retrievalQuery}`,
         `Visible facts: ${description.trim() || "[requires Adam: reviewed visible facts]"}`,
-        `Query relevance: ${retrievalQueryAnswer || "[requires Adam: connection to retrieval query]"}`,
+        `Memory associations: ${adamContextNote.trim() || invisibleContext.trim() || "[requires Adam: what this photo brings up]"}`,
+        `Search connection: ${
+          retrievalQueryAnswer
+            || (isBacklogOnlyReviewSeed
+              ? "[optional: only answer if this photo truly connects to the review seed]"
+              : "[requires Adam: if this search seed is truly related, explain how; otherwise mark unrelated or uncertain]")
+        }`,
         `Adam context: ${invisibleContext.trim() || adamContextNote.trim() || "[requires Adam: invisible memory context]"}`,
         `Uncertainty: ${openQuestions.trim() || "[requires Adam: explicit uncertainty/open questions]"}`,
         `Boundary: ${privacyLevel || "[requires Adam: boundary and retrieval permission]"}`
@@ -2544,11 +2803,13 @@ function PhotoMemoryReviewForm({
   const promotionHeldCount = Math.max(0, promotionChecklist.length - promotionCompleteCount);
   const sessionRequirementRows = projection?.field_requirements?.length
     ? projection.field_requirements
-    : retrievalReviewFields.map((field) => ({
-        field_key: recordString(field, "field_key"),
-        label: recordString(field, "label", recordString(field, "field_key")),
-        status: "missing"
-      }));
+    : retrievalReviewFields
+        .filter((field) => !isBacklogOnlyReviewSeed || recordString(field, "field_key") !== "retrieval_query_relevance")
+        .map((field) => ({
+          field_key: recordString(field, "field_key"),
+          label: recordString(field, "label", recordString(field, "field_key")),
+          status: "missing"
+        }));
   const sessionRequirementCompleteCount = sessionRequirementRows.filter(
     (item) => recordString(item, "status") === "complete"
   ).length;
@@ -2570,45 +2831,58 @@ function PhotoMemoryReviewForm({
       key: "reviewed_visual_description",
       label: "Reviewed visual description",
       status: description.trim() ? "complete" : "missing",
-      detail: "Visible facts Adam confirms or corrects."
+      detail: "Visible facts Adam confirms or corrects.",
+      unlocks: ["photo_memory_text_record", "gallery/retrieval description"]
     },
-    ...(retrievalQuery
+    ...(retrievalQuery && !isBacklogOnlyReviewSeed
       ? [
           {
             key: "retrieval_query_relevance",
-            label: "Connection to retrieval query",
+            label: "Search connection",
             status: retrievalQueryAnswer ? "complete" : "missing",
-            detail: `Why this photo does or does not answer "${retrievalQuery}".`
+            detail: `If this photo genuinely connects to "${retrievalQuery}", say how. Otherwise mark it unrelated or uncertain.`,
+            unlocks: ["retrieval_search_candidate_for_query", "reviewed-only query provenance"]
           }
         ]
       : []),
     {
       key: "why_it_matters",
-      label: "Why it matters",
+      label: "Memory it brings up",
       status: adamContextNote.trim() ? "complete" : "missing",
-      detail: "Adam-authored memory significance, not model inference."
+      detail: "The memory, story, relationship, or association this photo sparks for Adam.",
+      unlocks: ["Adam-authored memory meaning", "photo memory summary"]
     },
     {
       key: "invisible_context",
       label: "Invisible context",
       status: invisibleContext.trim() ? "complete" : "missing",
-      detail: "People, meaning, or circumstances not visible in the pixels."
+      detail: "People, meaning, or circumstances not visible in the pixels.",
+      unlocks: ["photo_memory_metadata_profile", "context-pack evidence"]
     },
     {
       key: "open_questions",
       label: "Open questions",
       status: openQuestions.trim() ? "complete" : "missing",
-      detail: "Uncertainty to preserve instead of smoothing over."
+      detail: "Uncertainty to preserve instead of smoothing over.",
+      unlocks: ["uncertainty field", "non-invented retrieval record"]
     }
   ];
   const adamFocusCompleteCount = adamFocusItems.filter((item) => item.status === "complete").length;
   const firstIncompleteAdamFocus = adamFocusItems.find((item) => item.status !== "complete");
+  const adamFocusMetricText = (status: string) =>
+    status === "complete" ? "Ready for session metric on submit" : "Blocks session metric until answered";
+  const missingAdamFocusItems = adamFocusItems.filter((item) => item.status !== "complete");
+  const adamAnswerTemplateText = (missingAdamFocusItems.length ? missingAdamFocusItems : adamFocusItems)
+    .map((item, index) => `${index + 1}. ${item.label}:\n`)
+    .join("\n");
   const adamReviewPromptText = [
     `Photo: ${payloadString(payload.asset_title, payloadString(payload.title, "Untitled photo"))}`,
-    retrievalQuery ? `Retrieval query: ${retrievalQuery}` : "Retrieval query: none",
+    retrievalQuery
+      ? `${retrievalQueryLabel}: ${retrievalQuery}${isBacklogOnlyReviewSeed ? " (workflow provenance only; not a question Adam must answer)" : ""}`
+      : "Review session seed: none",
     "",
     "Please answer only from Adam's memory or direct observation. Do not invent or smooth over uncertainty.",
-    "This is a review prompt, not generated memory text.",
+    "This is a review prompt, not generated memory text. Let the photo spark memories; do not force it to match the review seed.",
     "",
     ...adamFocusItems.map((item, index) => `${index + 1}. ${item.label}: ${item.detail}`)
   ].join("\n");
@@ -2748,6 +3022,15 @@ function PhotoMemoryReviewForm({
     }
   }
 
+  function startAdamAnswerTemplate() {
+    setAdamReviewPasteText(adamAnswerTemplateText);
+    setAdamReviewPasteStatus(
+      `Template ready for ${missingAdamFocusItems.length || adamFocusItems.length} Adam field${
+        (missingAdamFocusItems.length || adamFocusItems.length) === 1 ? "" : "s"
+      }. Replace the blank lines with Adam's answers.`
+    );
+  }
+
   function applyAdamReviewAnswers() {
     const matches = Array.from(adamReviewPasteText.matchAll(/(?:^|\n)\s*(\d+)\.\s*([^:\n]+):?\s*/g));
     const answers = new Map<string, string>();
@@ -2799,6 +3082,122 @@ function PhotoMemoryReviewForm({
     );
   }
 
+  function applyPhotoOperatorFieldUpdates(updates: Decisions): string[] {
+    const applied: string[] = [];
+    const setIfPresent = (key: string, setter: (value: string) => void) => {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        const value = updateText(updates[key]);
+        if (value.trim()) {
+          setter(value);
+          applied.push(promptFromDecisionKey(key));
+        }
+      }
+    };
+
+    setIfPresent("visual_description_correction", setDescription);
+    setIfPresent("accepted_visual_description", setDescription);
+    setIfPresent("adam_context_note", setAdamContextNote);
+    setIfPresent("invisible_context_note", setInvisibleContext);
+    setIfPresent("open_questions", setOpenQuestions);
+    setIfPresent("privacy_notes", setPrivacyNotes);
+    setIfPresent("visible_people", setVisiblePeople);
+    setIfPresent("people", setVisiblePeople);
+    setIfPresent("absent_but_relevant_people", setAbsentPeople);
+    setIfPresent("place", setPlace);
+    setIfPresent("places", setPlace);
+    setIfPresent("date_or_range", setDateRange);
+    setIfPresent("date_confidence", setDateConfidence);
+    setIfPresent("event", setEvent);
+    setIfPresent("accepted_tags", setTags);
+    setIfPresent("themes", setTags);
+    setIfPresent("concrete_objects", setObjects);
+    setIfPresent("rejected_system_inferences", setRejectedInferences);
+    setIfPresent("privacy_level", setPrivacyLevel);
+    setIfPresent("ready_for_downstream", setReadyForDownstream);
+    setIfPresent("gallery_eligibility", setGalleryEligibility);
+
+    if (Object.prototype.hasOwnProperty.call(updates, "memory_potential")) {
+      const value = Number(updates.memory_potential);
+      if (Number.isFinite(value)) {
+        setMemoryPotential(value);
+        applied.push(promptFromDecisionKey("memory_potential"));
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, "privacy_sensitivity")) {
+      const value = Number(updates.privacy_sensitivity);
+      if (Number.isFinite(value)) {
+        setPrivacySensitivity(value);
+        applied.push(promptFromDecisionKey("privacy_sensitivity"));
+      }
+    }
+    if (updates.question_answers && typeof updates.question_answers === "object" && !Array.isArray(updates.question_answers)) {
+      setQuestionAnswers((current) => ({
+        ...current,
+        ...Object.fromEntries(Object.entries(updates.question_answers as Record<string, unknown>).map(([key, value]) => [key, updateText(value)]))
+      }));
+      applied.push(promptFromDecisionKey("question_answers"));
+    }
+    return applied;
+  }
+
+  async function applyOperatorAnswer() {
+    const answer = operatorAnswer.trim();
+    if (!answer || !operatorSuggestion) {
+      setOperatorApplyStatus("Write an answer first, then apply it.");
+      return;
+    }
+    setOperatorApplyStatus("Asking operator model to parse this.");
+    let suggestion = operatorSuggestion;
+    try {
+      suggestion = await getOperatorAssistantSuggestion(task.id, currentDecisions, answer);
+      setOperatorSuggestion(suggestion);
+      setOperatorStatus(suggestion.live_model_call_used ? "Model-assisted" : "Deterministic helper");
+    } catch (caught) {
+      setOperatorApplyStatus(caught instanceof Error ? `Assistant parse failed: ${caught.message}` : "Assistant parse failed");
+    }
+    const updates = fieldUpdatesFromSuggestion(suggestion);
+    let appliedFields = applyPhotoOperatorFieldUpdates(updates);
+    if (appliedFields.length === 0) {
+      const target = suggestion.target_decision_key;
+      if (target === "visual_description_correction" || target === "accepted_visual_description") {
+        setDescription(answer);
+      } else if (target === "adam_context_note") {
+        setAdamContextNote(answer);
+      } else if (target === "invisible_context_note") {
+        setInvisibleContext(answer);
+      } else if (target === "open_questions") {
+        setOpenQuestions(answer);
+      } else if (target === "privacy_notes" || target === "session_notes") {
+        setPrivacyNotes(answer);
+      } else if (target === "retrieval_query_relevance") {
+        updateQuestionAnswer("retrieval_query_relevance", answer);
+      } else {
+        setInvisibleContext((current) => [current, answer].filter(Boolean).join("\n\n"));
+      }
+      appliedFields = [suggestion.target_label];
+    }
+    const submitRecommendation = suggestion.submit_recommendation;
+    const appliedMessage = submitRecommendation?.requested
+      ? submitRecommendation.ready
+        ? "Assistant says this is ready and is submitting the ticket."
+        : `Assistant says more review is needed before submit: ${submitRecommendation.missing_fields.map(promptFromDecisionKey).join(", ") || "missing fields"}`
+      : `Applied to ${appliedFields.join(", ")}.`;
+    setOperatorMessages((current) =>
+      [
+        ...current,
+        { role: "assistant" as const, content: operatorSuggestion.next_question, detail: operatorSuggestion.target_label },
+        { role: "user" as const, content: answer },
+        { role: "system" as const, content: appliedMessage }
+      ].slice(-8)
+    );
+    setOperatorApplyStatus(appliedMessage);
+    setOperatorAnswer("");
+    window.setTimeout(() => focusPhotoContextField(suggestion.target_decision_key), 100);
+    if (submitRecommendation?.requested && submitRecommendation.ready && onOperatorSubmit) {
+      await onOperatorSubmit({ ...currentDecisions, ...updates });
+    }
+  }
+
   function holdForLater() {
     setReadyForDownstream("later");
     setGalleryEligibility("none");
@@ -2812,9 +3211,20 @@ function PhotoMemoryReviewForm({
 
   return (
     <div className="form-grid source-question-grid photo-memory-grid">
-      <FormHint title="Photo memory review">
-        Describe what is visible separately from what Adam knows. This creates searchable photo metadata, memory links, gallery eligibility, and embedding inputs without treating system guesses as source truth.
-      </FormHint>
+      <ReviewAccordionPanel title="Photo memory review" detail="Visible facts, Adam memory, boundaries, and downstream handoff">
+        <FormHint title="Photo memory review">
+          Describe what is visible separately from what Adam knows. This creates searchable photo metadata, memory links, gallery eligibility, and embedding inputs without treating system guesses as source truth.
+        </FormHint>
+        <OperatorAssistantPanel
+          suggestion={operatorSuggestion}
+          status={operatorStatus}
+          messages={operatorMessages}
+          answer={operatorAnswer}
+          applyStatus={operatorApplyStatus}
+          onAnswerChange={setOperatorAnswer}
+          onSend={() => void applyOperatorAnswer()}
+          onShowField={operatorSuggestion ? () => focusPhotoContextField(operatorSuggestion.target_decision_key) : undefined}
+        />
       {task.task_type === "photo_context" ? (
         <section className="photo-context-completion-payoff" aria-label="Photo context completion payoff">
           <header>
@@ -2837,7 +3247,7 @@ function PhotoMemoryReviewForm({
               </strong>
             </span>
             <span data-tone={retrievalQuery ? "warning" : "neutral"}>
-              <em>Retrieval query</em>
+              <em>{retrievalQueryLabel}</em>
               <strong>{retrievalQuery || "No retrieval gap"}</strong>
             </span>
             <span data-tone={Object.keys(reviewSessionOrigin).length ? "warning" : "neutral"}>
@@ -2864,6 +3274,8 @@ function PhotoMemoryReviewForm({
                 <em>{item.status === "complete" ? "Complete" : "Needs Adam"}</em>
                 <strong>{item.label}</strong>
                 <small>{item.detail}</small>
+                <small className="photo-context-unlock-note">Unlocks: {item.unlocks.join(", ")}</small>
+                <small className="photo-context-metric-note">{adamFocusMetricText(item.status)}</small>
               </button>
             ))}
           </div>
@@ -2961,7 +3373,7 @@ function PhotoMemoryReviewForm({
       >
         <input value={openQuestions} onChange={(event) => setOpenQuestions(event.target.value)} />
       </Field>
-      <Field label="Why does Adam think it matters?" focusKey="why_it_matters">
+      <Field label="Memory this photo brings up" hint="Write the story, relationship, or association the image evokes." focusKey="why_it_matters">
         <TextArea rows={4} value={adamContextNote} onChange={setAdamContextNote} />
       </Field>
       <Field label="Invisible context" hint="What a viewer could not know from the pixels alone." focusKey="invisible_context">
@@ -2969,8 +3381,12 @@ function PhotoMemoryReviewForm({
       </Field>
       {retrievalQuery ? (
         <Field
-          label="Connection to retrieval query"
-          hint={`Why this photo should or should not answer "${retrievalQuery}".`}
+          label={isBacklogOnlyReviewSeed ? "Optional search connection" : "Search connection"}
+          hint={
+            isBacklogOnlyReviewSeed
+              ? `This review was opened from the "${retrievalQuery}" search seed. Treat that as workflow provenance only; write the memory the photo sparks above, and leave this blank unless the connection is genuinely useful.`
+              : `This search seed only explains why the photo was surfaced. If the photo genuinely connects, write how in Adam's words; otherwise say it is unrelated or uncertain.`
+          }
           focusKey="retrieval_query_relevance"
         >
           <TextArea rows={3} value={retrievalQueryAnswer} onChange={(value) => updateQuestionAnswer("retrieval_query_relevance", value)} />
@@ -3051,7 +3467,7 @@ function PhotoMemoryReviewForm({
               <button type="button" onClick={applySessionSafeDefaults}>
                 Apply session-safe defaults
               </button>
-              <small>Sets boundary/downstream controls only; Adam description, meaning, and query answers stay untouched.</small>
+              <small>Sets boundary/downstream controls only; Adam description, meaning, and optional search notes stay untouched.</small>
             </div>
           </section>
         ) : null}
@@ -3064,7 +3480,7 @@ function PhotoMemoryReviewForm({
             </div>
             <div className="photo-memory-consequence-grid">
               <span data-tone="warning">
-                <em>Query</em>
+                <em>{retrievalQueryLabel}</em>
                 <strong>{retrievalQuery}</strong>
               </span>
               <span data-tone={projectionVectorStatus === "eligible_reviewed_record" ? "good" : "warning"}>
@@ -3096,12 +3512,12 @@ function PhotoMemoryReviewForm({
           Preview only. Submit stores the reviewed annotation and keeps boundary/truth status separate from model or archival claims.
         </small>
       </section>
-      {questions.length > 0 ? (
+      {reviewQuestions.length > 0 ? (
         <div className="dynamic-question-stack">
           <FormHint title="Questions for Adam">
             These answers are stored as Adam-provided context, separate from system inference.
           </FormHint>
-          {questions.map((question, index) => {
+          {reviewQuestions.map((question, index) => {
             const id = payloadString(question.id, `question_${index + 1}`);
             return (
               <Field
@@ -3131,9 +3547,30 @@ function PhotoMemoryReviewForm({
               <em>{item.status === "complete" ? "Complete" : "Needs Adam"}</em>
               <strong>{item.label}</strong>
               <small>{item.detail}</small>
+              <small className="photo-context-unlock-note">Unlocks: {item.unlocks.join(", ")}</small>
+              <small className="photo-context-metric-note">{adamFocusMetricText(item.status)}</small>
             </span>
           ))}
         </div>
+        <section className="ready-submit-checklist" aria-label="Current photo ready-to-submit checklist">
+          <header>
+            <span>Ready-to-submit checklist</span>
+            <strong>{missingAdamFocusItems.length ? `${missingAdamFocusItems.length} Adam field(s) still blocking` : "Adam fields ready"}</strong>
+          </header>
+          <ol>
+            {adamFocusItems.map((item) => (
+              <li key={`submit-${item.key}`} data-status={item.status}>
+                <span>{item.status === "complete" ? "Complete" : "Blocks submit"}</span>
+                <strong>{item.label}</strong>
+                <em>{item.unlocks.join(", ")}</em>
+              </li>
+            ))}
+          </ol>
+          <small>
+            Vector handoff: {labelFromKey(projectionVectorStatus || "backend_projection_pending")} / Submit:{" "}
+            {submitOutcomePreview.label}
+          </small>
+        </section>
         <div className="copy-review-prompt" aria-label="Copy Adam review prompt">
           <button type="button" onClick={() => void copyAdamReviewPrompt()}>
             Copy review prompt
@@ -3149,6 +3586,9 @@ function PhotoMemoryReviewForm({
             <TextArea rows={5} value={adamReviewPasteText} onChange={setAdamReviewPasteText} />
           </Field>
           <div>
+            <button type="button" onClick={startAdamAnswerTemplate}>
+              Start answer template
+            </button>
             <button type="button" onClick={applyAdamReviewAnswers}>
               Apply Adam answers
             </button>
@@ -3227,6 +3667,7 @@ function PhotoMemoryReviewForm({
           <TextArea rows={6} value={correctedOcrText} onChange={setCorrectedOcrText} />
         </Field>
       ) : null}
+      </ReviewAccordionPanel>
     </div>
   );
 }
@@ -3287,38 +3728,40 @@ function PhotoContextForm({
 
   return (
     <div className="form-grid">
-      <FormHint title="Photo context">
-        Add the who, where, when, and the invisible context that a stranger would miss from the image alone.
-      </FormHint>
-      <Field label="Who is visible?">
-        <input value={visiblePeople} onChange={(event) => setVisiblePeople(event.target.value)} />
-      </Field>
-      <Field label="Who matters but is not visible?">
-        <input value={absentPeople} onChange={(event) => setAbsentPeople(event.target.value)} />
-      </Field>
-      <Field label="Where is this?">
-        <input value={place} onChange={(event) => setPlace(event.target.value)} />
-      </Field>
-      <Field label="When is it from?">
-        <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
-      </Field>
-      <Field label="How sure is the date?">
-        <Select value={dateConfidence} onChange={setDateConfidence} options={["exact", "year", "decade", "unknown"]} />
-      </Field>
-      <Field label="What event or moment is this?">
-        <input value={event} onChange={(event) => setEvent(event.target.value)} />
-      </Field>
-      <Field label="What should the visual description say?">
-        <TextArea value={description} onChange={setDescription} />
-      </Field>
-      <Field label="What context is not visible?">
-        <TextArea rows={5} value={invisibleContext} onChange={setInvisibleContext} />
-      </Field>
-      <Rating label="Memory potential" value={memoryPotential} onChange={setMemoryPotential} />
-      <Rating label="Privacy sensitivity" value={privacySensitivity} onChange={setPrivacySensitivity} />
-      <Field label="Gallery eligibility">
-        <Select value={galleryEligibility} onChange={setGalleryEligibility} options={["none", "family_private", "public_candidate"]} />
-      </Field>
+      <ReviewAccordionPanel title="Photo context" detail="People, place, time, and invisible context">
+        <FormHint title="Photo context">
+          Add the who, where, when, and the invisible context that a stranger would miss from the image alone.
+        </FormHint>
+        <Field label="Who is visible?">
+          <input value={visiblePeople} onChange={(event) => setVisiblePeople(event.target.value)} />
+        </Field>
+        <Field label="Who matters but is not visible?">
+          <input value={absentPeople} onChange={(event) => setAbsentPeople(event.target.value)} />
+        </Field>
+        <Field label="Where is this?">
+          <input value={place} onChange={(event) => setPlace(event.target.value)} />
+        </Field>
+        <Field label="When is it from?">
+          <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
+        </Field>
+        <Field label="How sure is the date?">
+          <Select value={dateConfidence} onChange={setDateConfidence} options={["exact", "year", "decade", "unknown"]} />
+        </Field>
+        <Field label="What event or moment is this?">
+          <input value={event} onChange={(event) => setEvent(event.target.value)} />
+        </Field>
+        <Field label="What should the visual description say?">
+          <TextArea value={description} onChange={setDescription} />
+        </Field>
+        <Field label="What context is not visible?">
+          <TextArea rows={5} value={invisibleContext} onChange={setInvisibleContext} />
+        </Field>
+        <Rating label="Memory potential" value={memoryPotential} onChange={setMemoryPotential} />
+        <Rating label="Privacy sensitivity" value={privacySensitivity} onChange={setPrivacySensitivity} />
+        <Field label="Gallery eligibility">
+          <Select value={galleryEligibility} onChange={setGalleryEligibility} options={["none", "family_private", "public_candidate"]} />
+        </Field>
+      </ReviewAccordionPanel>
     </div>
   );
 }
@@ -3434,9 +3877,10 @@ function VisionDraftReviewForm({
 
   return (
     <div className="form-grid source-question-grid">
-      <FormHint title="Vision draft">
-        Treat this as machine help, not truth. Accept what is useful, correct what is wrong, answer the follow-up questions, and set privacy before downstream use.
-      </FormHint>
+      <ReviewAccordionPanel title="Vision draft" detail="Machine scaffold review and Adam corrections">
+        <FormHint title="Vision draft">
+          Treat this as machine help, not truth. Accept what is useful, correct what is wrong, answer the follow-up questions, and set privacy before downstream use.
+        </FormHint>
       <Field label="Is the vision draft accurate?" hint="No live model call has been made for scaffold drafts; use not applicable until a real draft exists.">
         <Select
           value={visionAccuracy}
@@ -3526,6 +3970,7 @@ function VisionDraftReviewForm({
       <Field label="Why is this privacy/use decision right?">
         <TextArea rows={4} value={privacyNotes} onChange={setPrivacyNotes} />
       </Field>
+      </ReviewAccordionPanel>
     </div>
   );
 }
@@ -4501,12 +4946,14 @@ function GoldVoiceEditForm({
   task,
   initialDecisions,
   assets,
-  onChange
+  onChange,
+  onOperatorSubmit
 }: {
   task: Task;
   assets: Asset[];
   initialDecisions: Decisions;
   onChange: (value: Decisions) => void;
+  onOperatorSubmit?: (decisionsOverride?: Decisions) => Promise<void>;
 }) {
   const payload = task.input_payload;
   const initialRatings =
@@ -4561,6 +5008,14 @@ function GoldVoiceEditForm({
   const [serverExportGateStatus, setServerExportGateStatus] = useState<"pending" | "ready" | "error">("pending");
   const [dpoRepairProjection, setDpoRepairProjection] = useState<DpoRejectedReasonRepairProjection | null>(null);
   const [dpoRepairProjectionStatus, setDpoRepairProjectionStatus] = useState<"idle" | "pending" | "ready" | "error">("idle");
+  const [operatorSuggestion, setOperatorSuggestion] = useState<OperatorAssistantSuggestion | null>(null);
+  const [operatorStatus, setOperatorStatus] = useState("Assistant loading");
+  const [operatorAnswer, setOperatorAnswer] = useState("");
+  const [operatorApplyStatus, setOperatorApplyStatus] = useState("");
+  const [operatorMessages, setOperatorMessages] = useState<OperatorChatMessage[]>(() => operatorMessagesFromDecisions(initialDecisions));
+  const [operatorCandidateTriageIntent, setOperatorCandidateTriageIntent] = useState(
+    decisionString(initialDecisions, "operator_candidate_triage_intent")
+  );
   const [sftYamlDraft, setSftYamlDraft] = useState(() =>
     buildPairYaml({
       artifactMode: "sft",
@@ -4675,6 +5130,28 @@ function GoldVoiceEditForm({
       voiceMode
     ]
   );
+  const operatorAssistantDecisions = useMemo<Record<string, unknown>>(
+    () => ({
+      ...preflightPayload,
+      editor_mode: editorMode,
+      response_rubric: artifactMode === "dpo" ? responseRubric : { response_b: responseBRubric },
+      export_flags: effectiveExportFlags,
+      candidate_requires_adam_gold_edit: payload.candidate_requires_adam_gold_edit,
+      photo_pair_variant_key: payload.photo_pair_variant_key,
+      photo_pair_variant_label: payload.photo_pair_variant_label
+    }),
+    [
+      artifactMode,
+      editorMode,
+      effectiveExportFlags,
+      payload.candidate_requires_adam_gold_edit,
+      payload.photo_pair_variant_key,
+      payload.photo_pair_variant_label,
+      preflightPayload,
+      responseBRubric,
+      responseRubric
+    ]
+  );
   const promptPairExportReady = serverExportGate?.export_ready ?? false;
   const promptPairGateBlockers =
     serverExportGate?.blockers ??
@@ -4695,14 +5172,38 @@ function GoldVoiceEditForm({
     label: labelFromKey(blocker),
     action: promptPairBlockerAction(blocker)
   }));
+  const sourceBoundaryBlockedUses = useMemo(() => {
+    const blockedUses: string[] = [];
+    if (sourcePhotoId && boundarySnapshot.usable_for_sft === false) {
+      blockedUses.push("sft");
+    }
+    if (sourcePhotoId && boundarySnapshot.usable_for_dpo === false) {
+      blockedUses.push("dpo");
+    }
+    if (boundarySnapshot.redaction_required === true) {
+      blockedUses.push("redaction_required");
+    }
+    const privacyLevel = String(boundarySnapshot.privacy_level ?? "");
+    if (["sealed", "private_sensitive", "sensitive_living_people"].includes(privacyLevel)) {
+      blockedUses.push(`privacy_level=${privacyLevel}`);
+    }
+    return uniqueValues(blockedUses);
+  }, [boundarySnapshot, sourcePhotoId]);
+  const sourceBoundaryFocusVisible =
+    promptPairGateBlockers.includes("source_boundary_blocks_training") &&
+    (sourcePhotoId || Object.keys(boundarySnapshot).length > 0);
   const needsDpoRejectedReason =
     artifactMode === "dpo" && (failureModes.length === 0 || promptPairGateBlockers.includes("dpo_rejected_reason_empty"));
+  const dpoRepairInputPatch =
+    dpoRepairProjection?.input_patch && typeof dpoRepairProjection.input_patch === "object"
+      ? dpoRepairProjection.input_patch
+      : {};
   const dpoRepairInputPatchModes =
-    dpoRepairProjection && Array.isArray(dpoRepairProjection.input_patch.failure_modes)
-      ? dpoRepairProjection.input_patch.failure_modes.map(String).filter(Boolean)
+    Array.isArray(dpoRepairInputPatch.failure_modes)
+      ? dpoRepairInputPatch.failure_modes.map(String).filter(Boolean)
       : [];
   const dpoRepairSuggestedFailureModes =
-    dpoRepairInputPatchModes.length > 0 ? dpoRepairInputPatchModes : dpoRepairProjection?.after.failure_modes ?? [];
+    dpoRepairInputPatchModes.length > 0 ? dpoRepairInputPatchModes : dpoRepairProjection?.after?.failure_modes ?? [];
   const dpoRepairSuggestedFailureMode = dpoRepairSuggestedFailureModes[0] ?? "";
   const displayExportPreviewYaml = serverExportGate?.yaml_preview || exportPreviewYaml;
   const submitReceiptPreview =
@@ -4767,6 +5268,30 @@ function GoldVoiceEditForm({
       window.clearTimeout(timeout);
     };
   }, [preflightPayload]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setOperatorStatus("Finding next best question");
+    const timeout = window.setTimeout(() => {
+      getOperatorAssistantSuggestion(task.id, operatorAssistantDecisions)
+        .then((suggestion) => {
+          if (!cancelled) {
+            setOperatorSuggestion(suggestion);
+            setOperatorStatus(suggestion.live_model_call_used ? "Model-assisted" : "Deterministic helper");
+          }
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled) {
+            setOperatorSuggestion(null);
+            setOperatorStatus(caught instanceof Error ? `Assistant unavailable: ${caught.message}` : "Assistant unavailable");
+          }
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [operatorAssistantDecisions, task.id]);
 
   useEffect(() => {
     if (artifactMode !== "dpo" || !needsDpoRejectedReason) {
@@ -4835,6 +5360,8 @@ function GoldVoiceEditForm({
       ratings: rubricRatings,
       failure_modes: failureModes,
       preferred_failure_modes: preferredFailureModes,
+      operator_assistant_log: operatorMessages,
+      operator_candidate_triage_intent: operatorCandidateTriageIntent,
       ...(serverExportGate
         ? {
             export_gate_preview: {
@@ -4848,7 +5375,7 @@ function GoldVoiceEditForm({
       export_flags: effectiveExportFlags,
       export_preview_yaml: displayExportPreviewYaml
     });
-  }, [artifactMode, chosen, content, context, displayExportPreviewYaml, editorMode, effectiveExportFlags, effectiveTruthStatus, failureModes, groundingAssetId, onChange, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, preferredFailureModes, prompt, rejected, responseBRubric, responseRubric, rubricRatings, rubricSummary, serverExportGate, synthetic, systemPrompt, voiceMode]);
+  }, [artifactMode, chosen, content, context, displayExportPreviewYaml, editorMode, effectiveExportFlags, effectiveTruthStatus, failureModes, groundingAssetId, onChange, operatorCandidateTriageIntent, operatorMessages, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, preferredFailureModes, prompt, rejected, responseBRubric, responseRubric, rubricRatings, rubricSummary, serverExportGate, synthetic, systemPrompt, voiceMode]);
 
   function updateRubricDecision(responseKey: keyof ResponseRubricState, key: GoldRubricKey, decision: RubricDecision) {
     setResponseRubric((current) => ({
@@ -4911,14 +5438,125 @@ function GoldVoiceEditForm({
   function applyDpoRejectedReasonScaffold() {
     const currentDecision = responseRubric.response_a.voice_authenticity;
     const suggestedFailureMode = dpoRepairSuggestedFailureMode || "too_generic_not_charles_voice";
+    const suggestedIssue = dpoRepairProjection?.suggested_rejected_issue;
+    const suggestedIssueTag = suggestedIssue?.issue_tag || suggestedFailureMode;
     updateRubricDecision("response_a", "voice_authenticity", {
       ...currentDecision,
       status: "minor_issues",
       notes:
         currentDecision.notes.trim() ||
+        suggestedIssue?.note ||
         `Rejected response needs Adam's concrete note for ${labelFromKey(suggestedFailureMode)}: explain why it is less Charles-like than Chosen. Replace this scaffold with the actual failure.`,
-      issue_tags: uniqueValues([...currentDecision.issue_tags, "not_charles_voice", suggestedFailureMode])
+      issue_tags: uniqueValues([...currentDecision.issue_tags, "not_charles_voice", suggestedFailureMode, suggestedIssueTag])
     });
+  }
+
+  function applyPromptPairOperatorFieldUpdates(updates: Decisions): string[] {
+    const applied: string[] = [];
+    const setIfPresent = (key: string, setter: (value: string) => void) => {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        const value = updateText(updates[key]);
+        if (value.trim()) {
+          setter(value);
+          applied.push(promptFromDecisionKey(key));
+        }
+      }
+    };
+
+    setIfPresent("prompt", setPrompt);
+    setIfPresent("content", (value) => {
+      setContent(value);
+      if (artifactMode !== "dpo") {
+        setChosen(value);
+      }
+    });
+    setIfPresent("chosen", setChosen);
+    setIfPresent("rejected", setRejected);
+    setIfPresent("context", (value) => setContext((current) => [current, value].filter(Boolean).join("\n\n")));
+    setIfPresent("system_prompt", setSystemPrompt);
+    setIfPresent("voice_mode", setVoiceMode);
+    setIfPresent("truth_status", () => undefined);
+    setIfPresent("truth_mode", () => undefined);
+    setIfPresent("grounding_asset_id", setGroundingAssetId);
+    setIfPresent("operator_candidate_triage_intent", setOperatorCandidateTriageIntent);
+
+    if (updates.artifact_mode === "sft" || updates.artifact_mode === "dpo") {
+      setArtifactMode(updates.artifact_mode);
+      applied.push(promptFromDecisionKey("artifact_mode"));
+    }
+    if (updates.editor_mode === "plain" || updates.editor_mode === "yaml") {
+      setEditorMode(updates.editor_mode);
+      applied.push(promptFromDecisionKey("editor_mode"));
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, "synthetic")) {
+      setSynthetic(updateBooleanYesNo(updates.synthetic));
+      applied.push(promptFromDecisionKey("synthetic"));
+    }
+    return applied;
+  }
+
+  async function applyPromptPairOperatorAnswer() {
+    const answer = operatorAnswer.trim();
+    if (!answer || !operatorSuggestion) {
+      setOperatorApplyStatus("Write an answer first, then apply it.");
+      return;
+    }
+    setOperatorApplyStatus("Asking operator model to parse this.");
+    let suggestion = operatorSuggestion;
+    try {
+      suggestion = await getOperatorAssistantSuggestion(task.id, operatorAssistantDecisions, answer);
+      setOperatorSuggestion(suggestion);
+      setOperatorStatus(suggestion.live_model_call_used ? "Model-assisted" : "Deterministic helper");
+    } catch (caught) {
+      setOperatorApplyStatus(caught instanceof Error ? `Assistant parse failed: ${caught.message}` : "Assistant parse failed");
+    }
+    const updates = fieldUpdatesFromSuggestion(suggestion);
+    let appliedFields = applyPromptPairOperatorFieldUpdates(updates);
+    const target = suggestion.target_decision_key;
+    const deleteIntent = /\b(delete|remove|reject|discard|not worth keeping|do not keep)\b/i.test(answer);
+    if (appliedFields.length === 0) {
+      if (target === "prompt") {
+        setPrompt(answer);
+      } else if (target === "content") {
+        setContent(answer);
+        if (artifactMode !== "dpo") {
+          setChosen(answer);
+        }
+      } else if (target === "chosen") {
+        setChosen(answer);
+      } else if (target === "rejected") {
+        setRejected(answer);
+      } else if (target === "system_prompt") {
+        setSystemPrompt(answer);
+      } else {
+        setContext((current) => [current, answer].filter(Boolean).join("\n\n"));
+      }
+      appliedFields = [suggestion.target_label];
+    }
+    if (deleteIntent) {
+      setOperatorCandidateTriageIntent("delete_candidate");
+    }
+    const submitRecommendation = suggestion.submit_recommendation;
+    const appliedMessage = submitRecommendation?.requested
+      ? submitRecommendation.ready
+        ? "Assistant says this is ready and is submitting the ticket."
+        : `Assistant says more review is needed before submit: ${submitRecommendation.missing_fields.map(promptFromDecisionKey).join(", ") || "missing fields"}`
+      : deleteIntent
+      ? "Delete intent noted. Use Delete candidate to remove this ticket from the active review queue while preserving the audit record."
+      : `Applied to ${appliedFields.join(", ")}.`;
+    setOperatorMessages((current) =>
+      [
+        ...current,
+        { role: "assistant" as const, content: operatorSuggestion.next_question, detail: operatorSuggestion.target_label },
+        { role: "user" as const, content: answer },
+        { role: "system" as const, content: appliedMessage }
+      ].slice(-8)
+    );
+    setOperatorApplyStatus(appliedMessage);
+    setOperatorAnswer("");
+    if (submitRecommendation?.requested && submitRecommendation.ready && onOperatorSubmit) {
+      await onOperatorSubmit({ ...operatorAssistantDecisions, ...updates });
+    }
   }
 
   return (
@@ -4927,6 +5565,15 @@ function GoldVoiceEditForm({
         Edit one prompt-pair artifact at a time. The preview below is the exact YAML that Submit will create.
       </FormHint>
       <PhotoPromptPairSourceCard task={task} asset={assets.find((candidate) => candidate.id === (payloadString(payload.source_photo_id) || groundingAssetId))} />
+      <OperatorAssistantPanel
+        suggestion={operatorSuggestion}
+        status={operatorStatus}
+        messages={operatorMessages}
+        answer={operatorAnswer}
+        applyStatus={operatorApplyStatus}
+        onAnswerChange={setOperatorAnswer}
+        onSend={() => void applyPromptPairOperatorAnswer()}
+      />
       {sourceExcerpt ? (
         <section className="prompt-pair-source-card">
           <div>
@@ -5015,6 +5662,52 @@ function GoldVoiceEditForm({
           <TextArea value={context} onChange={setContext} rows={5} />
         </Field>
       </div>
+      {sourceBoundaryFocusVisible ? (
+        <section className="source-boundary-training-focus" aria-label="Source boundary training focus aid">
+          <header>
+            <div>
+              <span>Source boundary</span>
+              <strong>Source boundary blocks training</strong>
+            </div>
+            <em>Pair Submit is non-mutating</em>
+          </header>
+          <p>
+            This prompt pair stays candidate material until Adam decides whether the source asset can train SFT/DPO. Submit here saves
+            review progress only; it does not mutate the imported source, source boundary, or approved training export.
+          </p>
+          <div className="source-boundary-grid" aria-label="Source boundary permission snapshot">
+            <span>
+              <em>Source photo</em>
+              <strong>{sourcePhotoId || "Not linked"}</strong>
+            </span>
+            <span>
+              <em>Privacy</em>
+              <strong>{formatMetadataValue(boundarySnapshot.privacy_level, "Unknown")}</strong>
+            </span>
+            <span>
+              <em>Usable for SFT</em>
+              <strong>{formatMetadataValue(boundarySnapshot.usable_for_sft, "Unknown")}</strong>
+            </span>
+            <span>
+              <em>Usable for DPO</em>
+              <strong>{formatMetadataValue(boundarySnapshot.usable_for_dpo, "Unknown")}</strong>
+            </span>
+            <span>
+              <em>Reviewed by</em>
+              <strong>{formatMetadataValue(boundarySnapshot.reviewed_by, "Unreviewed")}</strong>
+            </span>
+            <span>
+              <em>Blocked uses</em>
+              <strong>{sourceBoundaryBlockedUses.map(labelFromKey).join(", ") || "None projected"}</strong>
+            </span>
+          </div>
+          <ul>
+            <li>Keep this prompt pair as review-only context if the source should not train the model.</li>
+            <li>If Adam clears the source for training, update the source boundary first, then return to this pair.</li>
+            <li>Voice-context, eval, SFT, and DPO permissions remain separate boundary decisions.</li>
+          </ul>
+        </section>
+      ) : null}
       {artifactMode === "sft" ? (
         <>
           {editorMode === "yaml" ? (
@@ -5087,6 +5780,7 @@ function GoldVoiceEditForm({
                       {dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers"}.
                       {dpoRepairProjection.target_blocker_cleared ? " Rejected-reason blocker clears." : " Rejected-reason blocker remains."}
                     </p>
+                    {dpoRepairProjection.suggested_rejected_issue?.note ? <p>{dpoRepairProjection.suggested_rejected_issue.note}</p> : null}
                     <small>
                       Non-mutating projection. Adam gold review still required. Hash {dpoRepairProjection.content_sha256.slice(0, 16)}.
                     </small>
@@ -5094,6 +5788,30 @@ function GoldVoiceEditForm({
                       <summary>YAML delta preview</summary>
                       <pre>{dpoRepairProjection.yaml_diff_preview}</pre>
                     </details>
+                    <div className="dpo-repair-outcome-preview" aria-label="DPO repair session outcome preview">
+                      <span>Session outcome preview</span>
+                      <dl>
+                        <div>
+                          <dt>Would clear</dt>
+                          <dd>{dpoRepairProjection.cleared_blockers.map(labelFromKey).join(", ") || "No blockers projected to clear"}</dd>
+                        </div>
+                        <div>
+                          <dt>Still remains</dt>
+                          <dd>{dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers projected"}</dd>
+                        </div>
+                        <div>
+                          <dt>Projected status</dt>
+                          <dd>{labelFromKey(dpoRepairProjection.after.export_status)}</dd>
+                        </div>
+                        <div>
+                          <dt>Dataset outcome</dt>
+                          <dd>{dpoRepairProjection.after.dataset_outcome}</dd>
+                        </div>
+                      </dl>
+                      <p>
+                        Submit would save this as review-candidate material only. No approved DPO row is created until Adam completes gold review.
+                      </p>
+                    </div>
                   </>
                 ) : (
                   <strong>No matching backend repair projection for this ticket yet</strong>
@@ -5282,6 +6000,7 @@ export function TaskWorkbench({
   onSubmit,
   onSkip,
   onFlag,
+  onDeleteCandidate,
   onPrevious,
   onNext
 }: TaskWorkbenchProps) {
@@ -5443,14 +6162,36 @@ export function TaskWorkbench({
     };
   }, [autosaveDecisions, draftLoaded, task]);
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
+  async function submitCurrentTask(decisionsOverride?: Decisions) {
     setBusy(true);
     try {
       const submitDecisions = isGeneratePairsTask(task)
-        ? { ...autosaveDecisions, generate_pairs_on_submit: "yes" }
-        : autosaveDecisions;
+        ? { ...(decisionsOverride ?? autosaveDecisions), generate_pairs_on_submit: "yes" }
+        : decisionsOverride ?? autosaveDecisions;
       await onSubmit(submitDecisions, notes);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    await submitCurrentTask();
+  }
+
+  async function handleDeleteCandidate() {
+    if (!onDeleteCandidate) {
+      return;
+    }
+    const confirmed = window.confirm(
+      "Delete this prompt-pair candidate from the active review queue? An audit record will be kept."
+    );
+    if (!confirmed) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onDeleteCandidate("Rejected from Prompt Pairs editor");
     } finally {
       setBusy(false);
     }
@@ -5539,7 +6280,14 @@ export function TaskWorkbench({
         return <AssetTriageForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "photo_context":
       case "vision_draft_review":
-        return <PhotoMemoryReviewForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
+        return (
+          <PhotoMemoryReviewForm
+            task={task}
+            initialDecisions={draftDecisions}
+            onChange={handleDecisionChange}
+            onOperatorSubmit={submitCurrentTask}
+          />
+        );
       case "text_segment_review":
         return <TextSegmentReviewForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "text_segment_boundary_review":
@@ -5551,7 +6299,15 @@ export function TaskWorkbench({
       case "grounded_prompt_pair_candidate":
         return <GroundedPromptPairCandidateForm task={task} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
       case "gold_voice_edit":
-        return <GoldVoiceEditForm task={task} assets={assets} initialDecisions={draftDecisions} onChange={handleDecisionChange} />;
+        return (
+          <GoldVoiceEditForm
+            task={task}
+            assets={assets}
+            initialDecisions={draftDecisions}
+            onChange={handleDecisionChange}
+            onOperatorSubmit={submitCurrentTask}
+          />
+        );
       default:
         return (
           <Field label="Decision payload">
@@ -5861,6 +6617,18 @@ export function TaskWorkbench({
           <Flag size={16} />
           Flag
         </button>
+        {isPromptPairCandidateTask(task) && onDeleteCandidate ? (
+          <button
+            className="danger-action"
+            type="button"
+            onClick={() => void handleDeleteCandidate()}
+            disabled={busy}
+            {...tooltip("Built: reject/delete this prompt-pair candidate from the active queue while preserving an audit annotation.")}
+          >
+            <Trash2 size={16} />
+            Delete candidate
+          </button>
+        ) : null}
         <span {...tooltip("Planned: duplicate or fork this task/review into a related task.")}>
           <button type="button" disabled>
             <Copy size={16} />

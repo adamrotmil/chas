@@ -241,18 +241,18 @@ def _field_requirements(
     ]
     raw_profile = profile.raw_profile if isinstance(profile.raw_profile, dict) else {}
     retrieval_origin = raw_profile.get("retrieval_gap_origin") if isinstance(raw_profile.get("retrieval_gap_origin"), dict) else {}
-    if retrieval_origin:
+    if retrieval_origin and retrieval_origin.get("candidate_match_quality") != "backlog_only":
         question_answers = decisions.get("question_answers") if isinstance(decisions.get("question_answers"), dict) else {}
         query_answer = _string(question_answers.get("retrieval_query_relevance"))
         requirements.insert(
             1,
             {
                 "field_key": "retrieval_query_relevance",
-                "label": "Retrieval query relevance",
+                "label": "Search seed connection",
                 "status": "complete" if query_answer else "missing",
                 "required_for_submit": False,
                 "reason": (
-                    f"Query '{retrieval_origin.get('query')}' is workflow provenance only; Adam's answer is what can make it retrieval context."
+                    f"Search seed '{retrieval_origin.get('query')}' is workflow provenance only; Adam's answer is what can make it retrieval context when the photo is actually relevant."
                 ),
             },
         )

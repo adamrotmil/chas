@@ -9,7 +9,7 @@ from app.db.session import get_session
 from app.main import app
 from app.config import Settings, get_settings
 from app.models import Asset, Generation, PromptSpec, Task
-from app.services.pair_export import compile_pair_export
+from app.services.pair_export import compile_pair_export, preflight_pair_export_gate
 from app.services.prompt_pair_reference_pack import select_prompt_pair_reference_examples
 from app.services.prompt_pair_voice_modes import classify_prompt_pair_voice_mode
 from app.services.prompt_pairs import create_prompt_pair_review_task
@@ -174,11 +174,14 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
         "photo_context_session_progress_json",
         "photo_context_retrieval_gap_field_worklist_yaml",
         "photo_context_retrieval_gap_payoff_preview_yaml",
+        "photo_review_priority_yaml",
         "photo_vector_handoff_jsonl",
         "photo_vector_handoff_manifest",
         "morning_handoff_yaml",
         "dpo_rejected_reason_repair_yaml",
+        "source_boundary_training_review_yaml",
         "source_review_pair_generation_preview_json",
+        "demo_generation_request_preview_yaml",
     }
     assert required_keys.issubset(set(items))
     for item in manifest["items"]:
@@ -255,6 +258,8 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
     )
     assert items["photo_context_retrieval_gap_field_worklist_yaml"]["policy"]["does_not_create_memory_claim"] is True
     assert items["photo_context_retrieval_gap_field_worklist_yaml"]["policy"]["requires_adam_context"] is True
+    assert items["photo_context_retrieval_gap_field_worklist_yaml"]["policy"]["has_field_guidance"] is True
+    assert items["photo_context_retrieval_gap_field_worklist_yaml"]["policy"]["field_guidance_count"] >= 1
     assert items["photo_context_retrieval_gap_payoff_preview_yaml"]["artifact_family"] == "photo_context_review"
     assert items["photo_context_retrieval_gap_payoff_preview_yaml"]["format"] == "yaml"
     assert items["photo_context_retrieval_gap_payoff_preview_yaml"]["download_endpoint"].startswith(
@@ -262,6 +267,28 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
     )
     assert items["photo_context_retrieval_gap_payoff_preview_yaml"]["policy"]["does_not_create_memory_claim"] is True
     assert items["photo_context_retrieval_gap_payoff_preview_yaml"]["policy"]["uses_placeholders_for_missing_adam_context"] is True
+    assert items["photo_review_priority_yaml"]["artifact_family"] == "photo_context_review"
+    assert items["photo_review_priority_yaml"]["format"] == "yaml"
+    assert items["photo_review_priority_yaml"]["source_endpoint"] == "/api/assets/photo-review-priority?focus=fastest_vector&limit=10"
+    assert items["photo_review_priority_yaml"]["download_endpoint"] == (
+        "/api/assets/photo-review-priority/yaml?focus=fastest_vector&limit=10"
+    )
+    assert items["photo_review_priority_yaml"]["eligibility"]["training"] is False
+    assert items["photo_review_priority_yaml"]["policy"]["throughput_policy"] == (
+        "rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff"
+    )
+    assert items["photo_review_priority_yaml"]["policy"]["does_not_mutate_state"] is True
+    assert items["photo_review_priority_yaml"]["policy"]["does_not_create_memory_claim"] is True
+    assert items["photo_review_priority_yaml"]["policy"]["no_live_embedding_call"] is True
+    assert items["photo_review_priority_yaml"]["policy"]["completion_signal"] == (
+        "open_top_photo_task_and_reduce_missing_adam_fields_or_submit_ready_count_increases"
+    )
+    assert items["photo_review_priority_yaml"]["policy"]["ranking_inputs"] == {
+        "primary": "path_rank",
+        "secondary": "missing_adam_field_count",
+        "tertiary": "downstream_payoff_score",
+    }
+    assert len(items["photo_review_priority_yaml"]["policy"]["priority_content_sha256"]) == 64
     assert items["photo_vector_handoff_jsonl"]["eligibility"]["vector"] is True
     assert items["photo_vector_handoff_jsonl"]["policy"]["ordinary_db_vector_storage"] is False
     assert items["morning_handoff_yaml"]["artifact_family"] == "operator_handoff"
@@ -274,12 +301,39 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
     assert items["dpo_rejected_reason_repair_yaml"]["download_endpoint"].startswith("/api/prompt-pairs/dpo-rejected-reason-repair-pack/yaml")
     assert items["dpo_rejected_reason_repair_yaml"]["policy"]["blocker"] == "dpo_rejected_reason_empty"
     assert items["dpo_rejected_reason_repair_yaml"]["policy"]["repair_packet"] is True
+    assert items["source_boundary_training_review_yaml"]["artifact_family"] == "prompt_pair_repair"
+    assert items["source_boundary_training_review_yaml"]["format"] == "yaml"
+    assert items["source_boundary_training_review_yaml"]["download_endpoint"].startswith(
+        "/api/prompt-pairs/source-boundary-training-review-pack/yaml"
+    )
+    assert items["source_boundary_training_review_yaml"]["eligibility"]["training"] is False
+    assert items["source_boundary_training_review_yaml"]["policy"]["blocker"] == "source_boundary_blocks_training"
+    assert items["source_boundary_training_review_yaml"]["policy"]["does_not_mutate_source"] is True
+    assert items["source_boundary_training_review_yaml"]["policy"]["requires_adam_boundary_review"] is True
+    assert items["source_boundary_training_review_yaml"]["policy"]["repair_packet"] is True
     assert items["source_review_pair_generation_preview_json"]["artifact_family"] == "source_review_preview"
     assert items["source_review_pair_generation_preview_json"]["format"] == "json"
     assert items["source_review_pair_generation_preview_json"]["source_endpoint"].startswith("/api/tasks/")
     assert items["source_review_pair_generation_preview_json"]["policy"]["does_not_mutate_state"] is True
     assert items["source_review_pair_generation_preview_json"]["policy"]["no_live_model_call"] is True
     assert items["source_review_pair_generation_preview_json"]["policy"]["submit_creates_candidate_prompt_pair_tasks"] is True
+    assert items["demo_generation_request_preview_yaml"]["artifact_family"] == "model_generation_preview"
+    assert items["demo_generation_request_preview_yaml"]["format"] == "yaml"
+    assert items["demo_generation_request_preview_yaml"]["source_endpoint"] == (
+        "/api/model-status/demo-generation-request-preview?limit=5"
+    )
+    assert items["demo_generation_request_preview_yaml"]["download_endpoint"] == (
+        "/api/model-status/demo-generation-request-preview/yaml?limit=5"
+    )
+    assert items["demo_generation_request_preview_yaml"]["eligibility"]["training"] is False
+    assert items["demo_generation_request_preview_yaml"]["policy"]["does_not_mutate_state"] is True
+    assert items["demo_generation_request_preview_yaml"]["policy"]["no_live_model_call"] is True
+    assert items["demo_generation_request_preview_yaml"]["policy"]["no_generation_created"] is True
+    assert items["demo_generation_request_preview_yaml"]["policy"]["does_not_promote_to_training_export"] is True
+    assert items["demo_generation_request_preview_yaml"]["policy"]["model_name"] == "gpt-5.5"
+    assert items["demo_generation_request_preview_yaml"]["policy"]["reasoning_effort"] == "xhigh"
+    assert items["demo_generation_request_preview_yaml"]["policy"]["store"] is False
+    assert len(items["demo_generation_request_preview_yaml"]["policy"]["preview_content_sha256"]) == 64
 
     contract = client.get("/api/runtime-contract").json()
     assert "/api/downstream-readiness/artifact-manifest" in contract["required_response_fields"]
@@ -301,7 +355,7 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
     assert audit["no_live_model_call"] is True
     assert audit["no_live_embedding_call"] is True
     assert audit["no_fine_tuning_api_calls_in_mvp"] is True
-    assert audit["checked_count"] == 20
+    assert audit["checked_count"] == 23
     assert audit["mismatch_count"] == 0
     assert audit["all_hashes_match"] is True
     assert len(audit["manifest_content_sha256"]) == 64
@@ -328,8 +382,15 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
     assert checked["morning_handoff_yaml"]["format"] == "yaml"
     assert checked["dpo_rejected_reason_repair_yaml"]["hash_matches"] is True
     assert checked["dpo_rejected_reason_repair_yaml"]["format"] == "yaml"
+    assert checked["source_boundary_training_review_yaml"]["hash_matches"] is True
+    assert checked["source_boundary_training_review_yaml"]["format"] == "yaml"
+    assert checked["source_boundary_training_review_yaml"]["policy"]["does_not_mutate_source"] is True
     assert checked["source_review_pair_generation_preview_json"]["hash_matches"] is True
     assert checked["source_review_pair_generation_preview_json"]["format"] == "json"
+    assert checked["demo_generation_request_preview_yaml"]["hash_matches"] is True
+    assert checked["demo_generation_request_preview_yaml"]["format"] == "yaml"
+    assert checked["demo_generation_request_preview_yaml"]["policy"]["no_live_model_call"] is True
+    assert checked["demo_generation_request_preview_yaml"]["policy"]["no_generation_created"] is True
     assert checked["photo_context_review_session_plan_yaml"]["hash_matches"] is True
     assert checked["photo_context_review_session_plan_yaml"]["format"] == "yaml"
     assert checked["photo_context_session_progress_json"]["hash_matches"] is True
@@ -341,6 +402,13 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
     assert checked["photo_context_retrieval_gap_field_worklist_yaml"]["format"] == "yaml"
     assert checked["photo_context_retrieval_gap_payoff_preview_yaml"]["hash_matches"] is True
     assert checked["photo_context_retrieval_gap_payoff_preview_yaml"]["format"] == "yaml"
+    assert checked["photo_review_priority_yaml"]["hash_matches"] is True
+    assert checked["photo_review_priority_yaml"]["format"] == "yaml"
+    assert checked["photo_review_priority_yaml"]["policy"]["throughput_policy"] == (
+        "rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff"
+    )
+    assert checked["photo_review_priority_yaml"]["policy"]["does_not_create_memory_claim"] is True
+    assert checked["photo_review_priority_yaml"]["policy"]["no_live_embedding_call"] is True
     for check in audit["checks"]:
         assert len(check["declared_sha256"]) == 64
         assert check["declared_sha256"] == check["recomputed_sha256"]
@@ -364,9 +432,30 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
     assert "blocker: \"dpo_rejected_reason_empty\"" in repair_yaml.text
     assert hashlib.sha256(repair_yaml.text.encode("utf-8")).hexdigest() == checked["dpo_rejected_reason_repair_yaml"]["recomputed_sha256"]
 
+    source_boundary_yaml = client.get("/api/prompt-pairs/source-boundary-training-review-pack/yaml", params={"limit": 25})
+    assert source_boundary_yaml.status_code == 200
+    assert source_boundary_yaml.headers["content-type"].startswith("text/yaml")
+    assert source_boundary_yaml.text.startswith("source_boundary_training_review_packet:")
+    assert "blocker: \"source_boundary_blocks_training\"" in source_boundary_yaml.text
+    assert (
+        hashlib.sha256(source_boundary_yaml.text.encode("utf-8")).hexdigest()
+        == checked["source_boundary_training_review_yaml"]["recomputed_sha256"]
+    )
+
+    demo_preview_yaml = client.get("/api/model-status/demo-generation-request-preview/yaml", params={"limit": 5})
+    assert demo_preview_yaml.status_code == 200
+    assert demo_preview_yaml.headers["content-type"].startswith("text/yaml")
+    assert demo_preview_yaml.text.startswith("demo_generation_request_preview:")
+    if checked["demo_generation_request_preview_yaml"]["policy"]["request_count"]:
+        assert "request_body_json: |-" in demo_preview_yaml.text
+    assert (
+        hashlib.sha256(demo_preview_yaml.text.encode("utf-8")).hexdigest()
+        == checked["demo_generation_request_preview_yaml"]["recomputed_sha256"]
+    )
+
     photo_session_yaml = client.get(
         "/api/assets/photo-context-review-pack/review-session-plan/yaml",
-        params={"scope": "family_private", "limit": 5, "source_query": "airplane in Maine"},
+        params={"scope": "family_private", "limit": 5, "source_query": "Old Orchard beach"},
     )
     assert photo_session_yaml.status_code == 200
     assert photo_session_yaml.headers["content-type"].startswith("text/yaml")
@@ -409,6 +498,19 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
         == checked["photo_context_retrieval_gap_payoff_preview_yaml"]["recomputed_sha256"]
     )
 
+    photo_priority_yaml = client.get(
+        "/api/assets/photo-review-priority/yaml",
+        params={"focus": "fastest_vector", "limit": 10},
+    )
+    assert photo_priority_yaml.status_code == 200
+    assert photo_priority_yaml.headers["content-type"].startswith("text/yaml")
+    assert photo_priority_yaml.text.startswith("photo_review_priority:")
+    assert "throughput_policy: rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff" in photo_priority_yaml.text
+    assert (
+        hashlib.sha256(photo_priority_yaml.text.encode("utf-8")).hexdigest()
+        == checked["photo_review_priority_yaml"]["recomputed_sha256"]
+    )
+
     contract = client.get("/api/runtime-contract").json()
     assert "/api/downstream-readiness/artifact-audit" in contract["required_response_fields"]
 
@@ -446,8 +548,8 @@ def test_downstream_morning_handoff_summarizes_live_bottlenecks_and_artifacts():
             Asset(
                 human_id="ASSET_HANDOFF_PHOTO",
                 asset_type="photo",
-                title="Rotmil airplane in Maine",
-                original_filename="rotmil-airplane-maine.jpg",
+                title="Rotmil Old Orchard beach",
+                original_filename="rotmil-old-orchard-beach.jpg",
                 mime_type="image/jpeg",
                 processing_status="image_preview_ready",
             )
@@ -492,10 +594,10 @@ def test_downstream_morning_handoff_summarizes_live_bottlenecks_and_artifacts():
     assert checklist[1]["area_key"] == "photo_context"
     assert checklist[1]["completion_signal"] == "needs_context_group_count_decreases_or_review_task_becomes_submit_ready"
     assert "no_claim" in checklist[1]["safety_boundary"]
-    assert checklist[1]["retrieval_gap_query"] == "airplane in Maine"
+    assert checklist[1]["retrieval_gap_query"] == "Old Orchard beach"
     assert checklist[1]["retrieval_gap_candidate_count"] >= 1
     assert len(checklist[1]["retrieval_gap_slice_hash"]) == 64
-    assert "Rotmil airplane in Maine" in checklist[1]["retrieval_gap_preview_titles"][0]
+    assert "Rotmil Old Orchard beach" in checklist[1]["retrieval_gap_preview_titles"][0]
     assert checklist[-1]["area_key"] == "demo_generation"
     assert checklist[-1]["status"] == "blocked"
     assert "No fine-tuning API calls" in checklist[-1]["safety_boundary"]
@@ -503,13 +605,13 @@ def test_downstream_morning_handoff_summarizes_live_bottlenecks_and_artifacts():
     retrieval_gap_work = handoff["retrieval_gap_work"]
     assert retrieval_gap_work["slice_type"] == "retrieval_gap_review_slice"
     assert retrieval_gap_work["review_policy"] == "retrieval_gap_no_claim_until_adam_context"
-    assert retrieval_gap_work["query"] == "airplane in Maine"
+    assert retrieval_gap_work["query"] == "Old Orchard beach"
     assert retrieval_gap_work["gap_open"] is True
     assert retrieval_gap_work["truth_status"] == "no_claim"
     assert retrieval_gap_work["candidate_count"] >= 1
     assert retrieval_gap_work["reported_candidate_count"] >= 1
     assert retrieval_gap_work["items"][0]["not_memory_claim"] is True
-    assert retrieval_gap_work["items"][0]["action"]["request"]["body"]["source_query"] == "airplane in Maine"
+    assert retrieval_gap_work["items"][0]["action"]["request"]["body"]["source_query"] == "Old Orchard beach"
 
     artifact_summary = handoff["artifact_summary"]
     assert artifact_summary["artifact_count"] >= 10
@@ -534,7 +636,7 @@ def test_downstream_morning_handoff_summarizes_live_bottlenecks_and_artifacts():
     assert "model_generated" in markdown
     assert "no_claim" in markdown
     assert "## Retrieval Gap Work" in markdown
-    assert "airplane in Maine" in markdown
+    assert "Old Orchard beach" in markdown
     assert any(link["endpoint"].startswith("/api/downstream-readiness/artifact-manifest") for link in handoff["downstream_links"])
     assert any(link["endpoint"].startswith("/api/retrieval/gap-review-slice") for link in handoff["downstream_links"])
 
@@ -672,18 +774,32 @@ def test_prompt_pair_top_blocker_slice_exposes_reviewable_yaml_previews():
     assert len(repair_pack["export_preview_sha256"]) == 64
     assert repair_pack["export_preview_yaml"].startswith("dpo_rejected_reason_repair_packet:")
     assert "current_failure_modes: []" in repair_pack["export_preview_yaml"]
+    assert "suggested_failure_modes:" in repair_pack["export_preview_yaml"]
+    assert "suggested_rejected_issue:" in repair_pack["export_preview_yaml"]
     assert "backend_blockers:" in repair_pack["export_preview_yaml"]
+    assert "projected_after_export_status: \"candidate\"" in repair_pack["export_preview_yaml"]
+    assert "projected_after_dataset_outcome: \"Candidate dry-run only\"" in repair_pack["export_preview_yaml"]
+    assert "projected_after_blockers:" in repair_pack["export_preview_yaml"]
+    assert "- \"needs_adam_gold_edit\"" in repair_pack["export_preview_yaml"]
     repair_item = repair_pack["items"][0]
     assert repair_item["task_human_id"] == "TASK_BLOCKER_SLICE_001"
     assert repair_item["prompt"] == "How was the soup 1?"
     assert "soup was thin" in repair_item["chosen_preview"]
     assert "dpo_rejected_reason_empty" in repair_item["backend_preflight"]["blockers"]
     assert repair_item["repair_fields"] == ["failure_modes", "response_rubric.response_a", "rubric_summary.rejected_issue_count"]
+    assert repair_item["suggested_failure_modes"][0] == "rejected_response_missing"
+    assert repair_item["suggested_rejected_issue"]["severity"] == "minor_issues"
+    assert repair_item["suggested_rejected_issue"]["rubric_target"] == "response_a"
+    assert repair_item["suggested_rejected_issue"]["issue_tag"] == "rejected_response_missing"
+    assert "Rejected is empty" in repair_item["suggested_rejected_issue"]["note"]
     assert repair_item["repair_projection"]["does_not_mutate_task"] is True
-    assert repair_item["repair_projection"]["input_patch"] == {"failure_modes": ["too_generic_not_charles_voice"]}
+    assert repair_item["repair_projection"]["input_patch"]["failure_modes"][0] == "rejected_response_missing"
     assert "dpo_rejected_reason_empty" in repair_item["repair_projection"]["before_blockers"]
     assert "dpo_rejected_reason_empty" not in repair_item["repair_projection"]["after_blockers"]
+    assert "needs_adam_gold_edit" in repair_item["repair_projection"]["after_blockers"]
     assert repair_item["repair_projection"]["target_blocker_cleared"] is True
+    assert repair_item["repair_projection"]["after_export_status"] == "candidate"
+    assert repair_item["repair_projection"]["after_dataset_outcome"] == "Candidate dry-run only"
     assert repair_item["repair_projection"]["still_requires_adam_gold_edit"] is True
     assert repair_item["completion_criteria"][0].startswith("`failure_modes` contains")
     assert repair_item["action"]["label"] == "Open DPO repair candidate"
@@ -700,19 +816,324 @@ def test_prompt_pair_top_blocker_slice_exposes_reviewable_yaml_previews():
     assert projection["does_not_promote_to_training_export"] is True
     assert projection["requires_adam_gold_edit"] is True
     assert projection["task_human_id"] == "TASK_BLOCKER_SLICE_001"
-    assert projection["input_patch"] == {"failure_modes": ["too_generic_not_charles_voice"]}
+    assert projection["input_patch"]["failure_modes"][0] == "rejected_response_missing"
+    assert projection["suggested_rejected_issue"]["issue_tag"] == "rejected_response_missing"
     assert projection["before"]["failure_modes"] == []
     assert "dpo_rejected_reason_empty" in projection["before"]["blockers"]
     assert "dpo_rejected_reason_empty" not in projection["after"]["blockers"]
+    assert "needs_adam_gold_edit" in projection["after"]["blockers"]
+    assert projection["after"]["export_status"] == "candidate"
+    assert projection["after"]["dataset_outcome"] == "Candidate dry-run only"
     assert projection["target_blocker_cleared"] is True
     assert projection["still_requires_adam_gold_edit"] is True
     assert projection["export_preview_changed"] is False
     assert projection["yaml_diff_preview"].startswith("--- before_dpo_repair.yaml")
-    assert "+    - \"too_generic_not_charles_voice\"" in projection["yaml_diff_preview"]
+    assert "+    - \"rejected_response_missing\"" in projection["yaml_diff_preview"]
     assert len(projection["content_sha256"]) == 64
 
     contract = client.get("/api/runtime-contract").json()
     assert "/api/prompt-pairs/dpo-rejected-reason-repair-projection" in contract["required_response_fields"]
+    assert (
+        "suggested_rejected_issue"
+        in contract["required_response_fields"]["/api/prompt-pairs/dpo-rejected-reason-repair-projection"]
+    )
+
+
+def test_prompt_pair_source_boundary_blockers_explain_training_permission_decision():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        decisions = {
+            "artifact_mode": "sft",
+            "system_prompt": "You are Charles Rotmil.",
+            "prompt": "Dad, what do you remember about the Japanese flute?",
+            "content": "flute on the table...\nbooks everywhere\nsame old apartment\n\nlove\ndad",
+            "voice_mode": "photography_reflection",
+            "truth_status": "adam_memory",
+            "synthetic": True,
+            "source_photo_id": "photo_japanese_flute",
+            "boundary_snapshot": {
+                "target_type": "asset",
+                "target_id": "photo_japanese_flute",
+                "privacy_level": "family_private",
+                "retrievable_in_chat": True,
+                "usable_for_voice_context": True,
+                "usable_for_eval": True,
+                "usable_for_sft": False,
+                "usable_for_dpo": False,
+                "reviewed_by": "system_draft",
+            },
+        }
+        compiled = compile_pair_export(decisions)
+        session.add(
+            Task(
+                human_id="TASK_SOURCE_BOUNDARY_BLOCK_001",
+                task_type="gold_voice_edit",
+                target_type="prompt_pair",
+                target_id="source_boundary_block_001",
+                queue="prompt_pairs_needing_gold_edits",
+                input_payload={**decisions, "pair_index": "photo-001", "export_preview_yaml": compiled["yaml_preview"]},
+                created_by="test",
+            )
+        )
+        session.commit()
+
+    pack_response = client.get("/api/prompt-pairs/held-candidates", params={"limit": 5})
+    assert pack_response.status_code == 200
+    pack = pack_response.json()
+    assert pack["blocker_counts"] == {"source_boundary_blocks_training": 1}
+    worklist = pack["worklists"][0]
+    assert worklist["blocker"] == "source_boundary_blocks_training"
+    preview = worklist["candidate_previews"][0]
+    summary = preview["source_boundary_summary"]
+    assert summary["status"] == "source_boundary_blocks_training"
+    assert summary["source_photo_id"] == "photo_japanese_flute"
+    assert summary["privacy_level"] == "family_private"
+    assert summary["usable_for_sft"] is False
+    assert summary["usable_for_dpo"] is False
+    assert summary["usable_for_eval"] is True
+    assert summary["blocked_training_uses"] == ["sft", "dpo"]
+    assert summary["does_not_mutate_source"] is True
+    assert "Keep this prompt pair as review-only context" in summary["remediation_options"][0]
+
+    slice_response = client.get("/api/prompt-pairs/top-blocker-slice", params={"limit": 1})
+    assert slice_response.status_code == 200
+    blocker_slice = slice_response.json()
+    assert blocker_slice["blocker"] == "source_boundary_blocks_training"
+    assert blocker_slice["items"][0]["source_boundary_summary"]["blocked_training_uses"] == ["sft", "dpo"]
+
+    plan_response = client.get("/api/prompt-pairs/top-blocker-review-session-plan", params={"limit": 1})
+    assert plan_response.status_code == 200
+    plan = plan_response.json()
+    assert plan["blocker"] == "source_boundary_blocks_training"
+    assert plan["field_plan"][0]["field"] == "source_boundary"
+    assert plan["items"][0]["source_boundary_summary"]["status"] == "source_boundary_blocks_training"
+    assert "source_boundary_summary:" in plan["export_preview_yaml"]
+    assert "blocked_training_uses:" in plan["export_preview_yaml"]
+
+    packet_response = client.get("/api/prompt-pairs/source-boundary-training-review-pack", params={"limit": 5})
+    assert packet_response.status_code == 200
+    packet = packet_response.json()
+    assert packet["packet_type"] == "source_boundary_training_review_packet"
+    assert packet["review_policy"] == "review_source_boundary_training_permission_no_source_mutation"
+    assert packet["does_not_mutate_task"] is True
+    assert packet["does_not_mutate_source"] is True
+    assert packet["does_not_promote_to_training_export"] is True
+    assert packet["requires_adam_boundary_review"] is True
+    assert packet["requires_adam_gold_edit"] is True
+    assert packet["blocker"] == "source_boundary_blocks_training"
+    assert packet["total_candidate_count"] == 1
+    assert packet["reported_candidate_count"] == 1
+    assert len(packet["content_sha256"]) == 64
+    packet_item = packet["items"][0]
+    assert packet_item["task_human_id"] == "TASK_SOURCE_BOUNDARY_BLOCK_001"
+    assert packet_item["blocking_permission_field"] == "usable_for_sft"
+    assert packet_item["blocking_permission_value"] is False
+    assert packet_item["source_boundary_summary"]["blocked_training_uses"] == ["sft", "dpo"]
+    assert packet_item["backend_preflight"]["export_status"] == "candidate"
+    assert packet_item["action"]["action_type"] == "open_held_prompt_pair_candidate"
+    assert "source_boundary_training_review_packet:" in packet["export_preview_yaml"]
+    assert "does not change source asset permissions" in packet["export_preview_yaml"]
+
+    packet_yaml_response = client.get("/api/prompt-pairs/source-boundary-training-review-pack/yaml", params={"limit": 5})
+    assert packet_yaml_response.status_code == 200
+    assert packet_yaml_response.headers["content-type"].startswith("text/yaml")
+    assert packet_yaml_response.text == packet["export_preview_yaml"]
+    assert "TASK_SOURCE_BOUNDARY_BLOCK_001" in packet_yaml_response.text
+
+    contract = client.get("/api/runtime-contract").json()
+    assert "/api/prompt-pairs/source-boundary-training-review-pack" in contract["required_response_fields"]
+    assert (
+        "does_not_mutate_source"
+        in contract["required_response_fields"]["/api/prompt-pairs/source-boundary-training-review-pack"]
+    )
+
+
+def test_prompt_pair_source_boundary_preflight_respects_artifact_mode_permissions():
+    base = {
+        "system_prompt": "You are Charles Rotmil.",
+        "prompt": "Dad, what do you remember about the photo?",
+        "content": "light on the table...\nthat was the whole thing\n\ndad",
+        "chosen": "light on the table...\nthat was the whole thing\n\ndad",
+        "rejected": "The image has light on a table.",
+        "failure_modes": ["rejected_too_generic_not_charles_voice"],
+        "voice_mode": "photography_reflection",
+        "truth_status": "adam_expert_reconstruction",
+        "synthetic": True,
+        "source_photo_id": "photo_mode_specific_boundary",
+        "rubric_summary": {"sft_ready": True},
+    }
+
+    dpo_allowed = preflight_pair_export_gate(
+        {
+            **base,
+            "artifact_mode": "dpo",
+            "boundary_snapshot": {
+                "usable_for_sft": False,
+                "usable_for_dpo": True,
+                "privacy_level": "family_private",
+            },
+        }
+    )
+    assert "source_boundary_blocks_training" not in dpo_allowed["blockers"]
+    assert dpo_allowed["export_status"] == "approved"
+
+    dpo_blocked = preflight_pair_export_gate(
+        {
+            **base,
+            "artifact_mode": "dpo",
+            "boundary_snapshot": {
+                "usable_for_sft": True,
+                "usable_for_dpo": False,
+                "privacy_level": "family_private",
+            },
+        }
+    )
+    assert "source_boundary_blocks_training" in dpo_blocked["blockers"]
+    assert dpo_blocked["export_status"] == "candidate"
+
+    sft_allowed = preflight_pair_export_gate(
+        {
+            **base,
+            "artifact_mode": "sft",
+            "boundary_snapshot": {
+                "usable_for_sft": True,
+                "usable_for_dpo": False,
+                "privacy_level": "family_private",
+            },
+        }
+    )
+    assert "source_boundary_blocks_training" not in sft_allowed["blockers"]
+    assert sft_allowed["export_status"] == "approved"
+
+    sft_blocked = preflight_pair_export_gate(
+        {
+            **base,
+            "artifact_mode": "sft",
+            "boundary_snapshot": {
+                "usable_for_sft": False,
+                "usable_for_dpo": True,
+                "privacy_level": "family_private",
+            },
+        }
+    )
+    assert "source_boundary_blocks_training" in sft_blocked["blockers"]
+    assert sft_blocked["export_status"] == "candidate"
+
+
+def test_prompt_pair_blocker_slice_can_target_non_top_source_boundary_worklist():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        for index in range(1, 4):
+            dpo_decisions = {
+                "artifact_mode": "dpo",
+                "system_prompt": "You are Charles Rotmil.",
+                "prompt": f"How was the soup {index}?",
+                "chosen": "thin soup...\nnot much there\n\ndad",
+                "rejected": "",
+                "voice_mode": "mundane_text_message",
+                "truth_status": "model_generated",
+                "synthetic": True,
+            }
+            dpo_compiled = compile_pair_export(dpo_decisions)
+            session.add(
+                Task(
+                    human_id=f"TASK_DPO_TOP_BLOCKER_{index:03d}",
+                    task_type="gold_voice_edit",
+                    target_type="prompt_pair",
+                    target_id=f"dpo_top_blocker_{index}",
+                    queue="prompt_pairs_needing_gold_edits",
+                    input_payload={
+                        **dpo_decisions,
+                        "pair_index": index,
+                        "export_preview_yaml": dpo_compiled["yaml_preview"],
+                    },
+                    created_by="test",
+                )
+            )
+
+        photo_decisions = {
+            "artifact_mode": "sft",
+            "system_prompt": "You are Charles Rotmil.",
+            "prompt": "Dad, what do you remember about the honors photo?",
+            "content": "microphone there...\nblack and white\nsame old story\n\nlove\ndad",
+            "voice_mode": "photography_reflection",
+            "truth_status": "adam_memory",
+            "synthetic": True,
+            "source_photo_id": "photo_honors_blocker",
+            "boundary_snapshot": {
+                "target_type": "asset",
+                "target_id": "photo_honors_blocker",
+                "privacy_level": "family_private",
+                "retrievable_in_chat": True,
+                "usable_for_voice_context": True,
+                "usable_for_eval": True,
+                "usable_for_sft": False,
+                "usable_for_dpo": False,
+                "reviewed_by": "system_draft",
+            },
+        }
+        photo_compiled = compile_pair_export(photo_decisions)
+        session.add(
+            Task(
+                human_id="TASK_SOURCE_BOUNDARY_TARGETED_001",
+                task_type="gold_voice_edit",
+                target_type="prompt_pair",
+                target_id="source_boundary_targeted_001",
+                queue="prompt_pairs_needing_gold_edits",
+                input_payload={
+                    **photo_decisions,
+                    "pair_index": "photo-targeted-001",
+                    "export_preview_yaml": photo_compiled["yaml_preview"],
+                },
+                created_by="test",
+            )
+        )
+        session.commit()
+
+    default_response = client.get("/api/prompt-pairs/top-blocker-slice", params={"limit": 2})
+    assert default_response.status_code == 200
+    default_slice = default_response.json()
+    assert default_slice["selection_policy"] == "largest_backend_blocker_first"
+    assert default_slice["blocker"] in {"dpo_rejected_empty", "dpo_rejected_reason_empty"}
+    assert default_slice["candidate_count"] == 3
+
+    targeted_response = client.get(
+        "/api/prompt-pairs/top-blocker-slice",
+        params={"limit": 2, "blocker": "source_boundary_blocks_training"},
+    )
+    assert targeted_response.status_code == 200
+    targeted_slice = targeted_response.json()
+    assert targeted_slice["selection_policy"] == "requested_backend_blocker_exact_match"
+    assert targeted_slice["requested_blocker"] == "source_boundary_blocks_training"
+    assert targeted_slice["blocker"] == "source_boundary_blocks_training"
+    assert targeted_slice["candidate_count"] == 1
+    assert targeted_slice["reported_candidate_count"] == 1
+    assert targeted_slice["items"][0]["task_human_id"] == "TASK_SOURCE_BOUNDARY_TARGETED_001"
+    assert targeted_slice["items"][0]["source_boundary_summary"]["blocked_training_uses"] == ["sft", "dpo"]
+
+    targeted_plan_response = client.get(
+        "/api/prompt-pairs/top-blocker-review-session-plan",
+        params={"limit": 2, "blocker": "source_boundary_blocks_training"},
+    )
+    assert targeted_plan_response.status_code == 200
+    targeted_plan = targeted_plan_response.json()
+    assert targeted_plan["selection_policy"] == "requested_backend_blocker_exact_match"
+    assert targeted_plan["requested_blocker"] == "source_boundary_blocks_training"
+    assert targeted_plan["blocker"] == "source_boundary_blocks_training"
+    assert targeted_plan["selected_count"] == 1
+    assert targeted_plan["field_plan"][0]["field"] == "source_boundary"
+    assert "requested_blocker: \"source_boundary_blocks_training\"" in targeted_plan["export_preview_yaml"]
+
+    yaml_response = client.get(
+        "/api/prompt-pairs/top-blocker-review-session-plan/yaml",
+        params={"limit": 2, "blocker": "source_boundary_blocks_training"},
+    )
+    assert yaml_response.status_code == 200
+    assert yaml_response.headers["content-type"].startswith("text/yaml")
+    assert "TASK_SOURCE_BOUNDARY_TARGETED_001" in yaml_response.text
+    assert "source_boundary_summary:" in yaml_response.text
 
 
 def test_runtime_contract_includes_source_review_pair_generation_preview_fields():

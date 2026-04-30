@@ -31,6 +31,7 @@ class TaskSubmit(SQLModel):
     annotation_type: Optional[str] = None
     decisions: Dict[str, Any] = {}
     notes: Optional[str] = None
+    operator_answer: Optional[str] = None
 
 
 class TaskStatusUpdate(SQLModel):

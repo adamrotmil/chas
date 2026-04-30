@@ -125,6 +125,25 @@ def sft_export_blockers(system_prompt: str, prompt: str, content: str) -> List[s
     return blockers
 
 
+def _resolved_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"yes", "true", "1", "resolved", "complete", "ok"}
+    return False
+
+
+def source_section_export_blockers(decisions: Dict[str, Any]) -> List[str]:
+    hint = _string(decisions.get("source_section_review_hint")).strip().lower()
+    if hint not in {"needs_split", "needs_context"}:
+        return []
+    if hint == "needs_context" and _resolved_flag(
+        decisions.get("source_section_context_resolved") or decisions.get("source_section_review_resolved")
+    ):
+        return []
+    return [f"source_section_{hint}"]
+
+
 def dpo_export_blockers(prompt: str, chosen: str, rejected: str, failure_modes: List[str]) -> List[str]:
     blockers: List[str] = []
     normalized_prompt = prompt.strip()
@@ -160,7 +179,11 @@ def preflight_pair_export_gate(decisions: Dict[str, Any]) -> Dict[str, Any]:
     rubric_summary = _rubric_summary(decisions)
     boundary_snapshot = decisions.get("boundary_snapshot")
     boundary_snapshot = boundary_snapshot if isinstance(boundary_snapshot, dict) else {}
-    boundary_sft_blocked = bool(decisions.get("source_photo_id")) and boundary_snapshot.get("usable_for_sft") is False
+    has_source_photo = bool(decisions.get("source_photo_id"))
+    boundary_training_blocked = has_source_photo and (
+        (mode == "sft" and boundary_snapshot.get("usable_for_sft") is False)
+        or (mode == "dpo" and boundary_snapshot.get("usable_for_dpo") is False)
+    )
     preferred_export_blocked = bool(rubric_summary.get("preferred_export_blocked"))
     sft_ready = rubric_summary.get("sft_ready")
     if sft_ready is None:
@@ -177,12 +200,13 @@ def preflight_pair_export_gate(decisions: Dict[str, Any]) -> Dict[str, Any]:
         )
     else:
         blockers.extend(sft_export_blockers(compiled["system_prompt"], compiled["prompt"], compiled["content"]))
+    blockers.extend(source_section_export_blockers(decisions))
     if not bool(sft_ready):
         blockers.append("rubric_not_export_ready")
     blockers.extend(f"chosen_issue: {mode}" for mode in _list(decisions.get("preferred_failure_modes")))
     if preferred_export_blocked:
         blockers.append("privacy_export_blocked")
-    if boundary_sft_blocked:
+    if boundary_training_blocked:
         blockers.append("source_boundary_blocks_training")
     blockers = list(dict.fromkeys(blockers))
     export_ready = not blockers

@@ -55,6 +55,57 @@ def _quality_status(payload: Dict[str, Any]) -> str:
     return "review_candidate"
 
 
+def _source_boundary_training_summary(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    boundary = payload.get("boundary_snapshot")
+    boundary = boundary if isinstance(boundary, dict) else {}
+    source_photo_id = _string(payload.get("source_photo_id"))
+    if not source_photo_id and not boundary:
+        return None
+
+    blocked_training_uses: List[str] = []
+    if bool(source_photo_id) and boundary.get("usable_for_sft") is False:
+        blocked_training_uses.append("sft")
+    if bool(source_photo_id) and boundary.get("usable_for_dpo") is False:
+        blocked_training_uses.append("dpo")
+    if boundary.get("redaction_required") is True:
+        blocked_training_uses.append("redaction_required")
+    if str(boundary.get("privacy_level") or "") in {"sealed", "private_sensitive", "sensitive_living_people"}:
+        blocked_training_uses.append(f"privacy_level={boundary.get('privacy_level')}")
+
+    if not blocked_training_uses:
+        return {
+            "status": "no_source_boundary_training_block",
+            "source_photo_id": source_photo_id or None,
+            "privacy_level": boundary.get("privacy_level"),
+            "usable_for_sft": boundary.get("usable_for_sft"),
+            "usable_for_dpo": boundary.get("usable_for_dpo"),
+            "usable_for_eval": boundary.get("usable_for_eval"),
+            "reviewed_by": boundary.get("reviewed_by"),
+            "blocked_training_uses": [],
+            "remediation_options": [],
+            "does_not_mutate_source": True,
+        }
+
+    return {
+        "status": "source_boundary_blocks_training",
+        "source_photo_id": source_photo_id or boundary.get("target_id"),
+        "privacy_level": boundary.get("privacy_level"),
+        "usable_for_sft": boundary.get("usable_for_sft"),
+        "usable_for_dpo": boundary.get("usable_for_dpo"),
+        "usable_for_eval": boundary.get("usable_for_eval"),
+        "usable_for_voice_context": boundary.get("usable_for_voice_context"),
+        "retrievable_in_chat": boundary.get("retrievable_in_chat"),
+        "reviewed_by": boundary.get("reviewed_by"),
+        "blocked_training_uses": _unique_strings(blocked_training_uses),
+        "remediation_options": [
+            "Keep this prompt pair as review-only context if the photo source should not train the model.",
+            "If Adam clears the photo source for training, update the source boundary before Submit.",
+            "Use eval or voice-context permissions separately from SFT/DPO permissions.",
+        ],
+        "does_not_mutate_source": True,
+    }
+
+
 def _ui_gate_mismatch(payload: Dict[str, Any], preflight: Dict[str, Any]) -> List[str]:
     preview = payload.get("export_gate_preview")
     if not isinstance(preview, dict):
@@ -132,6 +183,74 @@ def _list_strings(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _unique_strings(values: List[str]) -> List[str]:
+    unique: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = value.strip()
+        if not text or text in seen:
+            continue
+        unique.append(text)
+        seen.add(text)
+    return unique
+
+
+def _suggest_dpo_failure_modes(payload: Dict[str, Any], compiled: Dict[str, Any]) -> List[str]:
+    voice_mode = _string(payload.get("voice_mode")).lower()
+    chosen = _string(compiled.get("chosen")).lower()
+    rejected = _string(compiled.get("rejected")).lower()
+    suggestions: List[str] = []
+
+    if not rejected.strip():
+        suggestions.append("rejected_response_missing")
+    if "straightforward response" in rejected or "explains the situation clearly" in rejected:
+        suggestions.append("rejected_explains_instead_of_speaking_as_charles")
+    if "\n" in chosen and "\n" not in rejected:
+        suggestions.append("rejected_missing_charles_line_break_cadence")
+    if chosen.rstrip().endswith("dad") and "dad" not in rejected:
+        suggestions.append("rejected_lacks_intimate_dad_signoff")
+
+    if voice_mode in {"memoir_scene", "source_based_story_recall"}:
+        suggestions.append("rejected_collapses_scene_into_summary")
+    elif voice_mode == "photography_reflection":
+        suggestions.append("rejected_lacks_concrete_visual_attention")
+    elif voice_mode == "comic_observation":
+        suggestions.append("rejected_lacks_sideways_comic_observation")
+    elif voice_mode == "philosophical_fragment":
+        suggestions.append("rejected_lacks_specific_philosophical_turn")
+    elif voice_mode in {"mundane_text_message", "logistical_note"}:
+        suggestions.append("rejected_too_formal_for_text_message")
+    elif voice_mode == "verbatim_email_reply":
+        suggestions.append("rejected_not_email_like_enough")
+
+    suggestions.append("too_generic_not_charles_voice")
+    return _unique_strings(suggestions)[:3]
+
+
+def _suggest_dpo_rejected_issue_note(failure_modes: List[str], voice_mode: str) -> Dict[str, Any]:
+    first_mode = failure_modes[0] if failure_modes else "too_generic_not_charles_voice"
+    mode_notes = {
+        "rejected_response_missing": "Rejected is empty, so Adam cannot teach the model what lower-quality alternative to avoid yet.",
+        "rejected_explains_instead_of_speaking_as_charles": "Rejected explains the situation from the outside instead of inhabiting Charles' clipped, concrete, first-person cadence.",
+        "rejected_missing_charles_line_break_cadence": "Rejected flattens the response into explanatory prose and loses the line breaks, pauses, and small turns that carry Charles' voice.",
+        "rejected_lacks_intimate_dad_signoff": "Rejected misses the intimate family-note ending that helps the chosen response land as Charles writing to Adam.",
+        "rejected_collapses_scene_into_summary": "Rejected summarizes the scene instead of letting concrete details, memory jumps, and Charles' associative motion do the work.",
+        "rejected_lacks_concrete_visual_attention": "Rejected does not notice light, faces, objects, or the photographic surface closely enough to sound like Charles.",
+        "rejected_lacks_sideways_comic_observation": "Rejected misses the sideways joke or absurd observational turn that makes the chosen response feel alive.",
+        "rejected_lacks_specific_philosophical_turn": "Rejected states an idea too generally and lacks Charles' specific, lived philosophical pivot.",
+        "rejected_too_formal_for_text_message": "Rejected is too polished and explanatory for Charles' quick practical note mode.",
+        "rejected_not_email_like_enough": "Rejected does not preserve the loose, direct, slightly digressive email cadence.",
+        "too_generic_not_charles_voice": "Rejected is generic and does not preserve enough of Charles' cadence, concrete detail, restraint, or odd angle of attention.",
+    }
+    return {
+        "severity": "minor_issues",
+        "rubric_target": "response_a",
+        "issue_tag": first_mode,
+        "voice_mode": voice_mode,
+        "note": mode_notes.get(first_mode, mode_notes["too_generic_not_charles_voice"]),
+    }
 
 
 def _indent_yaml_block(value: str, spaces: int = 4) -> str:
@@ -411,6 +530,7 @@ def _held_candidate_record(task: Task) -> Dict[str, Any]:
     payload = task.input_payload or {}
     preflight = preflight_pair_export_gate(payload)
     response = _response_text(payload)
+    source_boundary_summary = _source_boundary_training_summary(payload)
     return {
         "task_id": task.id,
         "task_human_id": task.human_id,
@@ -431,6 +551,7 @@ def _held_candidate_record(task: Task) -> Dict[str, Any]:
         "dataset_outcome": preflight["dataset_outcome"],
         "submit_outcome": preflight["submit_outcome"],
         "quality_status": _quality_status(payload),
+        "source_boundary_summary": source_boundary_summary,
         "action": {
             "action_type": "open_held_prompt_pair_candidate",
             "label": "Open held prompt pair",
@@ -454,7 +575,7 @@ def _candidate_sort_key(record: Dict[str, Any]) -> tuple[tuple[int, str], str]:
 
 
 def _held_worklist_preview(record: Dict[str, Any], sequence_number: int) -> Dict[str, Any]:
-    return {
+    preview = {
         "sequence_number": sequence_number,
         "task_id": record["task_id"],
         "task_human_id": record["task_human_id"],
@@ -465,6 +586,9 @@ def _held_worklist_preview(record: Dict[str, Any], sequence_number: int) -> Dict
         "blockers": record["blockers"],
         "action": record["action"],
     }
+    if record.get("source_boundary_summary"):
+        preview["source_boundary_summary"] = record["source_boundary_summary"]
+    return preview
 
 
 def _compile_held_candidate_worklists(held_records: List[Dict[str, Any]], *, preview_limit: int = 10) -> List[Dict[str, Any]]:
@@ -621,19 +745,48 @@ def compile_prompt_pair_review_progress(session: Session) -> Dict[str, Any]:
     return progress
 
 
-def compile_prompt_pair_top_blocker_slice(session: Session, *, limit: int = 5) -> Dict[str, Any]:
+def _select_prompt_pair_worklist(
+    worklists: List[Dict[str, Any]],
+    *,
+    blocker: str | None = None,
+) -> tuple[Dict[str, Any] | None, str, str | None]:
+    requested_blocker = blocker.strip() if isinstance(blocker, str) and blocker.strip() else None
+    if requested_blocker:
+        return (
+            next((worklist for worklist in worklists if worklist.get("blocker") == requested_blocker), None),
+            "requested_backend_blocker_exact_match",
+            requested_blocker,
+        )
+    return (
+        worklists[0] if worklists else None,
+        "largest_backend_blocker_first",
+        None,
+    )
+
+
+def compile_prompt_pair_top_blocker_slice(
+    session: Session,
+    *,
+    limit: int = 5,
+    blocker: str | None = None,
+) -> Dict[str, Any]:
     safe_limit = max(1, min(limit, 25))
     pack = compile_prompt_pair_candidate_review_pack(session=session, limit=100)
     worklists = pack.get("worklists") if isinstance(pack.get("worklists"), list) else []
-    top_worklist = worklists[0] if worklists else None
+    top_worklist, selection_policy, requested_blocker = _select_prompt_pair_worklist(worklists, blocker=blocker)
     if not isinstance(top_worklist, dict):
-        stable_payload = {"blocker": None, "items": []}
+        stable_payload = {"blocker": requested_blocker, "requested_blocker": requested_blocker, "items": []}
         return {
             "slice_type": "prompt_pair_top_blocker_slice",
             "review_policy": "top_backend_blocker_review_slice_no_export_promotion",
             "does_not_promote_to_training_export": True,
             "requires_adam_gold_edit": True,
-            "blocker": None,
+            "selection_policy": selection_policy,
+            "requested_blocker": requested_blocker,
+            "blocker": requested_blocker,
+            "title": f"No {requested_blocker.replace('_', ' ').title()} candidates"
+            if requested_blocker
+            else None,
             "candidate_count": 0,
             "reported_candidate_count": 0,
             "completion_signal": "candidate_count_decreases_or_blocker_worklist_changes",
@@ -679,6 +832,7 @@ def compile_prompt_pair_top_blocker_slice(session: Session, *, limit: int = 5) -
                 "response_preview": _truncate(response, 520),
                 "source_excerpt_preview": _truncate(_string(payload.get("source_excerpt")), 520),
                 "context_preview": _truncate(_string(payload.get("context")), 360),
+                "source_boundary_summary": _source_boundary_training_summary(payload),
                 "export_preview_yaml": _string(payload.get("export_preview_yaml")) or preflight["yaml_preview"],
                 "backend_preflight": {
                     "export_status": preflight["export_status"],
@@ -703,6 +857,8 @@ def compile_prompt_pair_top_blocker_slice(session: Session, *, limit: int = 5) -
 
     stable_payload = {
         "blocker": top_worklist.get("blocker"),
+        "requested_blocker": requested_blocker,
+        "selection_policy": selection_policy,
         "review_sequence_key": top_worklist.get("review_sequence_key"),
         "items": items,
     }
@@ -711,6 +867,8 @@ def compile_prompt_pair_top_blocker_slice(session: Session, *, limit: int = 5) -
         "review_policy": "top_backend_blocker_review_slice_no_export_promotion",
         "does_not_promote_to_training_export": True,
         "requires_adam_gold_edit": True,
+        "selection_policy": selection_policy,
+        "requested_blocker": requested_blocker,
         "blocker": top_worklist.get("blocker"),
         "title": top_worklist.get("title"),
         "candidate_count": top_worklist.get("candidate_count"),
@@ -770,6 +928,8 @@ def _top_blocker_review_session_plan_yaml(plan: Dict[str, Any]) -> str:
         "prompt_pair_top_blocker_review_session_plan:",
         f"  plan_type: {_yaml_line_scalar(plan.get('plan_type'))}",
         f"  review_policy: {_yaml_line_scalar(plan.get('review_policy'))}",
+        f"  selection_policy: {_yaml_line_scalar(plan.get('selection_policy'))}",
+        f"  requested_blocker: {_yaml_line_scalar(plan.get('requested_blocker'))}",
         f"  blocker: {_yaml_line_scalar(plan.get('blocker'))}",
         f"  selected_count: {_yaml_line_scalar(plan.get('selected_count'))}",
         f"  candidate_count: {_yaml_line_scalar(plan.get('candidate_count'))}",
@@ -804,6 +964,20 @@ def _top_blocker_review_session_plan_yaml(plan: Dict[str, Any]) -> str:
         )
         for blocker in item.get("current_blockers", []):
             lines.append(f"        - {_yaml_line_scalar(blocker)}")
+        source_boundary_summary = item.get("source_boundary_summary") if isinstance(item.get("source_boundary_summary"), dict) else {}
+        if source_boundary_summary:
+            lines.extend(
+                [
+                    "      source_boundary_summary:",
+                    f"        status: {_yaml_line_scalar(source_boundary_summary.get('status'))}",
+                    f"        privacy_level: {_yaml_line_scalar(source_boundary_summary.get('privacy_level'))}",
+                    f"        usable_for_sft: {_yaml_line_scalar(source_boundary_summary.get('usable_for_sft'))}",
+                    f"        usable_for_dpo: {_yaml_line_scalar(source_boundary_summary.get('usable_for_dpo'))}",
+                    "        blocked_training_uses:",
+                ]
+            )
+            for blocked_use in source_boundary_summary.get("blocked_training_uses") or []:
+                lines.append(f"          - {_yaml_line_scalar(blocked_use)}")
         lines.extend(
             [
                 f"      action: {_yaml_line_scalar((item.get('action') or {}).get('action_type'))}",
@@ -813,9 +987,25 @@ def _top_blocker_review_session_plan_yaml(plan: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def compile_prompt_pair_top_blocker_review_session_plan(session: Session, *, limit: int = 5) -> Dict[str, Any]:
+def _repair_projection_after_gate(after: Dict[str, Any]) -> Dict[str, Any]:
+    blockers = [str(blocker) for blocker in after.get("blockers") or [] if str(blocker).strip()]
+    if "needs_adam_gold_edit" not in blockers:
+        blockers.append("needs_adam_gold_edit")
+    return {
+        "export_status": "candidate",
+        "dataset_outcome": "Candidate dry-run only",
+        "blockers": blockers,
+    }
+
+
+def compile_prompt_pair_top_blocker_review_session_plan(
+    session: Session,
+    *,
+    limit: int = 5,
+    blocker: str | None = None,
+) -> Dict[str, Any]:
     safe_limit = max(1, min(limit, 25))
-    blocker_slice = compile_prompt_pair_top_blocker_slice(session=session, limit=safe_limit)
+    blocker_slice = compile_prompt_pair_top_blocker_slice(session=session, limit=safe_limit, blocker=blocker)
     blocker = blocker_slice.get("blocker")
     items = []
     for item in blocker_slice.get("items", []):
@@ -831,6 +1021,7 @@ def compile_prompt_pair_top_blocker_review_session_plan(session: Session, *, lim
                 "blocker": blocker,
                 "prompt": item.get("prompt"),
                 "current_blockers": backend_preflight.get("blockers") if isinstance(backend_preflight.get("blockers"), list) else [],
+                "source_boundary_summary": item.get("source_boundary_summary") if isinstance(item.get("source_boundary_summary"), dict) else None,
                 "completion_criteria": item.get("completion_criteria") if isinstance(item.get("completion_criteria"), list) else [],
                 "action": item.get("action") if isinstance(item.get("action"), dict) else {},
             }
@@ -839,6 +1030,8 @@ def compile_prompt_pair_top_blocker_review_session_plan(session: Session, *, lim
     field_plan = _prompt_pair_session_field_plan(str(blocker) if blocker else None)
     stable_payload = {
         "blocker": blocker,
+        "requested_blocker": blocker_slice.get("requested_blocker"),
+        "selection_policy": blocker_slice.get("selection_policy"),
         "selected_task_ids": selected_task_ids,
         "field_plan": field_plan,
         "slice_content_sha256": blocker_slice.get("content_sha256"),
@@ -849,6 +1042,8 @@ def compile_prompt_pair_top_blocker_review_session_plan(session: Session, *, lim
         "does_not_mutate_state": True,
         "does_not_promote_to_training_export": True,
         "requires_adam_gold_edit": True,
+        "selection_policy": blocker_slice.get("selection_policy"),
+        "requested_blocker": blocker_slice.get("requested_blocker"),
         "blocker": blocker,
         "title": blocker_slice.get("title"),
         "selected_count": len(items),
@@ -885,10 +1080,15 @@ def _dpo_reason_repair_item(task: Task, sequence_number: int) -> Dict[str, Any]:
     compiled = compile_pair_export(payload)
     preflight = preflight_pair_export_gate(payload)
     current_failure_modes = _list_strings(payload.get("failure_modes"))
-    suggested_failure_modes = ["too_generic_not_charles_voice"]
+    suggested_failure_modes = _suggest_dpo_failure_modes(payload, compiled)
+    suggested_rejected_issue = _suggest_dpo_rejected_issue_note(
+        suggested_failure_modes,
+        _string(payload.get("voice_mode"), "unknown"),
+    )
     repaired_preflight = preflight_pair_export_gate({**payload, "failure_modes": suggested_failure_modes})
+    projected_after = _repair_projection_after_gate(repaired_preflight)
     before_blockers = list(preflight["blockers"])
-    after_blockers = list(repaired_preflight["blockers"])
+    after_blockers = list(projected_after["blockers"])
     response_rubric = payload.get("response_rubric") if isinstance(payload.get("response_rubric"), dict) else {}
     rejected_rubric = response_rubric.get("response_a") if isinstance(response_rubric.get("response_a"), dict) else {}
     return {
@@ -913,6 +1113,8 @@ def _dpo_reason_repair_item(task: Task, sequence_number: int) -> Dict[str, Any]:
             "blockers": preflight["blockers"],
         },
         "repair_fields": ["failure_modes", "response_rubric.response_a", "rubric_summary.rejected_issue_count"],
+        "suggested_failure_modes": suggested_failure_modes,
+        "suggested_rejected_issue": suggested_rejected_issue,
         "repair_guidance": (
             "Add at least one plain-language failure mode or rejected-side rubric issue explaining why "
             "the rejected response is worse than the chosen response."
@@ -926,8 +1128,8 @@ def _dpo_reason_repair_item(task: Task, sequence_number: int) -> Dict[str, Any]:
             "cleared_blockers": [blocker for blocker in before_blockers if blocker not in after_blockers],
             "target_blocker_cleared": "dpo_rejected_reason_empty" in before_blockers
             and "dpo_rejected_reason_empty" not in after_blockers,
-            "after_export_status": repaired_preflight["export_status"],
-            "after_dataset_outcome": repaired_preflight["dataset_outcome"],
+            "after_export_status": projected_after["export_status"],
+            "after_dataset_outcome": projected_after["dataset_outcome"],
             "still_requires_adam_gold_edit": True,
             "note": "This projection only tests the rejected-side reason field; it does not certify Charles authenticity.",
         },
@@ -989,11 +1191,14 @@ def _repair_projection_yaml(
     return {"before_yaml": before_yaml, "after_yaml": after_yaml, "yaml_diff_preview": diff + "\n"}
 
 
+DEFAULT_DPO_REPAIR_FAILURE_MODE = "too_generic_not_charles_voice"
+
+
 def compile_dpo_rejected_reason_repair_projection(
     session: Session,
     *,
     task_id: str | None = None,
-    failure_mode: str = "too_generic_not_charles_voice",
+    failure_mode: str = DEFAULT_DPO_REPAIR_FAILURE_MODE,
 ) -> Dict[str, Any]:
     tasks = session.exec(
         select(Task)
@@ -1027,17 +1232,26 @@ def compile_dpo_rejected_reason_repair_projection(
     compiled = compile_pair_export(payload)
     before = preflight_pair_export_gate(payload)
     current_failure_modes = _list_strings(payload.get("failure_modes"))
-    suggested_failure_modes = [failure_mode]
+    suggested_failure_modes = (
+        _suggest_dpo_failure_modes(payload, compiled)
+        if failure_mode == DEFAULT_DPO_REPAIR_FAILURE_MODE
+        else [failure_mode]
+    )
+    suggested_rejected_issue = _suggest_dpo_rejected_issue_note(
+        suggested_failure_modes,
+        _string(payload.get("voice_mode"), "unknown"),
+    )
     repaired_payload = {**payload, "failure_modes": suggested_failure_modes}
     after = preflight_pair_export_gate(repaired_payload)
+    projected_after = _repair_projection_after_gate(after)
     before_blockers = list(before["blockers"])
-    after_blockers = list(after["blockers"])
+    after_blockers = list(projected_after["blockers"])
     yaml_projection = _repair_projection_yaml(
         task=selected_task,
         before_blockers=before_blockers,
         after_blockers=after_blockers,
         before_export_status=before["export_status"],
-        after_export_status=after["export_status"],
+        after_export_status=projected_after["export_status"],
         current_failure_modes=current_failure_modes,
         suggested_failure_modes=suggested_failure_modes,
     )
@@ -1047,6 +1261,7 @@ def compile_dpo_rejected_reason_repair_projection(
         "before_blockers": before_blockers,
         "after_blockers": after_blockers,
         "yaml_diff_preview": yaml_projection["yaml_diff_preview"],
+        "suggested_rejected_issue": suggested_rejected_issue,
     }
     return {
         "projection_type": "dpo_rejected_reason_repair_projection",
@@ -1063,6 +1278,7 @@ def compile_dpo_rejected_reason_repair_projection(
         "chosen_preview": _truncate(compiled["chosen"], 900),
         "rejected_preview": _truncate(compiled["rejected"], 900),
         "input_patch": {"failure_modes": suggested_failure_modes},
+        "suggested_rejected_issue": suggested_rejected_issue,
         "before": {
             "failure_modes": current_failure_modes,
             "export_status": before["export_status"],
@@ -1071,8 +1287,8 @@ def compile_dpo_rejected_reason_repair_projection(
         },
         "after": {
             "failure_modes": suggested_failure_modes,
-            "export_status": after["export_status"],
-            "dataset_outcome": after["dataset_outcome"],
+            "export_status": projected_after["export_status"],
+            "dataset_outcome": projected_after["dataset_outcome"],
             "blockers": after_blockers,
         },
         "cleared_blockers": [blocker for blocker in before_blockers if blocker not in after_blockers],
@@ -1125,6 +1341,24 @@ def _dpo_repair_packet_yaml(packet: Dict[str, Any]) -> str:
                 lines.append(f"        - {_yaml_line_scalar(mode)}")
         else:
             lines[-1] = "      current_failure_modes: []"
+        lines.append("      suggested_failure_modes:")
+        suggested_modes = item.get("suggested_failure_modes") if isinstance(item.get("suggested_failure_modes"), list) else []
+        if suggested_modes:
+            for mode in suggested_modes:
+                lines.append(f"        - {_yaml_line_scalar(mode)}")
+        else:
+            lines[-1] = "      suggested_failure_modes: []"
+        suggested_issue = item.get("suggested_rejected_issue") if isinstance(item.get("suggested_rejected_issue"), dict) else {}
+        lines.extend(
+            [
+                "      suggested_rejected_issue:",
+                f"        severity: {_yaml_line_scalar(suggested_issue.get('severity'))}",
+                f"        rubric_target: {_yaml_line_scalar(suggested_issue.get('rubric_target'))}",
+                f"        issue_tag: {_yaml_line_scalar(suggested_issue.get('issue_tag'))}",
+                "        note: |-",
+                _indent_yaml_block(str(suggested_issue.get("note") or ""), 10),
+            ]
+        )
         lines.extend(
             [
                 "      backend_blockers:",
@@ -1141,6 +1375,18 @@ def _dpo_repair_packet_yaml(packet: Dict[str, Any]) -> str:
                 f"      repair_guidance: {_yaml_line_scalar(item.get('repair_guidance'))}",
                 f"      projected_target_blocker_cleared: {str((item.get('repair_projection') or {}).get('target_blocker_cleared') is True).lower()}",
                 f"      projected_after_export_status: {_yaml_line_scalar((item.get('repair_projection') or {}).get('after_export_status'))}",
+                f"      projected_after_dataset_outcome: {_yaml_line_scalar((item.get('repair_projection') or {}).get('after_dataset_outcome'))}",
+                "      projected_after_blockers:",
+            ]
+        )
+        after_blockers = (item.get("repair_projection") or {}).get("after_blockers")
+        if isinstance(after_blockers, list) and after_blockers:
+            for blocker in after_blockers:
+                lines.append(f"        - {_yaml_line_scalar(blocker)}")
+        else:
+            lines[-1] = "      projected_after_blockers: []"
+        lines.extend(
+            [
                 "      completion_criteria:",
             ]
         )
@@ -1195,6 +1441,175 @@ def compile_dpo_rejected_reason_repair_packet(session: Session, *, limit: int = 
         json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     packet["export_preview_yaml"] = _dpo_repair_packet_yaml(packet)
+    packet["export_preview_sha256"] = hashlib.sha256(packet["export_preview_yaml"].encode("utf-8")).hexdigest()
+    return packet
+
+
+def _source_boundary_review_item(task: Task, sequence_number: int) -> Dict[str, Any]:
+    payload = task.input_payload or {}
+    preflight = preflight_pair_export_gate(payload)
+    artifact_mode = _string(payload.get("artifact_mode"), "sft")
+    boundary = payload.get("boundary_snapshot") if isinstance(payload.get("boundary_snapshot"), dict) else {}
+    summary = _source_boundary_training_summary(payload) or {}
+    permission_field = "usable_for_dpo" if artifact_mode == "dpo" else "usable_for_sft"
+    return {
+        "sequence_number": sequence_number,
+        "task_id": task.id,
+        "task_human_id": task.human_id,
+        "pair_index": payload.get("pair_index"),
+        "artifact_mode": artifact_mode,
+        "voice_mode": _string(payload.get("voice_mode"), "unknown"),
+        "truth_status": _string(payload.get("truth_status"), "unknown"),
+        "synthetic": bool(payload.get("synthetic", True)),
+        "source_title": _source_key(payload),
+        "source_photo_id": _string(payload.get("source_photo_id")),
+        "prompt": _string(payload.get("prompt")),
+        "response_preview": _truncate(_response_text(payload), 720),
+        "source_excerpt_preview": _truncate(_string(payload.get("source_excerpt")), 520),
+        "source_boundary_summary": summary,
+        "blocking_permission_field": permission_field,
+        "blocking_permission_value": boundary.get(permission_field),
+        "backend_preflight": {
+            "export_status": preflight["export_status"],
+            "dataset_outcome": preflight["dataset_outcome"],
+            "blockers": preflight["blockers"],
+        },
+        "review_decision_fields": [
+            "boundary_snapshot.usable_for_sft",
+            "boundary_snapshot.usable_for_dpo",
+            "context",
+            "rubric_summary.preferred_export_blocked",
+        ],
+        "remediation_options": summary.get("remediation_options") if isinstance(summary.get("remediation_options"), list) else [],
+        "completion_criteria": [
+            f"Confirm whether `{permission_field}` should remain false for this source.",
+            "If Adam clears the source for training, update the source boundary before submitting the pair.",
+            "If not cleared, keep the pair as review-only context and preserve the blocker.",
+        ],
+        "action": {
+            "action_type": "open_held_prompt_pair_candidate",
+            "label": "Open source-boundary candidate",
+            "task_id": task.id,
+            "task_human_id": task.human_id,
+            "queue": task.queue,
+        },
+    }
+
+
+def _source_boundary_review_packet_yaml(packet: Dict[str, Any]) -> str:
+    lines = [
+        "source_boundary_training_review_packet:",
+        f"  review_policy: {_yaml_line_scalar(packet.get('review_policy'))}",
+        f"  blocker: {_yaml_line_scalar(packet.get('blocker'))}",
+        f"  total_candidate_count: {int(packet.get('total_candidate_count') or 0)}",
+        f"  reported_candidate_count: {int(packet.get('reported_candidate_count') or 0)}",
+        f"  completion_signal: {_yaml_line_scalar(packet.get('completion_signal'))}",
+        "  safety_boundaries:",
+    ]
+    for boundary in packet.get("safety_boundaries") or []:
+        lines.append(f"    - {_yaml_line_scalar(boundary)}")
+    lines.append("  items:")
+    for item in packet.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        lines.extend(
+            [
+                f"    - sequence_number: {int(item.get('sequence_number') or 0)}",
+                f"      task_human_id: {_yaml_line_scalar(item.get('task_human_id'))}",
+                f"      pair_index: {_yaml_line_scalar(item.get('pair_index'))}",
+                f"      artifact_mode: {_yaml_line_scalar(item.get('artifact_mode'))}",
+                f"      voice_mode: {_yaml_line_scalar(item.get('voice_mode'))}",
+                f"      source_photo_id: {_yaml_line_scalar(item.get('source_photo_id'))}",
+                f"      blocking_permission_field: {_yaml_line_scalar(item.get('blocking_permission_field'))}",
+                f"      blocking_permission_value: {_yaml_line_scalar(item.get('blocking_permission_value'))}",
+                f"      prompt: {_yaml_line_scalar(item.get('prompt'))}",
+                "      response_preview: |-",
+                _indent_yaml_block(str(item.get("response_preview") or ""), 8),
+                "      backend_blockers:",
+            ]
+        )
+        blockers = (item.get("backend_preflight") or {}).get("blockers") if isinstance(item.get("backend_preflight"), dict) else []
+        if blockers:
+            for blocker in blockers:
+                lines.append(f"        - {_yaml_line_scalar(blocker)}")
+        else:
+            lines[-1] = "      backend_blockers: []"
+        summary = item.get("source_boundary_summary") if isinstance(item.get("source_boundary_summary"), dict) else {}
+        lines.extend(
+            [
+                "      source_boundary_summary:",
+                f"        status: {_yaml_line_scalar(summary.get('status'))}",
+                f"        privacy_level: {_yaml_line_scalar(summary.get('privacy_level'))}",
+                f"        usable_for_sft: {_yaml_line_scalar(summary.get('usable_for_sft'))}",
+                f"        usable_for_dpo: {_yaml_line_scalar(summary.get('usable_for_dpo'))}",
+                f"        usable_for_eval: {_yaml_line_scalar(summary.get('usable_for_eval'))}",
+                f"        reviewed_by: {_yaml_line_scalar(summary.get('reviewed_by'))}",
+                "        blocked_training_uses:",
+            ]
+        )
+        blocked_uses = summary.get("blocked_training_uses") if isinstance(summary.get("blocked_training_uses"), list) else []
+        if blocked_uses:
+            for blocked_use in blocked_uses:
+                lines.append(f"          - {_yaml_line_scalar(blocked_use)}")
+        else:
+            lines[-1] = "        blocked_training_uses: []"
+        lines.append("      remediation_options:")
+        remediation_options = item.get("remediation_options") if isinstance(item.get("remediation_options"), list) else []
+        if remediation_options:
+            for option in remediation_options:
+                lines.append(f"        - {_yaml_line_scalar(option)}")
+        else:
+            lines[-1] = "      remediation_options: []"
+        lines.append("      completion_criteria:")
+        for criterion in item.get("completion_criteria") or []:
+            lines.append(f"        - {_yaml_line_scalar(criterion)}")
+    return "\n".join(lines) + "\n"
+
+
+def compile_source_boundary_training_review_packet(session: Session, *, limit: int = 25) -> Dict[str, Any]:
+    safe_limit = max(1, min(limit, 100))
+    tasks = session.exec(
+        select(Task)
+        .where(Task.task_type == "gold_voice_edit")
+        .where(Task.queue == "prompt_pairs_needing_gold_edits")
+        .order_by(Task.created_at.asc())
+    ).all()
+    matching_tasks = []
+    for task in tasks:
+        preflight = preflight_pair_export_gate(task.input_payload or {})
+        if "source_boundary_blocks_training" in preflight["blockers"]:
+            matching_tasks.append(task)
+
+    items = [_source_boundary_review_item(task, index) for index, task in enumerate(matching_tasks[:safe_limit], start=1)]
+    stable_payload = {
+        "blocker": "source_boundary_blocks_training",
+        "candidate_task_ids": [task.id for task in matching_tasks],
+        "reported_items": items,
+    }
+    packet = {
+        "packet_type": "source_boundary_training_review_packet",
+        "review_policy": "review_source_boundary_training_permission_no_source_mutation",
+        "does_not_mutate_task": True,
+        "does_not_mutate_source": True,
+        "does_not_promote_to_training_export": True,
+        "requires_adam_boundary_review": True,
+        "requires_adam_gold_edit": True,
+        "blocker": "source_boundary_blocks_training",
+        "total_candidate_count": len(matching_tasks),
+        "reported_candidate_count": len(items),
+        "limit": safe_limit,
+        "completion_signal": "source_boundary_blocks_training_count_decreases_or_review_only_decision_recorded",
+        "safety_boundaries": [
+            "This packet is read-only and does not change source asset permissions.",
+            "Photo-derived prompt pairs remain training-blocked until Adam explicitly clears the source boundary.",
+            "Boundary review is separate from judging whether the Charles voice edit is gold.",
+        ],
+        "items": items,
+    }
+    packet["content_sha256"] = hashlib.sha256(
+        json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    packet["export_preview_yaml"] = _source_boundary_review_packet_yaml(packet)
     packet["export_preview_sha256"] = hashlib.sha256(packet["export_preview_yaml"].encode("utf-8")).hexdigest()
     return packet
 

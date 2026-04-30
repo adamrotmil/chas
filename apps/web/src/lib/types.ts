@@ -69,6 +69,16 @@ export interface PhotoContextReviewPackAction {
   task_id?: string | null;
   task_human_id?: string | null;
   request?: JsonRecord;
+  query_provenance?: {
+    source_query?: string;
+    query_is_context_prioritization_only?: boolean;
+    not_memory_claim?: boolean;
+    candidate_match_quality?: "weak_evidence_match" | "backlog_only" | string;
+    candidate_selection_reason?: string;
+    [key: string]: unknown;
+  };
+  session_sequence_number?: number | null;
+  session_selected_count?: number | null;
 }
 
 export interface PhotoContextReviewPackNoClaimGroup {
@@ -491,6 +501,14 @@ export interface PhotoContextRetrievalGapFieldWorklistItem {
   next_action: string;
 }
 
+export interface PhotoContextRetrievalGapFieldGuidance {
+  field_key: string;
+  label: string;
+  why_required: string;
+  adam_prompt: string;
+  unlocks: string;
+}
+
 export interface PhotoContextRetrievalGapFieldWorklist {
   worklist_type: "photo_context_retrieval_gap_field_worklist";
   scope: string;
@@ -506,6 +524,7 @@ export interface PhotoContextRetrievalGapFieldWorklist {
   missing_field_total: number;
   submit_ready_count: number;
   missing_field_counts: Array<{ field_key: string; count: number }>;
+  field_guidance: PhotoContextRetrievalGapFieldGuidance[];
   query_counts: Array<{ query: string; count: number }>;
   completion_signal: string;
   items: PhotoContextRetrievalGapFieldWorklistItem[];
@@ -558,6 +577,7 @@ export interface PhotoContextRetrievalGapPayoffPreview {
 }
 
 export interface PhotoReviewPriorityItem {
+  sequence_number: number;
   rank: number;
   path_label: string;
   task_id: string;
@@ -568,7 +588,21 @@ export interface PhotoReviewPriorityItem {
   source_photo_id?: string | null;
   source_photo_title: string;
   retrieval_query?: string | null;
+  preview_ready: boolean;
   not_memory_claim: boolean;
+  missing_adam_field_count: number;
+  downstream_payoff_score: number;
+  next_action: string;
+  completion_signal: string;
+  ranking_inputs: {
+    path_rank: number;
+    preview_ready: boolean;
+    missing_adam_field_count: number;
+    downstream_payoff_score: number;
+    has_retrieval_query: boolean;
+    task_priority: number;
+    [key: string]: unknown;
+  };
   why_first: string;
   projected_outcome: string;
   submit_outcome_badge?: string;
@@ -584,11 +618,19 @@ export interface PhotoReviewPrioritySummary {
   summary_type: "photo_review_priority";
   focus: "all" | "fastest_vector" | string;
   review_policy: string;
+  throughput_policy: string;
   does_not_mutate_state: boolean;
+  does_not_create_memory_claim: boolean;
   no_live_model_call: boolean;
+  no_live_embedding_call: boolean;
+  completion_signal: string;
+  ranking_inputs: JsonRecord;
   total_candidate_count: number;
   reported_count: number;
   items: PhotoReviewPriorityItem[];
+  content_sha256: string;
+  export_preview_yaml: string;
+  export_preview_sha256: string;
 }
 
 export interface DownstreamBottleneckAction {
@@ -1295,6 +1337,21 @@ export interface PromptPairReviewProgress {
   content_sha256: string;
 }
 
+export interface PromptPairSourceBoundarySummary {
+  status: string;
+  source_photo_id?: string | null;
+  privacy_level?: string | null;
+  usable_for_sft?: boolean | null;
+  usable_for_dpo?: boolean | null;
+  usable_for_eval?: boolean | null;
+  usable_for_voice_context?: boolean | null;
+  retrievable_in_chat?: boolean | null;
+  reviewed_by?: string | null;
+  blocked_training_uses: string[];
+  remediation_options: string[];
+  does_not_mutate_source: boolean;
+}
+
 export interface PromptPairHeldCandidate {
   task_id: string;
   task_human_id: string;
@@ -1315,6 +1372,7 @@ export interface PromptPairHeldCandidate {
   dataset_outcome: string;
   submit_outcome: string;
   quality_status: string;
+  source_boundary_summary?: PromptPairSourceBoundarySummary | null;
   action: {
     action_type: string;
     label: string;
@@ -1353,6 +1411,7 @@ export interface PromptPairHeldCandidateWorklist {
     artifact_mode: string;
     prompt: string;
     blockers: string[];
+    source_boundary_summary?: PromptPairSourceBoundarySummary | null;
     action: PromptPairHeldCandidate["action"];
   }>;
 }
@@ -1395,6 +1454,7 @@ export interface PromptPairTopBlockerSliceItem {
     dataset_outcome: string;
     blockers: string[];
   };
+  source_boundary_summary?: PromptPairSourceBoundarySummary | null;
   completion_criteria: string[];
   action: PromptPairHeldCandidate["action"];
 }
@@ -1404,6 +1464,8 @@ export interface PromptPairTopBlockerSlice {
   review_policy: string;
   does_not_promote_to_training_export: boolean;
   requires_adam_gold_edit: boolean;
+  selection_policy: string;
+  requested_blocker?: string | null;
   blocker?: string | null;
   title?: string | null;
   candidate_count: number;
@@ -1422,6 +1484,8 @@ export interface PromptPairTopBlockerReviewSessionPlan {
   does_not_mutate_state: boolean;
   does_not_promote_to_training_export: boolean;
   requires_adam_gold_edit: boolean;
+  selection_policy: string;
+  requested_blocker?: string | null;
   blocker?: string | null;
   title?: string | null;
   selected_count: number;
@@ -1452,6 +1516,7 @@ export interface PromptPairTopBlockerReviewSessionPlan {
     blocker?: string | null;
     prompt: string;
     current_blockers: string[];
+    source_boundary_summary?: PromptPairSourceBoundarySummary | null;
     completion_criteria: string[];
     action: PromptPairHeldCandidate["action"];
   }>;
@@ -1475,6 +1540,14 @@ export interface DpoRejectedReasonRepairItem {
   chosen_preview: string;
   rejected_preview: string;
   current_failure_modes: string[];
+  suggested_failure_modes?: string[];
+  suggested_rejected_issue?: {
+    severity: string;
+    rubric_target: string;
+    issue_tag: string;
+    voice_mode?: string;
+    note: string;
+  };
   rejected_rubric: JsonRecord;
   backend_preflight: {
     export_status: string;
@@ -1533,6 +1606,13 @@ export interface DpoRejectedReasonRepairProjection {
   chosen_preview?: string | null;
   rejected_preview?: string | null;
   input_patch: JsonRecord;
+  suggested_rejected_issue?: {
+    severity: string;
+    rubric_target: string;
+    issue_tag: string;
+    voice_mode?: string;
+    note: string;
+  };
   before: {
     failure_modes: string[];
     export_status: string;
@@ -1973,6 +2053,35 @@ export interface ModelStatus {
   openai_api_key_configured: boolean;
   text_generation_live_ready: boolean;
   fine_tuning_enabled_in_mvp: boolean;
+  credential_requirements?: TextGenerationCredentialRequirements;
+}
+
+export interface TextGenerationCredentialRequirements {
+  requirements_type: string;
+  api: string;
+  model_name: string;
+  reasoning_effort: string;
+  required_env: Array<{
+    name: string;
+    configured: boolean;
+    required_value?: string;
+    purpose: string;
+    secret: boolean;
+  }>;
+  optional_env: Array<{
+    name: string;
+    configured: boolean;
+    purpose: string;
+    secret: boolean;
+  }>;
+  env_file_policy?: {
+    secret_env_files_ignored: boolean;
+    ignored_patterns: string[];
+    tracked_template: string;
+    never_return_secret_values: boolean;
+    operator_note: string;
+  };
+  safety_policy: JsonRecord;
 }
 
 export interface DemoReadinessPrompt {
@@ -1995,6 +2104,7 @@ export interface DemoGenerationInputPlan {
   store: boolean;
   live_generation_ready: boolean;
   live_generation_blockers: string[];
+  credential_requirements?: TextGenerationCredentialRequirements;
   reference_pack_content_sha256: string;
   reference_pack_sample_count: number;
   reference_pack_ready_for_generation_context: boolean;
@@ -2002,6 +2112,55 @@ export interface DemoGenerationInputPlan {
   held_out_prompt_set_sha256: string;
   held_out_prompts: DemoReadinessPrompt[];
   safety_policy: JsonRecord;
+}
+
+export interface DemoGenerationRequestPreviewItem {
+  sequence_number: number;
+  task_id: string;
+  task_human_id: string;
+  artifact_mode: string;
+  voice_mode?: string | null;
+  conversation_family?: string | null;
+  prompt: string;
+  prompt_sha256: string;
+  held_out_response_sha256?: string | null;
+  rejected_response_sha256?: string | null;
+  source_title?: string | null;
+  reference_example_count: number;
+  reference_ids: string[];
+  request_body: JsonRecord;
+  request_body_sha256: string;
+  developer_message_sha256: string;
+  user_message_sha256: string;
+  user_message_char_count: number;
+  safety_checks: JsonRecord;
+  request_body_json: string;
+}
+
+export interface DemoGenerationRequestPreview {
+  preview_type: string;
+  review_policy: string;
+  does_not_mutate_state: boolean;
+  no_live_model_call: boolean;
+  no_generation_created: boolean;
+  does_not_promote_to_training_export: boolean;
+  api: string;
+  model_name: string;
+  reasoning_effort: string;
+  store: boolean;
+  max_output_tokens: number;
+  live_generation_ready: boolean;
+  live_generation_blockers: string[];
+  credential_requirements?: TextGenerationCredentialRequirements;
+  reference_pack_content_sha256: string;
+  reference_pack_sample_count: number;
+  reference_pack_ready_for_generation_context: boolean;
+  request_count: number;
+  requests: DemoGenerationRequestPreviewItem[];
+  safety_policy: JsonRecord;
+  content_sha256: string;
+  export_preview_yaml: string;
+  export_preview_sha256: string;
 }
 
 export interface DemoGenerationReadiness {
@@ -2014,6 +2173,7 @@ export interface DemoGenerationReadiness {
   held_out_prompt_count: number;
   held_out_prompts: DemoReadinessPrompt[];
   generation_input_plan?: DemoGenerationInputPlan;
+  credential_requirements?: TextGenerationCredentialRequirements;
   safety_policy: JsonRecord;
 }
 
@@ -2072,6 +2232,9 @@ export interface PhotoPromptPairCandidate {
   boundary_id: string;
   embedding_record_id?: string | null;
   prompt: string;
+  variant_key?: string | null;
+  variant_label?: string | null;
+  photo_pair_generation_batch_id?: string | null;
   truth_status: string;
   retrieval_gap_origin?: JsonRecord | null;
   existing_task_id?: string | null;
@@ -2081,10 +2244,42 @@ export interface PhotoPromptPairCandidate {
 export interface PhotoPromptPairCandidateResponse {
   dry_run: boolean;
   requested_limit: number;
+  asset_id?: string | null;
+  metadata_profile_id?: string | null;
+  generation_batch_id?: string | null;
+  generation_batch_ids?: string[];
   created_count: number;
   created_task_ids: string[];
   candidates: PhotoPromptPairCandidate[];
   skipped: Array<Record<string, string>>;
+}
+
+export interface OperatorAssistantSuggestion {
+  assistant_type: string;
+  status: string;
+  task_id: string;
+  task_type: string;
+  model_name: string;
+  reasoning_effort: string;
+  model_ready: boolean;
+  live_model_call_used: boolean;
+  target_decision_key: string;
+  target_label: string;
+  next_question: string;
+  answer_format: string;
+  apply_label: string;
+  rationale: string;
+  field_updates?: JsonRecord;
+  field_update_summary?: string;
+  submit_recommendation?: {
+    requested: boolean;
+    ready: boolean;
+    reason: string;
+    missing_fields: string[];
+    action_label: string;
+  };
+  safety_policy: JsonRecord;
+  error?: string;
 }
 
 export interface TaskDraft {

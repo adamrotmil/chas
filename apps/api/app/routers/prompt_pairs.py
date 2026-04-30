@@ -20,6 +20,7 @@ from app.services.prompt_pair_audit import (
     compile_prompt_pair_review_progress,
     compile_prompt_pair_top_blocker_review_session_plan,
     compile_prompt_pair_top_blocker_slice,
+    compile_source_boundary_training_review_packet,
 )
 from app.services.prompt_pair_dpo import synthesize_dpo_candidates
 from app.services.prompt_pair_reference_pack import compile_prompt_pair_reference_pack
@@ -68,26 +69,30 @@ def prompt_pair_review_progress(
 @router.get("/top-blocker-slice")
 def prompt_pair_top_blocker_slice(
     limit: int = 5,
+    blocker: str | None = Query(default=None, min_length=1, max_length=200),
     session: Session = Depends(get_session),
 ) -> dict:
-    return compile_prompt_pair_top_blocker_slice(session=session, limit=limit)
+    return compile_prompt_pair_top_blocker_slice(session=session, limit=limit, blocker=blocker)
 
 
 @router.get("/top-blocker-review-session-plan")
 def prompt_pair_top_blocker_review_session_plan(
     limit: int = 5,
+    blocker: str | None = Query(default=None, min_length=1, max_length=200),
     session: Session = Depends(get_session),
 ) -> dict:
-    return compile_prompt_pair_top_blocker_review_session_plan(session=session, limit=limit)
+    return compile_prompt_pair_top_blocker_review_session_plan(session=session, limit=limit, blocker=blocker)
 
 
 @router.get("/top-blocker-review-session-plan/yaml")
 def prompt_pair_top_blocker_review_session_plan_yaml(
     limit: int = 5,
+    blocker: str | None = Query(default=None, min_length=1, max_length=200),
     session: Session = Depends(get_session),
 ) -> Response:
-    plan = compile_prompt_pair_top_blocker_review_session_plan(session=session, limit=limit)
-    filename = f"charlesops_prompt_pair_top_blocker_session_plan_{plan['selected_count']}.yaml"
+    plan = compile_prompt_pair_top_blocker_review_session_plan(session=session, limit=limit, blocker=blocker)
+    blocker_label = str(plan.get("blocker") or "none").replace("/", "_")
+    filename = f"charlesops_prompt_pair_{blocker_label}_session_plan_{plan['selected_count']}.yaml"
     return Response(
         content=plan["export_preview_yaml"],
         media_type="text/yaml; charset=utf-8",
@@ -127,6 +132,28 @@ def prompt_pair_dpo_rejected_reason_repair_projection(
         session=session,
         task_id=task_id,
         failure_mode=failure_mode,
+    )
+
+
+@router.get("/source-boundary-training-review-pack")
+def prompt_pair_source_boundary_training_review_pack(
+    limit: int = 25,
+    session: Session = Depends(get_session),
+) -> dict:
+    return compile_source_boundary_training_review_packet(session=session, limit=limit)
+
+
+@router.get("/source-boundary-training-review-pack/yaml")
+def prompt_pair_source_boundary_training_review_pack_yaml(
+    limit: int = 25,
+    session: Session = Depends(get_session),
+) -> Response:
+    packet = compile_source_boundary_training_review_packet(session=session, limit=limit)
+    filename = f"charlesops_source_boundary_training_review_pack_{packet['reported_candidate_count']}.yaml"
+    return Response(
+        content=packet["export_preview_yaml"],
+        media_type="text/yaml; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

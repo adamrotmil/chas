@@ -1,16 +1,18 @@
 # Ralph Loop Morning Status
 
-Generated: 2026-04-29T20:01:16.771857+00:00
-Live handoff content SHA-256: `6a0f9cbf03cfe3ea6971b31db5735daa27179241bdaf93c0f29b52f022c03ffe`
+Generated: 2026-04-30T02:06:02.840255+00:00
+Live handoff content SHA-256: `22e87ebf631c96d4d4adc1fffe6cce2b57fc13f50706f22c73cdcdefb036e8c3`
 
 ## Latest Gate
 
 - Checkpoint: `updates/ralph_loop_gate_checkpoint_latest.json`
 - Checkpoint Markdown: `updates/ralph_loop_gate_checkpoint_latest.md`
-- Checkpoint generated: `2026-04-29T20:01:10.593145Z`
-- Checks passed: 48 / 48
+- Checkpoint generated: `2026-04-30T02:05:56.209385Z`
+- Checks passed: 54 / 54
 - Phase report: `updates/ralph_loop_2026-04-29_phase_report.md`
-- Visual checkpoint: `updates/exports_readiness_operator_handoff_2026-04-29.png`
+- Exports visual checkpoint: `updates/exports_readiness_operator_handoff_2026-04-29.png`
+- Prompt Pairs visual checkpoint: `updates/prompt_pairs_work_queue_2026-04-29.png`
+- Photo Context visual checkpoint: `updates/photo_context_workbench_2026-04-29.png`
 
 ## Bottleneck Order
 
@@ -30,7 +32,7 @@ Prompt Pairs is the top bottleneck; artifacts are hash-audited.
 - Photo context: 22 groups need context / 5 held drafts (needs_adam_context).
 - Vector handoff: 0 ready / 5 held (review_holds_remaining).
 - Demo generation: text_generation_live_calls_disabled, openai_api_key_missing (credential_gated).
-- Downstream artifacts: 18 artifacts / 0 hash mismatches (hash_audited).
+- Downstream artifacts: 22 artifacts + handoff / 0 hash mismatches (hash_audited).
 
 ## Next Actions
 - Prompt Pairs: Backend preflight keeps this prompt pair in candidate dry-run until blockers are resolved.
@@ -39,7 +41,7 @@ Prompt Pairs is the top bottleneck; artifacts are hash-audited.
 - Demo Generation: Add credentials and enable live text generation when ready; no fine-tuning API call is part of MVP.
 
 ## Retrieval Gap Work
-- Query: airplane in Maine
+- Query: Old Orchard beach
 - Status: no_boundary_cleared_memory_result / no_claim
 - Candidates: 27 total, 5 previewed.
 - Completion: retrieval_query_returns_boundary_cleared_memory_or_context_task_submit_ready
@@ -70,17 +72,18 @@ Prompt Pairs is the top bottleneck; artifacts are hash-audited.
 
 ## Retrieval Gap
 
-- Query: airplane in Maine
+- Query: Old Orchard beach
 - Status: no_boundary_cleared_memory_result / no_claim
 - Candidate count: 27
-- Slice hash: `858f02e157cc8d6bfde49342724a232d7191aabfe218bf7f1d6db4d6be89d528`
+- Slice hash: `4627909215b22d222d0855f8a46a6670cf4ea027834ce320d69c75948bb0ea16`
 
 ## Downstream Artifacts
 
-- Artifact count: 18
+- Artifact count: 23
+- Handoff count note: Morning handoff summarizes the artifact manifest without counting the morning_handoff_yaml artifact itself.
 - Hash mismatches: 0
-- Manifest hash: `e57d7da70bafee0506518dd996a53b77c9ec2e64c10c115efc3d768d42a6e4a7`
-- Audit hash: `3e0e72cefdf2a6c62fb4b64348a438db940db7aac558b7317d49ce0a61a8e083`
+- Manifest hash: `5c34e574618b5051b06af26f609ca80ab81afb0b2faf8b43f94eea09f8cc5686`
+- Audit hash: `63e1a2e5092ee47a02cb03356fb7161892350d65f77072aecb0b39e952baa5da`
 
 ## Model Generation Gate
 

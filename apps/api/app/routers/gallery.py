@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 
 from app.db.session import get_session
 from app.models import Asset, Gallery, GalleryItem, Memory, MetadataProfile, Task
+from app.services.photo_constants import PHOTO_STATUS_ADAM_REVIEWED, PHOTO_STATUS_MACHINE_DRAFT
 
 router = APIRouter(prefix="/gallery", tags=["gallery"])
 
@@ -40,12 +41,12 @@ def _boundary_allows_scope(item: GalleryItem, scope: str) -> bool:
 
 
 def _review_status(profile: Optional[MetadataProfile], gallery: Optional[Gallery]) -> str:
-    if profile and profile.metadata_status in {"reviewed", "adam_reviewed"}:
+    if profile and profile.metadata_status == PHOTO_STATUS_ADAM_REVIEWED:
         return "reviewed"
     if profile and profile.reviewed_by == "adam":
         return "reviewed"
     if gallery and gallery.human_id == "GALLERY_MACHINE_DRAFT_PHOTOS":
-        return "machine_draft"
+        return PHOTO_STATUS_MACHINE_DRAFT
     return "needs_review"
 
 

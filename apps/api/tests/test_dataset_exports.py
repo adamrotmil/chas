@@ -4,7 +4,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.session import get_session
 from app.main import app
-from app.models import ContextPack, DatasetExportItem, GoldVoiceExample, SFTCandidate, Task
+from app.models import ContextPack, DPOPair, DatasetExportItem, GoldVoiceExample, SFTCandidate, Task
 
 
 def build_client():
@@ -187,6 +187,71 @@ def test_export_dry_run_excludes_boundary_blocked_and_candidate_items():
         assert second_manifest[stable_key] == manifest[stable_key]
 
 
+def test_approved_actual_rows_with_quality_or_structural_blockers_are_excluded():
+    client, engine = build_client()
+    with Session(engine) as session:
+        blocked_sft_gold_id = add_gold_with_sft(session, "GOLD_APPROVED_BUT_QUALITY_BLOCKED", "passed")
+        sft_candidate = session.exec(
+            select(SFTCandidate).where(SFTCandidate.source_gold_voice_example_id == blocked_sft_gold_id)
+        ).one()
+        sft_candidate.quality_gate = {"export_blockers": ["manual_quality_hold"]}
+        sft_candidate.export_status = "approved"
+        session.add(sft_candidate)
+
+        context = ContextPack(
+            human_id="CTX_DPO_APPROVED_BUT_BLOCKED",
+            user_intent="gold_voice_generation",
+            requested_voice_mode="father_to_adam",
+            truth_mode="adam_expert_reconstruction",
+            boundaries_snapshot={"boundary_status": "passed"},
+        )
+        session.add(context)
+        session.flush()
+        dpo_gold = GoldVoiceExample(
+            human_id="GOLD_DPO_APPROVED_BUT_BLOCKED",
+            context_pack_id=context.id,
+            voice_mode="father_to_adam",
+            truth_status="adam_expert_reconstruction",
+            adam_gold_edit="soup was thin...\n\ndad",
+            downstream_use={"dpo": True, "artifact_mode": "dpo"},
+            ratings={"response_rubric": {"response_b": {"privacy_export_safety": {"status": "no_issues"}}}},
+        )
+        session.add(dpo_gold)
+        session.flush()
+        session.add(
+            DPOPair(
+                source_gold_voice_example_id=dpo_gold.id,
+                prompt="How was the soup?",
+                chosen="soup was thin...\n\ndad",
+                rejected="The soup was bland.",
+                reason=[],
+                export_status="approved",
+            )
+        )
+        session.commit()
+
+    sft = client.get("/api/dataset-exports/dry-run?export_type=sft")
+    assert sft.status_code == 200
+    sft_body = sft.json()
+    assert sft_body["included_count"] == 0
+    sft_reasons = [reason for item in sft_body["excluded"] for reason in item["reasons"]]
+    assert "manual_quality_hold" in sft_reasons
+
+    dpo = client.get("/api/dataset-exports/dry-run?export_type=dpo")
+    assert dpo.status_code == 200
+    dpo_body = dpo.json()
+    assert dpo_body["included_count"] == 0
+    dpo_reasons = [reason for item in dpo_body["excluded"] for reason in item["reasons"]]
+    assert "dpo_rejected_reason_empty" in dpo_reasons
+
+    sft_jsonl = client.get("/api/dataset-exports/jsonl?export_type=sft")
+    dpo_jsonl = client.get("/api/dataset-exports/jsonl?export_type=dpo")
+    assert sft_jsonl.status_code == 200
+    assert dpo_jsonl.status_code == 200
+    assert sft_jsonl.text == ""
+    assert dpo_jsonl.text == ""
+
+
 def test_candidate_export_dry_run_includes_prompt_pair_review_tasks_only_when_requested():
     client, engine = build_client()
     with Session(engine) as session:
@@ -232,6 +297,87 @@ def test_candidate_export_dry_run_includes_prompt_pair_review_tasks_only_when_re
     ]
     assert item["payload"]["metadata"]["voice_mode"] == "mundane_text_message"
     assert item["payload"]["metadata"]["review_blockers"] == ["needs_adam_gold_edit"]
+
+
+def test_candidate_export_dry_run_preserves_prompt_pair_provenance_backstage():
+    client, engine = build_client()
+    with Session(engine) as session:
+        session.add(
+            Task(
+                human_id="TASK_PROMPT_PAIR_WITH_PROVENANCE",
+                task_type="gold_voice_edit",
+                target_type="prompt_pair",
+                target_id="prompt_pair_with_provenance",
+                queue="prompt_pairs_needing_gold_edits",
+                input_payload={
+                    "artifact_mode": "sft",
+                    "system_prompt": "You are Charles Rotmil.",
+                    "prompt": "What were you writing to Tom about?",
+                    "content": "Hi Tom\nHow the hell are you?\nNo word in a while.\n\nCharles",
+                    "voice_mode": "verbatim_email_reply",
+                    "truth_status": "adam_expert_reconstruction",
+                    "synthetic": True,
+                    "source_title": "thread.eml",
+                    "grounding_asset_id": "asset_email_1",
+                    "source_segment_id": "segment_email_001",
+                    "source_chunk_index": 2,
+                    "source_prompt_pair_example_index": 12,
+                    "source_section_review_hint": "complete_thought",
+                    "source_excerpt": "Email 1:\nHi Tom\nHow the hell are you?\nNo word in a while.\nCharles",
+                    "source_photo_id": "photo_memory_anchor_1",
+                    "photo_context_profile_id": "profile_photo_1",
+                    "photo_memory_id": "memory_photo_1",
+                    "boundary_snapshot": {
+                        "privacy_level": "family_private",
+                        "usable_for_sft": False,
+                        "usable_for_dpo": False,
+                        "reviewed_by": "adam",
+                    },
+                    "pair_generation_metadata": {
+                        "strategy": "natural_section",
+                        "model_name": "gpt-5.5",
+                        "reasoning_effort": "xhigh",
+                        "no_live_model_call": True,
+                    },
+                    "export_preview_yaml": "- messages:\n  - role: system\n    content: You are Charles Rotmil.\n",
+                    "context": "Imported email thread; provenance should stay in metadata.",
+                },
+                created_by="test",
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/dataset-exports/dry-run?export_type=sft&include_candidates=true")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["included_count"] == 1
+    payload = body["included"][0]["payload"]
+    assert payload["messages"] == [
+        {"role": "system", "content": "You are Charles Rotmil."},
+        {"role": "user", "content": "What were you writing to Tom about?"},
+        {"role": "assistant", "content": "Hi Tom\nHow the hell are you?\nNo word in a while.\n\nCharles"},
+    ]
+    metadata = payload["metadata"]
+    assert metadata["source_segment_id"] == "segment_email_001"
+    assert metadata["source_chunk_index"] == 2
+    assert metadata["source_prompt_pair_example_index"] == 12
+    assert metadata["source_section_review_hint"] == "complete_thought"
+    assert metadata["source_excerpt"].startswith("Email 1:")
+    assert metadata["source_photo_id"] == "photo_memory_anchor_1"
+    assert metadata["photo_context_profile_id"] == "profile_photo_1"
+    assert metadata["photo_memory_id"] == "memory_photo_1"
+    assert metadata["boundary_snapshot"]["privacy_level"] == "family_private"
+    assert metadata["pair_generation_metadata"] == {
+        "strategy": "natural_section",
+        "model_name": "gpt-5.5",
+        "reasoning_effort": "xhigh",
+        "no_live_model_call": True,
+    }
+    assert "Imported email thread" in metadata["context"]
+    assert "source_segment_id" not in payload["messages"][2]["content"]
+    assert "boundary_snapshot" not in payload["messages"][2]["content"]
+    assert "pair_generation_metadata" not in payload["messages"][2]["content"]
 
 
 def test_synthetic_dpo_candidates_are_durable_and_visible_to_dpo_dry_run():

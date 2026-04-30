@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from app.config import Settings, settings
 
+TEXT_GENERATION_MAX_OUTPUT_TOKENS = 1800
+
 
 @dataclass
 class TextDraftRequest:
@@ -113,6 +115,24 @@ def _user_input(request: TextDraftRequest) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def build_responses_api_request_body(
+    request: TextDraftRequest,
+    *,
+    model_name: str,
+    reasoning_effort: str,
+) -> Dict[str, Any]:
+    return {
+        "model": model_name,
+        "reasoning": {"effort": reasoning_effort},
+        "input": [
+            {"role": "developer", "content": _developer_instructions(request)},
+            {"role": "user", "content": _user_input(request)},
+        ],
+        "max_output_tokens": TEXT_GENERATION_MAX_OUTPUT_TOKENS,
+        "store": False,
+    }
+
+
 def generate_text_draft(
     request: TextDraftRequest,
     *,
@@ -133,14 +153,11 @@ def generate_text_draft(
             timeout=180,
         )
         response = client.responses.create(
-            model=model_name,
-            reasoning={"effort": reasoning_effort},
-            input=[
-                {"role": "developer", "content": _developer_instructions(request)},
-                {"role": "user", "content": _user_input(request)},
-            ],
-            max_output_tokens=1800,
-            store=False,
+            **build_responses_api_request_body(
+                request,
+                model_name=model_name,
+                reasoning_effort=reasoning_effort,
+            )
         )
         output_text = _clean(getattr(response, "output_text", None))
         if not output_text:
@@ -156,7 +173,7 @@ def generate_text_draft(
                 "api": "responses",
                 "reasoning": {"effort": reasoning_effort},
                 "store": False,
-                "max_output_tokens": 1800,
+                "max_output_tokens": TEXT_GENERATION_MAX_OUTPUT_TOKENS,
                 "conversation_family": request.conversation_family,
                 "target_response_shape": request.target_response_shape,
                 "no_live_model_call": False,

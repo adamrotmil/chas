@@ -1,6 +1,7 @@
 "use client";
 
 import { CheckCircle2, ClipboardList, Download, FileJson, Image, RefreshCw, Search, ShieldCheck, Sparkles } from "lucide-react";
+import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createDemoGenerations,
@@ -20,8 +21,11 @@ import {
   getPhotoContextSessionProgress,
   getPhotoContextSessionProgressUrl,
   getPhotoContextTopSlice,
+  getPhotoReviewPriorityYamlUrl,
   getDatasetExportDryRun,
   getDemoGenerationReadiness,
+  getDemoGenerationRequestPreview,
+  getDemoGenerationRequestPreviewYamlUrl,
   getDownstreamArtifactAudit,
   getDownstreamArtifactManifest,
   getDownstreamArtifactManifestUrl,
@@ -57,6 +61,7 @@ import type {
   Asset,
   DatasetExportDryRun,
   DemoGenerationReadiness,
+  DemoGenerationRequestPreview,
   DpoRejectedReasonRepairPacket,
   DpoRejectedReasonRepairProjection,
   DownstreamArtifactAudit,
@@ -68,6 +73,7 @@ import type {
   MorningHandoffChecklistItem,
   PhotoMemoryCorpusResponse,
   PhotoContextReviewPack,
+  PhotoContextReviewPackAction,
   PhotoContextReviewPackNoClaimGroup,
   PhotoContextReviewSessionPlan,
   PhotoContextRetrievalGapFieldWorklist,
@@ -82,6 +88,7 @@ import type {
   PromptPairAudit,
   PromptPairAuditPack,
   PromptPairHeldCandidatePack,
+  PromptPairHeldCandidateWorklist,
   PromptPairReferencePack,
   PromptPairTopBlockerReviewSessionPlan,
   PromptPairTopBlockerSlice,
@@ -93,7 +100,16 @@ import type {
   Task
 } from "@/lib/types";
 
-const retrievalQueries = ["Japanese flute", "honors ceremony", "Adam flowers", "airplane in Maine"];
+const defaultRetrievalGapQuery = "Old Orchard beach";
+const baselineRetrievalQueries = ["Japanese flute", "honors ceremony", "Adam flowers", defaultRetrievalGapQuery];
+type ExportReadinessTab = "overview" | "prompt_pairs" | "photos" | "model" | "artifacts";
+const exportReadinessTabs: { key: ExportReadinessTab; label: string; description: string }[] = [
+  { key: "overview", label: "Overview", description: "What needs attention next" },
+  { key: "prompt_pairs", label: "Prompt Pairs", description: "SFT/DPO review and voice packs" },
+  { key: "photos", label: "Photos & Retrieval", description: "Photo memory, vectors, gallery, and search" },
+  { key: "model", label: "Model/Demo", description: "Live model gate and exact requests" },
+  { key: "artifacts", label: "Artifacts", description: "Downloadable outputs and hash audit" },
+];
 
 interface ReadinessState {
   audit: PromptPairAudit;
@@ -107,6 +123,7 @@ interface ReadinessState {
   sft: DatasetExportDryRun;
   dpo: DatasetExportDryRun;
   demoReadiness: DemoGenerationReadiness;
+  demoRequestPreview: DemoGenerationRequestPreview;
   modelStatus: ModelStatus;
   assets: Asset[];
   memories: Memory[];
@@ -165,6 +182,20 @@ function retrievalHasPhotoMemory(search: RetrievalSearchResponse): boolean {
   return search.results.some((result) => Boolean(result.source_photo_id) && result.target_type === "memory");
 }
 
+function retrievalResultReviewLabel(result?: RetrievalSearchResponse["results"][number]): string {
+  if (!result) {
+    return "No reviewed memory result yet";
+  }
+  const truthStatus = result.review_policy?.truth_status || result.truth_status || "unknown";
+  if (result.review_policy?.requires_adam_review) {
+    return `Machine-drafted memory / ${titleCase(truthStatus)} / needs Adam review`;
+  }
+  if (truthStatus === "adam_memory") {
+    return "Adam-reviewed memory / boundary-cleared";
+  }
+  return `${titleCase(truthStatus)} / review status recorded`;
+}
+
 type RetrievalGap = NonNullable<RetrievalSearchResponse["retrieval_gap"]>;
 type RetrievalGapCandidate = RetrievalGap["sample_context_groups"][number];
 type PhotoContextSessionPlanItem = PhotoContextReviewSessionPlan["items"][number];
@@ -193,6 +224,34 @@ function retrievalGapCandidateTitle(group: RetrievalGapCandidate): string {
   return `${actionLabel} for ${group.display_title}. ${evidenceSource}; ${mediaKind}. ${nonMemory} ${actionHint}`;
 }
 
+function photoContextActionBody(action: PhotoContextReviewPackAction): Record<string, unknown> {
+  const request = action.request;
+  const body = request && typeof request === "object" ? request.body : null;
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+function photoContextActionProvenance(item: PhotoContextSessionPlanItem): {
+  sourceQuery: string;
+  matchQuality: string;
+  selectionReason: string;
+  queryIsPrioritizationOnly: boolean;
+  notMemoryClaim: boolean;
+} {
+  const actionBody = photoContextActionBody(item.action);
+  const provenance = item.action.query_provenance ?? {};
+  return {
+    sourceQuery: String(actionBody.source_query ?? provenance.source_query ?? item.query_origin.source_query),
+    matchQuality: String(actionBody.candidate_match_quality ?? provenance.candidate_match_quality ?? "backlog_only"),
+    selectionReason: String(
+      actionBody.candidate_selection_reason ?? provenance.candidate_selection_reason ?? "selected_from_photo_context_review_session_plan"
+    ),
+    queryIsPrioritizationOnly: Boolean(
+      actionBody.query_is_context_prioritization_only ?? provenance.query_is_context_prioritization_only ?? item.query_origin.query_is_context_prioritization_only
+    ),
+    notMemoryClaim: Boolean(actionBody.not_memory_claim ?? provenance.not_memory_claim ?? item.not_memory_claim)
+  };
+}
+
 interface DownstreamReadinessPanelProps {
   onOpenReviewTask?: (taskId: string) => void | Promise<void>;
 }
@@ -200,16 +259,28 @@ interface DownstreamReadinessPanelProps {
 export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadinessPanelProps) {
   const [state, setState] = useState<ReadinessState | null>(null);
   const [loading, setLoading] = useState(false);
+  const [retrievalGapQuery, setRetrievalGapQuery] = useState(defaultRetrievalGapQuery);
+  const [retrievalGapQueryDraft, setRetrievalGapQueryDraft] = useState(defaultRetrievalGapQuery);
   const [photoActionKey, setPhotoActionKey] = useState<string | null>(null);
   const [photoSessionStatus, setPhotoSessionStatus] = useState<string | null>(null);
+  const [promptPairActionKey, setPromptPairActionKey] = useState<string | null>(null);
+  const [promptPairFocusStatus, setPromptPairFocusStatus] = useState<string | null>(null);
   const [demoActionStatus, setDemoActionStatus] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ExportReadinessTab>("overview");
   const [error, setError] = useState<string | null>(null);
+
+  const activeRetrievalQueries = useMemo(() => {
+    const selectedQuery = retrievalGapQuery.trim() || defaultRetrievalGapQuery;
+    return baselineRetrievalQueries.includes(selectedQuery)
+      ? baselineRetrievalQueries
+      : [...baselineRetrievalQueries.filter((query) => query !== defaultRetrievalGapQuery), selectedQuery];
+  }, [retrievalGapQuery]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [audit, auditPack, heldPromptPairs, topBlockerSlice, topBlockerSessionPlan, dpoRepairPacket, dpoRepairProjection, referencePack, sft, dpo, demoReadiness, modelStatus, assets, memories, tasks, corpus, photoInventory, photoContextPack, photoContextTopSlice, photoContextSessionPlan, photoContextRetrievalGapFieldWorklist, photoContextRetrievalGapPayoffPreview, photoContextProgress, vectorHandoff, draftVectorPreview, reviewedPhotoDemoReadiness, gallery, retrievalGapSlice, photoDrafts, photoPairCandidates, downstreamBottlenecks, downstreamArtifactManifest, downstreamArtifactAudit, morningHandoff, ...retrieval] = await Promise.all([
+      const [audit, auditPack, heldPromptPairs, topBlockerSlice, topBlockerSessionPlan, dpoRepairPacket, dpoRepairProjection, referencePack, sft, dpo, demoReadiness, demoRequestPreview, modelStatus, assets, memories, tasks, corpus, photoInventory, photoContextPack, photoContextTopSlice, photoContextSessionPlan, photoContextRetrievalGapFieldWorklist, photoContextRetrievalGapPayoffPreview, photoContextProgress, vectorHandoff, draftVectorPreview, reviewedPhotoDemoReadiness, gallery, retrievalGapSlice, photoDrafts, photoPairCandidates, downstreamBottlenecks, downstreamArtifactManifest, downstreamArtifactAudit, morningHandoff, ...retrieval] = await Promise.all([
         getPromptPairAudit(12),
         getPromptPairAuditPack(200),
         getPromptPairHeldCandidates(30),
@@ -221,6 +292,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         getDatasetExportDryRun("sft", true),
         getDatasetExportDryRun("dpo", true),
         getDemoGenerationReadiness(5),
+        getDemoGenerationRequestPreview(5),
         getModelStatus(),
         getAssets(),
         getMemories(),
@@ -229,7 +301,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         getPhotoReviewInventory(100),
         getPhotoContextReviewPack("family_private", 100),
         getPhotoContextTopSlice("family_private", 5),
-        getPhotoContextReviewSessionPlan("family_private", 5, "airplane in Maine"),
+        getPhotoContextReviewSessionPlan("family_private", 5, retrievalGapQuery),
         getPhotoContextRetrievalGapFieldWorklist("family_private", 100),
         getPhotoContextRetrievalGapPayoffPreview("family_private", 10),
         getPhotoContextSessionProgress("family_private", 100),
@@ -237,22 +309,22 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         getPhotoMemoryVectorHandoff("family_private", 20, true),
         getReviewedPhotoMemoryDemoReadiness("family_private", 5),
         getReviewedPhotoGallery("family_private", 6, true),
-        getRetrievalGapReviewSlice("airplane in Maine", "family_private", 5),
+        getRetrievalGapReviewSlice(retrievalGapQuery, "family_private", 5),
         createPhotoMemoryDrafts(5, true),
         createPhotoPromptPairCandidates(5, true),
         getDownstreamBottlenecks("family_private", 4),
-        getDownstreamArtifactManifest("family_private", 200, 20),
-        getDownstreamArtifactAudit("family_private", 200, 20),
-        getMorningHandoff("family_private", 200, 20, 4),
-        ...retrievalQueries.map((query) => searchRetrieval(query, "family_private", 3))
+        getDownstreamArtifactManifest("family_private", 200, 20, retrievalGapQuery),
+        getDownstreamArtifactAudit("family_private", 200, 20, retrievalGapQuery),
+        getMorningHandoff("family_private", 200, 20, 4, retrievalGapQuery),
+        ...activeRetrievalQueries.map((query) => searchRetrieval(query, "family_private", 3))
       ]);
-      setState({ audit, auditPack, heldPromptPairs, topBlockerSlice, topBlockerSessionPlan, dpoRepairPacket, dpoRepairProjection, referencePack, sft, dpo, demoReadiness, modelStatus, assets, memories, tasks, corpus, photoInventory, photoContextPack, photoContextTopSlice, photoContextSessionPlan, photoContextRetrievalGapFieldWorklist, photoContextRetrievalGapPayoffPreview, photoContextProgress, vectorHandoff, draftVectorPreview, reviewedPhotoDemoReadiness, gallery, retrievalGapSlice, photoDrafts, photoPairCandidates, downstreamBottlenecks, downstreamArtifactManifest, downstreamArtifactAudit, morningHandoff, retrieval });
+      setState({ audit, auditPack, heldPromptPairs, topBlockerSlice, topBlockerSessionPlan, dpoRepairPacket, dpoRepairProjection, referencePack, sft, dpo, demoReadiness, demoRequestPreview, modelStatus, assets, memories, tasks, corpus, photoInventory, photoContextPack, photoContextTopSlice, photoContextSessionPlan, photoContextRetrievalGapFieldWorklist, photoContextRetrievalGapPayoffPreview, photoContextProgress, vectorHandoff, draftVectorPreview, reviewedPhotoDemoReadiness, gallery, retrievalGapSlice, photoDrafts, photoPairCandidates, downstreamBottlenecks, downstreamArtifactManifest, downstreamArtifactAudit, morningHandoff, retrieval });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load downstream readiness.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeRetrievalQueries, retrievalGapQuery]);
 
   useEffect(() => {
     void load();
@@ -413,6 +485,24 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
     [load, onOpenReviewTask]
   );
 
+  const handleFocusPromptPairWorklist = useCallback(async (worklist: PromptPairHeldCandidateWorklist) => {
+    setPromptPairActionKey(worklist.worklist_key);
+    setPromptPairFocusStatus(null);
+    setError(null);
+    try {
+      const [topBlockerSlice, topBlockerSessionPlan] = await Promise.all([
+        getPromptPairTopBlockerSlice(5, worklist.blocker),
+        getPromptPairTopBlockerReviewSessionPlan(5, worklist.blocker)
+      ]);
+      setState((current) => (current ? { ...current, topBlockerSlice, topBlockerSessionPlan } : current));
+      setPromptPairFocusStatus(`${titleCase(worklist.blocker)} focused for batch review.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to focus prompt pair blocker worklist.");
+    } finally {
+      setPromptPairActionKey(null);
+    }
+  }, []);
+
   const handleOpenPhotoContextSliceItem = useCallback(
     async (item: PhotoContextTopSlice["items"][number]) => {
       setPhotoActionKey(item.item_key);
@@ -460,7 +550,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
     setPhotoSessionStatus("Creating review tasks...");
     setError(null);
     try {
-      const result = await createPhotoContextReviewSession(5, false);
+      const result = await createPhotoContextReviewSession(5, false, retrievalGapQuery);
       setPhotoSessionStatus(
         `${result.created_count} created / ${result.existing_count} already ready / ${result.selected_count} selected`
       );
@@ -475,7 +565,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
     } finally {
       setPhotoActionKey(null);
     }
-  }, [load, onOpenReviewTask]);
+  }, [load, onOpenReviewTask, retrievalGapQuery]);
 
   const handleOpenMorningChecklistItem = useCallback(
     async (item: MorningHandoffChecklistItem) => {
@@ -496,6 +586,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
   const handleOpenPhotoContextSessionItem = useCallback(
     async (item: PhotoContextSessionPlanItem) => {
       const actionKey = `session-${item.group_key}`;
+      const actionProvenance = photoContextActionProvenance(item);
       setPhotoActionKey(actionKey);
       setError(null);
       try {
@@ -503,7 +594,9 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           group_key: item.group_key,
           asset_id: item.canonical_asset_id,
           use_canonical: true,
-          source_query: item.query_origin?.source_query ?? "airplane in Maine",
+          source_query: actionProvenance.sourceQuery || item.query_origin?.source_query || retrievalGapQuery,
+          candidate_match_quality: actionProvenance.matchQuality,
+          candidate_selection_reason: actionProvenance.selectionReason,
           session_sequence_number: item.sequence_number,
           session_selected_count: state?.photoContextSessionPlan.selected_count,
           session_plan_content_sha256: state?.photoContextSessionPlan.content_sha256,
@@ -518,7 +611,24 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         setPhotoActionKey(null);
       }
     },
-    [load, onOpenReviewTask, state?.photoContextSessionPlan]
+    [load, onOpenReviewTask, retrievalGapQuery, state?.photoContextSessionPlan]
+  );
+
+  const handleApplyRetrievalGapQuery = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const nextQuery = retrievalGapQueryDraft.trim();
+      if (!nextQuery) {
+        setRetrievalGapQueryDraft(retrievalGapQuery);
+        return;
+      }
+      if (nextQuery === retrievalGapQuery) {
+        void load();
+        return;
+      }
+      setRetrievalGapQuery(nextQuery);
+    },
+    [load, retrievalGapQuery, retrievalGapQueryDraft]
   );
 
   const metrics = useMemo(() => {
@@ -595,7 +705,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
   }, [state]);
 
   const healthTone =
-    state && metrics && state.audit.invalid_pair_count === 0 && metrics.sftCount >= 200 && metrics.dpoCount > 0 && metrics.retrievalPasses === retrievalQueries.length
+    state && metrics && state.audit.invalid_pair_count === 0 && metrics.sftCount >= 200 && metrics.dpoCount > 0 && metrics.retrievalPasses === activeRetrievalQueries.length
       ? "good"
       : "warning";
   const vectorSummaryAction =
@@ -603,9 +713,10 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
     state?.vectorHandoff.manifest.next_review_actions?.find((action) => Boolean(action.review_task_id));
   const nextBottlenecks = state?.downstreamBottlenecks.items ?? [];
   const topPromptPairBlockerItem = state?.topBlockerSlice.items[0];
+  const credentialRequirements = state?.demoReadiness.credential_requirements ?? state?.modelStatus.credential_requirements;
 
   return (
-    <section className="downstream-readiness" aria-label="Downstream readiness">
+    <section className="downstream-readiness" aria-label="Downstream readiness" data-active-tab={activeTab}>
       <header className="readiness-header">
         <div>
           <span>
@@ -621,9 +732,43 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </button>
       </header>
 
+      <nav className="export-tab-bar" aria-label="Export readiness sections">
+        {exportReadinessTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            className={activeTab === tab.key ? "active" : ""}
+            aria-pressed={activeTab === tab.key}
+            onClick={() => setActiveTab(tab.key)}
+          >
+            <span>{tab.label}</span>
+            <em>{tab.description}</em>
+          </button>
+        ))}
+      </nav>
+
+      <form className="memory-query-control" aria-label="Memory retrieval query control" onSubmit={handleApplyRetrievalGapQuery}>
+        <label htmlFor="memory-retrieval-query">
+          <span>Example retrieval probe</span>
+          <input
+            id="memory-retrieval-query"
+            value={retrievalGapQueryDraft}
+            onChange={(event) => setRetrievalGapQueryDraft(event.target.value)}
+            aria-label="Memory query"
+            placeholder="Describe a memory search to test retrieval readiness"
+          />
+        </label>
+        <button type="submit" disabled={loading || !retrievalGapQueryDraft.trim()}>
+          Apply query
+        </button>
+        <small>
+          Active probe: <strong>{retrievalGapQuery}</strong>. This is an example search for retrieval readiness; it can prioritize photo context, but it is not a memory claim or a required answer for every photo.
+        </small>
+      </form>
+
       {error ? <div className="utility-alert danger">{error}</div> : null}
 
-      <section className="readiness-card" aria-label="Morning handoff">
+      <section className="readiness-card" aria-label="Morning handoff" data-export-tab="overview">
         <h4>Morning Handoff</h4>
         <p>{state?.morningHandoff.headline ?? "Building handoff..."}</p>
         <div className="photo-draft-list">
@@ -648,7 +793,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
         <div className="photo-draft-list" aria-label="Morning retrieval gap work">
           <span>
-            <em>Retrieval gap</em>
+            <em>Example probe gap</em>
             <strong>{state?.morningHandoff.retrieval_gap_work.query ?? "No query selected"}</strong>
             <small>{state?.morningHandoff.retrieval_gap_work.completion_signal ?? "completion signal pending"}</small>
           </span>
@@ -693,7 +838,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         ) : null}
       </section>
 
-      <section className="readiness-card" aria-label="Operator acceptance tests">
+      <section className="readiness-card" aria-label="Operator acceptance tests" data-export-tab="overview">
         <h4>Operator Acceptance Tests</h4>
         <div className="photo-draft-list">
           {state?.morningHandoff.operator_checklist.slice(0, 4).map((item) => (
@@ -718,7 +863,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
       </section>
 
-      <section className="export-readiness-summary" aria-label="Export readiness summary">
+      <section className="export-readiness-summary" aria-label="Export readiness summary" data-export-tab="overview">
         <header>
           <span>Export-ready now</span>
           <strong>Training, photo vectors, and demo gate</strong>
@@ -763,7 +908,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
       </section>
 
-      <section className="bottleneck-queue" aria-label="Next bottleneck work queue">
+      <section className="bottleneck-queue" aria-label="Next bottleneck work queue" data-export-tab="overview">
         <header>
           <span>Next bottlenecks</span>
           <strong>Highest-leverage work across pairs, photos, vectors, and demo gate</strong>
@@ -799,7 +944,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
       </section>
 
-      <section className="artifact-download-grid" aria-label="Downstream artifact downloads">
+      <section className="artifact-download-grid" aria-label="Downstream artifact downloads" data-export-tab="artifacts">
         <article>
           <header>
             <Download size={14} />
@@ -850,8 +995,8 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </header>
           <strong>{state?.photoContextSessionPlan.selected_count ?? 0} no-claim photo groups</strong>
           <code>{artifactManifestByKey.get("photo_context_review_session_plan_yaml")?.content_sha256 ?? state?.photoContextSessionPlan.export_preview_sha256 ?? "hash pending"}</code>
-          <small>{state?.photoContextSessionPlan.source_query ?? "airplane in Maine"} / query is prioritization only</small>
-          <a href={getPhotoContextReviewSessionPlanYamlUrl("family_private", 5, "airplane in Maine")} target="_blank" rel="noreferrer">
+          <small>{state?.photoContextSessionPlan.source_query ?? retrievalGapQuery} / query is prioritization only</small>
+          <a href={getPhotoContextReviewSessionPlanYamlUrl("family_private", 5, retrievalGapQuery)} target="_blank" rel="noreferrer">
             Session YAML
           </a>
         </article>
@@ -910,6 +1055,25 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         <article>
           <header>
             <Download size={14} />
+            <span>Photo throughput priority</span>
+          </header>
+          <strong>
+            {artifactManifestByKey.get("photo_review_priority_yaml")?.record_count ?? 0} ranked review tasks
+          </strong>
+          <code>{artifactManifestByKey.get("photo_review_priority_yaml")?.content_sha256 ?? "hash pending"}</code>
+          <small>
+            {String(
+              artifactManifestByKey.get("photo_review_priority_yaml")?.policy?.completion_signal ??
+                "completion signal pending"
+            )}
+          </small>
+          <a href={getPhotoReviewPriorityYamlUrl("fastest_vector", 10)} target="_blank" rel="noreferrer">
+            Priority YAML
+          </a>
+        </article>
+        <article>
+          <header>
+            <Download size={14} />
             <span>DPO repair packet</span>
           </header>
           <strong>{state?.dpoRepairPacket.total_candidate_count ?? 0} rejected-reason gaps</strong>
@@ -917,6 +1081,24 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           <small>{state?.dpoRepairPacket.completion_signal ?? "completion signal pending"}</small>
           <a href={getDpoRejectedReasonRepairPacketYamlUrl(25)} target="_blank" rel="noreferrer">
             Repair YAML
+          </a>
+        </article>
+        <article>
+          <header>
+            <Sparkles size={14} />
+            <span>Demo request preview</span>
+          </header>
+          <strong>{state?.demoRequestPreview.request_count ?? 0} exact request bodies</strong>
+          <code>
+            {artifactManifestByKey.get("demo_generation_request_preview_yaml")?.content_sha256 ??
+              state?.demoRequestPreview.export_preview_sha256 ??
+              "hash pending"}
+          </code>
+          <small>
+            {artifactAuditByKey.get("demo_generation_request_preview_yaml") ? "hash ok" : "hash pending"} / no live model call
+          </small>
+          <a href={getDemoGenerationRequestPreviewYamlUrl(5)} target="_blank" rel="noreferrer">
+            Request YAML
           </a>
         </article>
         <article>
@@ -929,7 +1111,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           <small>
             Hash audit: {state?.downstreamArtifactAudit.all_hashes_match ? "all hashes match" : `${state?.downstreamArtifactAudit.mismatch_count ?? 0} mismatches`}
           </small>
-          <a href={getDownstreamArtifactManifestUrl("family_private", 200, 20)} target="_blank" rel="noreferrer">
+          <a href={getDownstreamArtifactManifestUrl("family_private", 200, 20, retrievalGapQuery)} target="_blank" rel="noreferrer">
             Manifest JSON
           </a>
         </article>
@@ -943,13 +1125,13 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           <small>
             Hash audit: {artifactAuditByKey.get("morning_handoff_yaml") ? "hash ok" : "hash pending"}
           </small>
-          <a href={getMorningHandoffYamlUrl("family_private", 200, 20, 4, "airplane in Maine")} target="_blank" rel="noreferrer">
+          <a href={getMorningHandoffYamlUrl("family_private", 200, 20, 4, retrievalGapQuery)} target="_blank" rel="noreferrer">
             Handoff YAML
           </a>
         </article>
       </section>
 
-      <section className="readiness-card" aria-label="Artifact manifest table">
+      <section className="readiness-card" aria-label="Artifact manifest table" data-export-tab="artifacts">
         <h4>Artifact Manifest</h4>
         <div className="photo-draft-list">
           {state?.downstreamArtifactManifest.items.map((artifact) => {
@@ -970,7 +1152,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
       </section>
 
-      <section className="readiness-card" aria-label="Artifact hash audit details">
+      <section className="readiness-card" aria-label="Artifact hash audit details" data-export-tab="artifacts">
         <h4>Artifact Hash Audit</h4>
         <p>
           {state?.downstreamArtifactAudit.checked_count ?? 0} checked / {state?.downstreamArtifactAudit.mismatch_count ?? 0} mismatches
@@ -993,7 +1175,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
       </section>
 
-      <div className="readiness-metrics">
+      <div className="readiness-metrics" data-export-tab="overview">
         <article data-tone={healthTone}>
           <ShieldCheck size={15} />
           <span>Audit</span>
@@ -1056,8 +1238,8 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             {metrics?.corpusExcludedCount
               ? `${metrics.corpusExcludedCount} held for Adam review`
               : metrics
-                ? `${metrics.retrievalPasses}/${retrievalQueries.length} retrieval checks`
-                : `0/${retrievalQueries.length} retrieval checks`}
+                ? `${metrics.retrievalPasses}/${activeRetrievalQueries.length} retrieval checks`
+                : `0/${activeRetrievalQueries.length} retrieval checks`}
           </em>
         </article>
         <article data-tone={metrics && metrics.vectorHandoffRecordCount > 0 ? "good" : "warning"}>
@@ -1085,7 +1267,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
       </div>
 
       <div className="readiness-columns">
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="prompt_pairs">
           <h4>Voice Mode Coverage</h4>
           <div className="voice-mode-list">
             {state
@@ -1099,7 +1281,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="prompt_pairs">
           <h4>200-Pair Human Audit Pack</h4>
           <div className="photo-draft-list">
             <span>
@@ -1121,7 +1303,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card" aria-label="Held prompt pair review pack">
+        <section className="readiness-card" aria-label="Held prompt pair review pack" data-export-tab="prompt_pairs">
           <h4>Held Prompt Pair Review Pack</h4>
           <div className="photo-draft-list">
             <span>
@@ -1154,7 +1336,10 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             <span>
               <em>Top blocker</em>
               <strong>{state?.topBlockerSlice.blocker ? titleCase(state.topBlockerSlice.blocker) : "No blocker"}</strong>
-              <small>{state?.topBlockerSlice.completion_signal ?? "completion signal pending"}</small>
+              <small>
+                {state?.topBlockerSlice.selection_policy ? titleCase(state.topBlockerSlice.selection_policy) : "Selection pending"} /{" "}
+                {state?.topBlockerSlice.completion_signal ?? "completion signal pending"}
+              </small>
               {topPromptPairBlockerItem?.task_id ? (
                 <button type="button" onClick={() => void onOpenReviewTask?.(topPromptPairBlockerItem.task_id)}>
                   Open top blocker
@@ -1175,12 +1360,19 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                 <small>
                   YAML preview / {item.backend_preflight.blockers.map(titleCase).join(", ")}
                 </small>
+                {item.source_boundary_summary ? (
+                  <small>
+                    Source boundary: {titleCase(item.source_boundary_summary.status)} / blocks{" "}
+                    {item.source_boundary_summary.blocked_training_uses.map(titleCase).join(", ") || "nothing"}
+                  </small>
+                ) : null}
                 <button type="button" onClick={() => void onOpenReviewTask?.(item.task_id)}>
                   Open blocker repair
                 </button>
               </span>
             ))}
           </div>
+          {promptPairFocusStatus ? <div className="utility-alert">{promptPairFocusStatus}</div> : null}
           <section className="photo-context-session-queue prompt-pair-session-plan" aria-label="Prompt pair blocker session plan">
             <header>
               <div>
@@ -1189,7 +1381,10 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                   {state?.topBlockerSessionPlan.selected_count ?? 0} selected /{" "}
                   {state?.topBlockerSessionPlan.candidate_count ?? 0} candidates
                 </strong>
-                <em>{state?.topBlockerSessionPlan.completion_signal ?? "session plan pending"}</em>
+                <em>
+                  {state?.topBlockerSessionPlan.selection_policy ? titleCase(state.topBlockerSessionPlan.selection_policy) : "Selection pending"} /{" "}
+                  {state?.topBlockerSessionPlan.completion_signal ?? "session plan pending"}
+                </em>
               </div>
               <code>{String(state?.topBlockerSessionPlan.export_preview_sha256 ?? "hash pending").slice(0, 16)}</code>
             </header>
@@ -1211,6 +1406,12 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                     <em>
                       {item.task_human_id} / {titleCase(item.artifact_mode)} / {item.current_blockers.map(titleCase).join(", ")}
                     </em>
+                    {item.source_boundary_summary ? (
+                      <small>
+                        Source boundary blocks {item.source_boundary_summary.blocked_training_uses.map(titleCase).join(", ")};{" "}
+                        {item.source_boundary_summary.remediation_options[0]}
+                      </small>
+                    ) : null}
                     <small>{item.completion_criteria.slice(0, 2).join("; ")}</small>
                   </div>
                   <button type="button" onClick={() => void onOpenReviewTask?.(item.task_id)}>
@@ -1275,6 +1476,13 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                     non-mutating / hash <code>{state.dpoRepairProjection.content_sha256.slice(0, 16)}</code>
                   </small>
                 </span>
+                {state.dpoRepairProjection.suggested_rejected_issue?.note ? (
+                  <span>
+                    <em>Suggested rejected note</em>
+                    <strong>{titleCase(state.dpoRepairProjection.suggested_rejected_issue.issue_tag)}</strong>
+                    <small>{state.dpoRepairProjection.suggested_rejected_issue.note}</small>
+                  </span>
+                ) : null}
                 <details>
                   <summary>YAML diff preview</summary>
                   <pre>{state.dpoRepairProjection.yaml_diff_preview}</pre>
@@ -1302,6 +1510,11 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                 </em>
                 <strong>{candidate.prompt}</strong>
                 <small>{candidate.blockers.map(titleCase).join(", ") || candidate.dataset_outcome}</small>
+                {candidate.source_boundary_summary ? (
+                  <small>
+                    Source boundary: {candidate.source_boundary_summary.blocked_training_uses.map(titleCase).join(", ")} blocked
+                  </small>
+                ) : null}
                 <button type="button" onClick={() => void onOpenReviewTask?.(candidate.task_id)}>
                   Open held pair
                 </button>
@@ -1318,15 +1531,24 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                 <small>
                   Sequence {worklist.sequence_start ?? "?"}-{worklist.sequence_end ?? "?"} / {worklist.review_sequence_key.slice(0, 12)}
                 </small>
-                <button type="button" onClick={() => void onOpenReviewTask?.(worklist.recommended_action.task_id)}>
-                  Work this blocker
+                {worklist.candidate_previews[0]?.source_boundary_summary ? (
+                  <small>
+                    Boundary decision: {worklist.candidate_previews[0].source_boundary_summary.blocked_training_uses.map(titleCase).join(", ")} blocked
+                  </small>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void handleFocusPromptPairWorklist(worklist)}
+                  disabled={loading || promptPairActionKey === worklist.worklist_key}
+                >
+                  {loading ? "Checking" : promptPairActionKey === worklist.worklist_key ? "Focusing" : "Focus blocker"}
                 </button>
               </span>
             ))}
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="model">
           <h4>Demo Generation Gate</h4>
           <div className="photo-draft-list">
             <span>
@@ -1348,6 +1570,21 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                   ? "model_generated / excluded from training"
                   : "needs policy check"}
               </strong>
+            </span>
+            <span>
+              <em>Credential setup</em>
+              <strong>
+                {(credentialRequirements?.required_env ?? [])
+                  .map((item) => `${item.name}${item.configured ? " ok" : item.required_value ? `=${item.required_value}` : " needed"}`)
+                  .join(" / ") || "No live credential requirements"}
+              </strong>
+              <small>{credentialRequirements?.safety_policy.fine_tuning_api_calls_allowed === false ? "No fine-tuning calls in MVP" : "policy pending"}</small>
+              {credentialRequirements?.env_file_policy ? (
+                <small>
+                  Secrets stay local: {credentialRequirements.env_file_policy.ignored_patterns.join(", ")} ignored /{" "}
+                  {credentialRequirements.env_file_policy.tracked_template} tracked
+                </small>
+              ) : null}
             </span>
           </div>
           <section className="demo-input-plan" aria-label="Demo generation input plan">
@@ -1383,8 +1620,49 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                     <strong>{prompt.prompt}</strong>
                     {prompt.prompt_sha256 ? <code>{prompt.prompt_sha256}</code> : null}
                   </li>
-                ))}
+              ))}
             </ul>
+          </section>
+          <section className="demo-input-plan demo-request-preview" aria-label="Demo generation exact request preview">
+            <div>
+              <em>Exact request preview</em>
+              <strong>
+                {state?.demoRequestPreview.request_count ?? 0} Responses API request bodies /{" "}
+                {state?.demoRequestPreview.no_live_model_call ? "no live model call" : "policy pending"}
+              </strong>
+            </div>
+            <div>
+              <em>Preview hash</em>
+              <code>{state?.demoRequestPreview.export_preview_sha256 ?? "hash pending"}</code>
+            </div>
+            <div>
+              <em>Generation policy</em>
+              <strong>
+                {state?.demoRequestPreview.no_generation_created ? "No generation created" : "Needs review"} /{" "}
+                {state?.demoRequestPreview.does_not_promote_to_training_export ? "no training export promotion" : "promotion policy pending"}
+              </strong>
+            </div>
+            {state?.demoRequestPreview.requests.slice(0, 2).map((request) => (
+              <div key={request.task_id} className="demo-request-preview-item">
+                <em>
+                  {request.task_human_id} / {titleCase(request.voice_mode ?? "unknown")}
+                </em>
+                <strong>{request.prompt}</strong>
+                <small>
+                  Request {request.request_body_sha256.slice(0, 16)} / {request.user_message_char_count} chars /{" "}
+                  {request.reference_example_count} references
+                </small>
+                <small>
+                  {request.safety_checks.held_out_answer_excluded_from_request ? "Held-out answer excluded" : "held-out answer needs audit"}
+                  {" / "}
+                  {request.safety_checks.rejected_response_excluded_from_request ? "Rejected response excluded" : "rejected response needs audit"}
+                </small>
+                <details>
+                  <summary>Request body JSON</summary>
+                  <pre>{request.request_body_json}</pre>
+                </details>
+              </div>
+            ))}
           </section>
           <div className="readiness-actions">
             <button
@@ -1404,7 +1682,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="model prompt_pairs">
           <h4>Voice Reference Pack</h4>
           <div className="photo-draft-list">
             <span>
@@ -1430,7 +1708,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="photos">
           <h4>Retrieval Proof</h4>
           <div className="retrieval-proof-list">
             {state?.retrieval.map((search) => {
@@ -1443,9 +1721,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                     <strong>{search.query}</strong>
                     <span>{top ? top.title : search.retrieval_gap?.message ?? "No memory result yet"}</span>
                     {top?.matched_terms.length ? <em>{top.matched_terms.join(", ")}</em> : null}
-                    {top?.review_policy?.requires_adam_review ? (
-                      <em>Needs Adam review / {top.review_policy.truth_status}</em>
-                    ) : null}
+                    <em>{retrievalResultReviewLabel(top)}</em>
                     {!top && search.retrieval_gap ? (
                       <em>
                         {search.retrieval_gap.photo_groups_needing_context_count} need context / {search.retrieval_gap.photo_groups_needing_draft_review_count ?? 0} drafts need review
@@ -1519,7 +1795,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="photos">
           <h4>Photo Intake Inventory</h4>
           <div className="photo-draft-list">
             <span>
@@ -1542,7 +1818,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card" aria-label="Photo context review pack">
+        <section className="readiness-card" aria-label="Photo context review pack" data-export-tab="photos">
           <h4>Photo Context Review Pack</h4>
           <div className="photo-draft-list">
             <span>
@@ -1626,6 +1902,21 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                   .join(", ") || "No missing retrieval fields"}
               </strong>
               <small>{state?.photoContextRetrievalGapFieldWorklist.query_counts[0]?.query ?? "No retrieval query yet"}</small>
+            </span>
+            <span>
+              <em>Field guidance</em>
+              <strong>
+                {state?.photoContextRetrievalGapFieldWorklist.field_guidance
+                  .map((field) => field.label)
+                  .join(", ") || "Guidance pending"}
+              </strong>
+              <small>
+                {state?.photoContextRetrievalGapFieldWorklist.field_guidance
+                  .map((field) => [field.why_required, field.adam_prompt].filter(Boolean).join(" "))
+                  .filter(Boolean)
+                  .join(" ")
+                  || "Adam-authored context unlocks retrieval without creating a memory claim."}
+              </small>
             </span>
             {state?.photoContextRetrievalGapFieldWorklist.items.slice(0, 3).map((item) => (
               <span key={item.task_id}>
@@ -1713,7 +2004,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             </span>
             <span>
               <em>Query context</em>
-              <strong>{state?.photoContextSessionPlan.source_query ?? "airplane in Maine"}</strong>
+              <strong>{state?.photoContextSessionPlan.source_query ?? retrievalGapQuery}</strong>
               <small>{state?.photoContextSessionPlan.does_not_create_memory_claim ? "prioritization only, not a memory claim" : "needs policy check"}</small>
             </span>
             <span>
@@ -1750,6 +2041,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             <ol>
               {state?.photoContextSessionPlan.items.map((item) => {
                 const actionKey = `session-${item.group_key}`;
+                const actionProvenance = photoContextActionProvenance(item);
                 return (
                   <li key={item.group_key}>
                     <img src={getAssetPreviewUrl(item.canonical_asset_id, "thumbnail")} alt="" loading="lazy" />
@@ -1760,6 +2052,18 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                         {titleCase(item.truth_status)} / {item.query_origin.source_query} / not memory until Adam context
                       </em>
                       <small>{item.completion_criteria.slice(0, 2).join("; ")}</small>
+                    </div>
+                    <div className="session-action-provenance" aria-label={`Session action provenance for ${item.display_title}`}>
+                      <span>Action provenance</span>
+                      <strong>
+                        {titleCase(actionProvenance.matchQuality)} / {titleCase(actionProvenance.selectionReason)}
+                      </strong>
+                      <em>Request carries query: {actionProvenance.sourceQuery}</em>
+                      <small>
+                        {actionProvenance.queryIsPrioritizationOnly && actionProvenance.notMemoryClaim
+                          ? "prioritization only, not a memory claim"
+                          : "needs provenance review before task creation"}
+                      </small>
                     </div>
                     <div className="session-field-prompts" aria-label={`Session fields for ${item.display_title}`}>
                       {item.field_plan.slice(0, 3).map((field) => (
@@ -1882,7 +2186,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           <small>{metrics?.packYamlPreviewChars ?? 0} chars / {String(state?.photoContextPack.content_sha256 ?? "").slice(0, 12)}</small>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="photos model">
           <h4>Reviewed Photo Demo Readiness</h4>
           <div className="photo-draft-list">
             <span>
@@ -1936,7 +2240,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="photos">
           <h4>Vector Handoff</h4>
           <div className="photo-draft-list">
             <span>
@@ -2042,7 +2346,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="photos">
           <h4>Photo Draft Queue {metrics ? `(${metrics.photoReviewTaskCount} ready)` : ""}</h4>
           <div className="photo-draft-list">
             {state?.photoDrafts.candidates.slice(0, 5).map((candidate) => (
@@ -2054,7 +2358,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="prompt_pairs photos">
           <h4>Photo Prompt Seeds {metrics ? `(${metrics.photoPairTaskCount} tickets)` : ""}</h4>
           <div className="photo-draft-list">
             {state?.photoPairCandidates.candidates.slice(0, 5).map((candidate) => (
@@ -2066,7 +2370,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           </div>
         </section>
 
-        <section className="readiness-card">
+        <section className="readiness-card" data-export-tab="photos">
           <h4>Gallery Preview</h4>
           <div className="gallery-preview-list" aria-label="Gallery preview">
             {state?.gallery.items.slice(0, 4).map((item) => (

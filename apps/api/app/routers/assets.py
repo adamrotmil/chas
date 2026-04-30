@@ -148,22 +148,31 @@ def _canonical_photo_asset(assets: List[Asset]) -> Asset:
     return sorted(assets, key=lambda asset: (_is_copy_variant(asset), len(_photo_title(asset)), _photo_title(asset)))[0]
 
 
-def _retrieval_gap_review_fields(source_query: str) -> List[Dict[str, str]]:
-    return [
+def _retrieval_gap_review_fields(source_query: str, candidate_match_quality: str = "unknown") -> List[Dict[str, str]]:
+    fields = [
         {
             "field_key": "visual_description_correction",
             "label": "Visible facts",
             "reason": "Describe only what the image shows before adding memory or interpretation.",
-        },
-        {
-            "field_key": "retrieval_query_relevance",
-            "label": "Connection to retrieval query",
-            "reason": f"Say what, if anything, connects this photo to '{source_query}'. The query itself is not evidence.",
-        },
+        }
+    ]
+    if candidate_match_quality != "backlog_only":
+        fields.append(
+            {
+                "field_key": "retrieval_query_relevance",
+                "label": "Search seed connection",
+                "reason": (
+                    f"If this photo surfaced from a search seed for '{source_query}', say whether Adam sees a genuine connection. "
+                    "The search seed itself is workflow provenance, not evidence or a required memory claim."
+                ),
+            }
+        )
+    fields.extend(
+        [
         {
             "field_key": "invisible_context_note",
             "label": "Adam context",
-            "reason": "Add the memory, relationship, place, or event that a viewer could not infer from pixels.",
+            "reason": "Add the memory, relationship, place, event, or association sparked by the photo.",
         },
         {
             "field_key": "open_questions",
@@ -175,10 +184,17 @@ def _retrieval_gap_review_fields(source_query: str) -> List[Dict[str, str]]:
             "label": "Boundary",
             "reason": "Choose retrieval, gallery, and downstream permissions before vector handoff.",
         },
-    ]
+        ]
+    )
+    return fields
 
 
-def _photo_context_questions(asset: Asset, group_assets: List[Asset], source_query: Optional[str] = None) -> List[Dict[str, str]]:
+def _photo_context_questions(
+    asset: Asset,
+    group_assets: List[Asset],
+    source_query: Optional[str] = None,
+    candidate_match_quality: str = "unknown",
+) -> List[Dict[str, str]]:
     title = _photo_title(asset)
     variant_note = (
         f"This group has {len(group_assets)} file variants; answer for the canonical image, not each duplicate."
@@ -197,20 +213,20 @@ def _photo_context_questions(asset: Asset, group_assets: List[Asset], source_que
             "reason": "This becomes Adam-provided memory context for retrieval and future voice context packs.",
         },
     ]
-    if source_query:
+    if source_query and candidate_match_quality != "backlog_only":
         questions.append(
             {
                 "id": "retrieval_query_relevance",
-                "question": f"What, if anything, connects this photo to the retrieval query '{source_query}'?",
-                "reason": "The query is only workflow provenance. Adam's answer is what can make this searchable memory context.",
+                "question": f"If this photo surfaced from the '{source_query}' search seed, what genuine connection does Adam see, if any?",
+                "reason": "The search seed is workflow provenance only. Adam's answer can become reviewed retrieval context when the photo is actually relevant.",
             }
         )
     questions.extend(
         [
             {
                 "id": "meaning",
-                "question": f"What memory, story, relationship, or event does {title} anchor?",
-                "reason": "Turns the image into a searchable memory record rather than a loose file.",
+                "question": f"What memory, story, relationship, or event does {title} bring up for Adam?",
+                "reason": "The photo is generative: Adam's associations become searchable memory context rather than a loose filename.",
             },
             {
                 "id": "uncertainty",
@@ -646,7 +662,7 @@ def photo_context_retrieval_gap_payoff_preview_yaml(
 def photo_context_review_session_plan(
     scope: str = Query(default="family_private", pattern="^(public|family_private|private)$"),
     limit: int = Query(default=5, ge=1, le=25),
-    source_query: str = Query(default="airplane in Maine", min_length=1, max_length=200),
+    source_query: str = Query(default="Old Orchard beach", min_length=1, max_length=200),
     session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     return build_photo_context_review_session_plan(
@@ -661,7 +677,7 @@ def photo_context_review_session_plan(
 def photo_context_review_session_plan_yaml(
     scope: str = Query(default="family_private", pattern="^(public|family_private|private)$"),
     limit: int = Query(default=5, ge=1, le=25),
-    source_query: str = Query(default="airplane in Maine", min_length=1, max_length=200),
+    source_query: str = Query(default="Old Orchard beach", min_length=1, max_length=200),
     session: Session = Depends(get_session),
 ) -> Response:
     plan = build_photo_context_review_session_plan(
@@ -687,6 +703,21 @@ def photo_review_priority(
     return build_photo_review_priority_summary(session=session, focus=focus, limit=limit)
 
 
+@router.get("/photo-review-priority/yaml")
+def photo_review_priority_yaml(
+    focus: str = Query(default="fastest_vector", pattern="^(all|fastest_vector)$"),
+    limit: int = Query(default=10, ge=1, le=50),
+    session: Session = Depends(get_session),
+) -> Response:
+    summary = build_photo_review_priority_summary(session=session, focus=focus, limit=limit)
+    filename = f"charlesops_photo_review_priority_{focus}.yaml"
+    return Response(
+        content=summary["export_preview_yaml"],
+        media_type="text/yaml; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @router.post("/photo-review-inventory/context-task", response_model=PhotoContextTaskCreateResponse)
 def create_photo_context_task_from_inventory(
     payload: PhotoContextTaskCreate,
@@ -699,6 +730,8 @@ def create_photo_context_task_from_inventory(
         raise HTTPException(status_code=409, detail="Photo already has a photo-memory profile")
 
     source_query = payload.source_query.strip() if payload.source_query and payload.source_query.strip() else None
+    candidate_match_quality = payload.candidate_match_quality or "unknown"
+    candidate_selection_reason = payload.candidate_selection_reason or "unknown"
     review_session_origin = None
     if (
         payload.session_sequence_number is not None
@@ -715,36 +748,68 @@ def create_photo_context_task_from_inventory(
             "completion_signal": payload.session_completion_signal,
             "review_policy": payload.session_review_policy or "query_aware_photo_context_session_plan_no_mutation",
             "not_memory_claim": True,
+            "query_is_context_prioritization_only": True,
+            "candidate_match_quality": candidate_match_quality,
+            "candidate_selection_reason": candidate_selection_reason,
         }
+    retrieval_origin = {
+        "query": source_query,
+        "candidate_match_quality": candidate_match_quality,
+        "selection_reason": candidate_selection_reason,
+        "truth_status": "no_claim",
+        "not_memory_claim": True,
+    }
     existing = _existing_photo_context_task(session, asset.id)
     if existing:
         if source_query or review_session_origin:
             next_payload = dict(existing.input_payload or {})
             if source_query:
-                next_payload.setdefault(
-                    "retrieval_gap_origin",
-                    {
-                        "query": source_query,
-                        "candidate_match_quality": payload.candidate_match_quality or "unknown",
-                        "selection_reason": payload.candidate_selection_reason or "unknown",
-                        "truth_status": "no_claim",
-                        "not_memory_claim": True,
-                    },
-                )
+                existing_origin = next_payload.get("retrieval_gap_origin")
+                if isinstance(existing_origin, dict):
+                    merged_origin = {**retrieval_origin, **existing_origin}
+                    existing_match_quality = str(existing_origin.get("candidate_match_quality") or "")
+                    if candidate_match_quality == "backlog_only" and existing_match_quality in {"", "unknown", "backlog_only"}:
+                        merged_origin["query"] = source_query
+                        merged_origin["candidate_match_quality"] = candidate_match_quality
+                        merged_origin["selection_reason"] = candidate_selection_reason
+                    if not merged_origin.get("query"):
+                        merged_origin["query"] = source_query
+                    if merged_origin.get("candidate_match_quality") in {None, "", "unknown"}:
+                        merged_origin["candidate_match_quality"] = candidate_match_quality
+                    if merged_origin.get("selection_reason") in {None, "", "unknown"}:
+                        merged_origin["selection_reason"] = candidate_selection_reason
+                    merged_origin["truth_status"] = "no_claim"
+                    merged_origin["not_memory_claim"] = True
+                    next_payload["retrieval_gap_origin"] = merged_origin
+                else:
+                    next_payload["retrieval_gap_origin"] = retrieval_origin
                 review_plan = next_payload.get("retrieval_gap_review")
                 review_fields = review_plan.get("required_fields") if isinstance(review_plan, dict) else None
+                expected_review_fields = _retrieval_gap_review_fields(source_query, candidate_match_quality)
                 if not isinstance(review_plan, dict) or not isinstance(review_fields, list) or not review_fields:
                     next_payload["retrieval_gap_review"] = {
                         "query": source_query,
                         "review_policy": "retrieval_gap_no_claim_until_adam_context",
                         "not_memory_claim": True,
-                        "completion_signal": "visual_facts_query_relevance_adam_context_uncertainty_boundary",
-                        "required_fields": _retrieval_gap_review_fields(source_query),
+                        "completion_signal": "visual_facts_memory_context_uncertainty_boundary",
+                        "required_fields": expected_review_fields,
+                    }
+                elif candidate_match_quality == "backlog_only":
+                    next_payload["retrieval_gap_review"] = {
+                        **review_plan,
+                        "query": source_query,
+                        "not_memory_claim": True,
+                        "completion_signal": "visual_facts_memory_context_uncertainty_boundary",
+                        "required_fields": expected_review_fields,
                     }
                 raw_questions = next_payload.get("suggested_questions", [])
                 existing_questions = [item for item in raw_questions if isinstance(item, dict)] if isinstance(raw_questions, list) else []
-                if not any(item.get("id") == "retrieval_query_relevance" for item in existing_questions):
-                    next_payload["suggested_questions"] = _photo_context_questions(asset, [asset], source_query)
+                expected_questions = _photo_context_questions(asset, [asset], source_query, candidate_match_quality)
+                if (
+                    candidate_match_quality == "backlog_only"
+                    or not any(item.get("id") == "retrieval_query_relevance" for item in existing_questions)
+                ):
+                    next_payload["suggested_questions"] = expected_questions
             if review_session_origin:
                 next_payload["review_session_origin"] = review_session_origin
             existing.input_payload = next_payload
@@ -781,23 +846,21 @@ def create_photo_context_task_from_inventory(
             }
             for item in sorted(group_assets, key=lambda item: (_is_copy_variant(item), _photo_title(item)))
         ],
-        "suggested_questions": _photo_context_questions(asset, group_assets, source_query),
+        "suggested_questions": _photo_context_questions(asset, group_assets, source_query, candidate_match_quality),
         "source_photo_inventory": True,
     }
     if source_query:
-        task_input_payload["retrieval_gap_origin"] = {
-            "query": source_query,
-            "candidate_match_quality": payload.candidate_match_quality or "unknown",
-            "selection_reason": payload.candidate_selection_reason or "unknown",
-            "truth_status": "no_claim",
-            "not_memory_claim": True,
-        }
+        task_input_payload["retrieval_gap_origin"] = retrieval_origin
         task_input_payload["retrieval_gap_review"] = {
             "query": source_query,
             "review_policy": "retrieval_gap_no_claim_until_adam_context",
             "not_memory_claim": True,
-            "completion_signal": "visual_facts_query_relevance_adam_context_uncertainty_boundary",
-            "required_fields": _retrieval_gap_review_fields(source_query),
+            "completion_signal": (
+                "visual_facts_query_relevance_adam_context_uncertainty_boundary"
+                if candidate_match_quality != "backlog_only"
+                else "visual_facts_memory_context_uncertainty_boundary"
+            ),
+            "required_fields": _retrieval_gap_review_fields(source_query, candidate_match_quality),
         }
     if review_session_origin:
         task_input_payload["review_session_origin"] = review_session_origin
@@ -839,7 +902,7 @@ def create_photo_context_review_session(
     scope: str = Query(default="family_private", pattern="^(public|family_private|private)$"),
     limit: int = Query(default=5, ge=1, le=25),
     dry_run: bool = Query(default=True),
-    source_query: str = Query(default="airplane in Maine", min_length=1, max_length=200),
+    source_query: str = Query(default="Old Orchard beach", min_length=1, max_length=200),
     session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     plan = build_photo_context_review_session_plan(
@@ -858,7 +921,22 @@ def create_photo_context_review_session(
     would_create_count = 0
     would_open_existing_count = 0
 
+    def action_provenance_for_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        request = action.get("request") if isinstance(action.get("request"), dict) else {}
+        body = request.get("body") if isinstance(request.get("body"), dict) else {}
+        provenance = action.get("query_provenance") if isinstance(action.get("query_provenance"), dict) else {}
+        return {
+            "candidate_match_quality": body.get("candidate_match_quality")
+            or provenance.get("candidate_match_quality")
+            or "backlog_only",
+            "candidate_selection_reason": body.get("candidate_selection_reason")
+            or provenance.get("candidate_selection_reason")
+            or "selected_from_photo_context_review_session_plan",
+        }
+
     def review_session_origin_for_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        provenance = action_provenance_for_item(item)
         return {
             "session_type": "photo_context_review_session",
             "sequence_number": item.get("sequence_number"),
@@ -868,6 +946,8 @@ def create_photo_context_review_session(
             "completion_signal": plan.get("completion_signal"),
             "review_policy": plan.get("review_policy"),
             "not_memory_claim": True,
+            "query_is_context_prioritization_only": True,
+            **provenance,
         }
 
     for item in selected_items:
@@ -930,6 +1010,8 @@ def create_photo_context_review_session(
                 session_plan_content_sha256=plan.get("content_sha256"),
                 session_completion_signal=plan.get("completion_signal"),
                 session_review_policy=plan.get("review_policy"),
+                candidate_match_quality=review_session_origin.get("candidate_match_quality"),
+                candidate_selection_reason=review_session_origin.get("candidate_selection_reason"),
             ),
             session=session,
         )

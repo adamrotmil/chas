@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlmodel import Session, select
@@ -22,6 +23,13 @@ from app.models import (
 )
 from app.services.embeddings import boundary_embedding_text, upsert_embedding_record, upsert_profile_embedding
 from app.services.pair_export import NATURAL_SYSTEM_PROMPT, compile_pair_export
+from app.services.photo_constants import (
+    PHOTO_MEMORY_PROFILE_TYPE,
+    PHOTO_STATUS_ADAM_REVIEWED,
+    PHOTO_STATUS_MACHINE_DRAFT,
+    PHOTO_TRUTH_ADAM_MEMORY,
+    PHOTO_TRUTH_SYSTEM,
+)
 
 
 PHOTO_DRAFT_TEMPLATES: List[Dict[str, Any]] = [
@@ -80,6 +88,17 @@ PHOTO_DRAFT_TEMPLATES: List[Dict[str, Any]] = [
         "objects": ["painted American flag", "Mr. Nixon sign", "globe", "trophy"],
         "queries": ["Mr Nixon", "student performance", "American flag"],
     },
+    {
+        "match": "Rotmil 2021 II",
+        "title": "Photo memory: Rotmil 2021 archive scene",
+        "summary": "A family archive photograph from the Rotmil 2021 image group, with the exact people, place, and event still needing Adam review.",
+        "context": "Machine draft from imported image preview and filename. This is a backlog memory anchor rather than a final claim: Adam should identify who is present, where it was, and why this image matters.",
+        "people": ["unidentified people"],
+        "place": "unknown",
+        "themes": ["family archive", "photo review backlog", "memory anchor", "Rotmil 2021"],
+        "objects": ["archive photograph"],
+        "queries": ["Rotmil 2021", "family archive", "memory anchor"],
+    },
 ]
 
 
@@ -89,6 +108,18 @@ def _count(session: Session, model: Any) -> int:
 
 def _asset_title(asset: Asset) -> str:
     return asset.title or asset.original_filename or asset.human_id
+
+
+def _display_title(value: str) -> str:
+    title = value.strip()
+    lowered = title.lower()
+    for suffix in (".jpeg", ".jpg", ".png", ".gif", ".heic", ".tiff", ".tif"):
+        if lowered.endswith(suffix):
+            title = title[: -len(suffix)].strip()
+            break
+    if title.lower().startswith("photo memory:"):
+        title = title.split(":", 1)[1].strip()
+    return title or "this photograph"
 
 
 def _string(value: Any, fallback: str = "") -> str:
@@ -104,10 +135,14 @@ def _find_asset_for_template(session: Session, template: Dict[str, Any]) -> Opti
     assets = session.exec(
         select(Asset)
         .where(Asset.asset_type == "photo")
-        .where(Asset.processing_status == "image_preview_ready")
         .order_by(Asset.created_at.asc())
     ).all()
-    matches = [asset for asset in assets if marker in _asset_title(asset).lower()]
+    preview_ready_statuses = {"image_preview_ready", "vision_reviewed"}
+    matches = [
+        asset
+        for asset in assets
+        if asset.processing_status in preview_ready_statuses and marker in _asset_title(asset).lower()
+    ]
     if not matches:
         return None
     matches.sort(key=lambda asset: ("copy" in _asset_title(asset).lower(), len(_asset_title(asset)), _asset_title(asset)))
@@ -225,11 +260,69 @@ def _photo_prompt(profile: MetadataProfile) -> str:
     return "Dad, what does this photograph bring back for you?"
 
 
-def _photo_response_draft(profile: MetadataProfile) -> str:
+def _photo_topic(profile: MetadataProfile) -> str:
+    for value in [profile.title, next((theme for theme in profile.themes if theme and not _is_filename_like(theme)), ""), profile.summary]:
+        if isinstance(value, str) and value.strip():
+            return _display_title(value)
+    return "this photograph"
+
+
+def _photo_prompt_variants(profile: MetadataProfile) -> List[Dict[str, str]]:
+    topic = _photo_topic(profile)
+    people = ", ".join(person for person in profile.people if person.strip())
+    place = profile.places[0] if profile.places else ""
+    variants = [
+        {
+            "key": "direct_memory",
+            "label": "Direct memory",
+            "prompt": _photo_prompt(profile),
+        },
+        {
+            "key": "first_look",
+            "label": "First look",
+            "prompt": f"Dad, what do you notice first when you look at {topic}?",
+        },
+        {
+            "key": "surrounding_day",
+            "label": "Surrounding day",
+            "prompt": f"Dad, what was happening around the day of {topic}?",
+        },
+        {
+            "key": "relationship_thread",
+            "label": "Relationship thread",
+            "prompt": f"Dad, what does this photo bring back about {people or topic}?",
+        },
+        {
+            "key": "photographer_eye",
+            "label": "Photographer's eye",
+            "prompt": f"Dad, what would you say about the light, framing, or feeling in {topic}{f' in {place}' if place else ''}?",
+        },
+    ]
+    unique: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for variant in variants:
+        normalized = variant["prompt"].strip().lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(variant)
+    return unique
+
+
+def _photo_response_draft(profile: MetadataProfile, variant_key: str = "direct_memory") -> str:
     summary = _string(profile.summary)
     context = _string(profile.adam_context_note)
     truth_status = _string(profile.truth_status, "system_inference")
-    opening = "i remember this..." if truth_status in {"adam_memory", "adam_inference"} else "i look at this photograph..."
+    if variant_key == "first_look":
+        opening = "first thing is the light..."
+    elif variant_key == "surrounding_day":
+        opening = "around that day..."
+    elif variant_key == "relationship_thread":
+        opening = "what comes back is the connection..."
+    elif variant_key == "photographer_eye":
+        opening = "as a photograph..."
+    else:
+        opening = "i remember this..." if truth_status in {"adam_memory", "adam_inference"} else "i look at this photograph..."
     grounded_lines = [line for line in [summary, context] if line]
     middle = grounded_lines[:2] or ["the photograph is doing the work, the light and the objects holding a small piece of time."]
     return "\n".join(
@@ -247,7 +340,7 @@ def _photo_response_draft(profile: MetadataProfile) -> str:
     )
 
 
-def _existing_photo_pair_task(session: Session, profile_id: str) -> Optional[Task]:
+def _existing_photo_pair_task(session: Session, profile_id: str, variant_key: str = "direct_memory") -> Optional[Task]:
     tasks = session.exec(
         select(Task)
         .where(Task.task_type == "gold_voice_edit")
@@ -255,36 +348,65 @@ def _existing_photo_pair_task(session: Session, profile_id: str) -> Optional[Tas
         .order_by(Task.created_at.asc())
     ).all()
     for task in tasks:
-        if (task.input_payload or {}).get("source_photo_profile_id") == profile_id:
+        payload = task.input_payload or {}
+        task_variant_key = payload.get("photo_pair_variant_key") or "direct_memory"
+        if payload.get("source_photo_profile_id") == profile_id and task_variant_key == variant_key:
             return task
     return None
 
 
-def _photo_profiles_for_pair_candidates(session: Session) -> List[MetadataProfile]:
-    profiles = session.exec(
+def _photo_pair_generation_batch_id(profile: MetadataProfile, asset: Asset) -> str:
+    digest = hashlib.sha256(f"{profile.id}:{asset.id}:photo_prompt_pair_candidates".encode("utf-8")).hexdigest()[:12]
+    return f"PHOTO_PAIR_BATCH_{digest}"
+
+
+def _photo_profiles_for_pair_candidates(
+    session: Session,
+    *,
+    asset_id: Optional[str] = None,
+    metadata_profile_id: Optional[str] = None,
+) -> List[MetadataProfile]:
+    statement = (
         select(MetadataProfile)
         .where(MetadataProfile.target_type == "asset")
-        .where(MetadataProfile.profile_type == "photo_memory")
+        .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
         .order_by(MetadataProfile.updated_at.desc(), MetadataProfile.created_at.desc())
-    ).all()
-    ready_statuses = {"adam_reviewed", "machine_draft_needs_adam_review"}
+    )
+    if asset_id:
+        statement = statement.where(MetadataProfile.target_id == asset_id)
+    if metadata_profile_id:
+        statement = statement.where(MetadataProfile.id == metadata_profile_id)
+    profiles = session.exec(statement).all()
+    ready_statuses = {PHOTO_STATUS_ADAM_REVIEWED, PHOTO_STATUS_MACHINE_DRAFT}
     return [profile for profile in profiles if profile.metadata_status in ready_statuses]
 
 
-def create_photo_prompt_pair_candidates(session: Session, *, limit: int = 5, dry_run: bool = True) -> Dict[str, Any]:
+def create_photo_prompt_pair_candidates(
+    session: Session,
+    *,
+    limit: int = 5,
+    dry_run: bool = True,
+    asset_id: Optional[str] = None,
+    metadata_profile_id: Optional[str] = None,
+    commit: bool = True,
+) -> Dict[str, Any]:
     limit = max(0, min(limit, 25))
     candidates: List[Dict[str, Any]] = []
     created_task_ids: List[str] = []
     skipped: List[Dict[str, str]] = []
+    targeted_photo = bool(asset_id or metadata_profile_id)
 
-    for profile in _photo_profiles_for_pair_candidates(session):
+    for profile in _photo_profiles_for_pair_candidates(
+        session,
+        asset_id=asset_id,
+        metadata_profile_id=metadata_profile_id,
+    ):
         if len(candidates) >= limit:
             break
         asset = _profile_asset(session, profile)
         boundary = _profile_boundary(session, profile)
         memory = _profile_memory(session, profile)
         embedding = _profile_embedding(session, profile, memory)
-        existing = _existing_photo_pair_task(session, profile.id)
         retrieval_origin = _profile_retrieval_origin(profile)
         if asset is None:
             skipped.append({"metadata_profile_id": profile.id, "reason": "missing_photo_asset"})
@@ -294,152 +416,199 @@ def create_photo_prompt_pair_candidates(session: Session, *, limit: int = 5, dry
             continue
 
         embedding_text = _profile_embedding_text(profile, memory, embedding)
-        prompt = _photo_prompt(profile)
-        content = _photo_response_draft(profile)
-        truth_status = _string(profile.truth_status, "system_inference")
-        pair = {
-            "artifact_mode": "sft",
-            "voice_mode": "photography_reflection",
-            "synthetic": True,
-            "truth_status": truth_status,
-            "system_prompt": NATURAL_SYSTEM_PROMPT,
-            "prompt": prompt,
-            "content": content,
-            "context": "\n".join(
-                part
-                for part in [
-                    "Photo-grounded prompt-pair candidate. Adam must review/edit before training export.",
-                    f"photo_profile_status: {profile.metadata_status}",
-                    f"source_truth_status: {truth_status}",
-                    f"photo_title: {_asset_title(asset)}",
-                    (
-                        "retrieval_gap_origin: "
-                        f"{retrieval_origin['query']} "
-                        f"({retrieval_origin['candidate_match_quality']}; not a memory claim)"
-                    )
+        source_truth_status = _string(profile.truth_status, "system_inference")
+        candidate_truth_status = "interpretive_synthesis"
+        generation_batch_id = _photo_pair_generation_batch_id(profile, asset)
+        variants = _photo_prompt_variants(profile)
+        if not targeted_photo:
+            variants = variants[:1]
+
+        for variant in variants:
+            if len(candidates) >= limit:
+                break
+            variant_key = variant["key"]
+            variant_label = variant["label"]
+            existing = _existing_photo_pair_task(session, profile.id, variant_key)
+            prompt = variant["prompt"]
+            content = _photo_response_draft(profile, variant_key)
+            pair = {
+                "artifact_mode": "sft",
+                "voice_mode": "photography_reflection",
+                "synthetic": True,
+                "truth_status": candidate_truth_status,
+                "system_prompt": NATURAL_SYSTEM_PROMPT,
+                "prompt": prompt,
+                "content": content,
+                "context": "\n".join(
+                    part
+                    for part in [
+                        "Photo-grounded prompt-pair candidate. Adam must review/edit before training export.",
+                        f"photo_pair_variant: {variant_label} ({variant_key})",
+                        f"photo_pair_generation_batch_id: {generation_batch_id}",
+                        f"photo_profile_status: {profile.metadata_status}",
+                        f"source_truth_status: {source_truth_status}",
+                        f"candidate_response_truth_status: {candidate_truth_status}",
+                        f"photo_title: {_asset_title(asset)}",
+                        (
+                            "retrieval_gap_origin: "
+                            f"{retrieval_origin['query']} "
+                            f"({retrieval_origin['candidate_match_quality']}; not a memory claim)"
+                        )
+                        if retrieval_origin
+                        else "",
+                        profile.adam_context_note or "",
+                    ]
+                    if part
+                ),
+                "grounding_asset_id": asset.id,
+            }
+            compiled = compile_pair_export(pair, fallback_truth_status=candidate_truth_status)
+            candidate = {
+                "asset_id": asset.id,
+                "asset_title": _asset_title(asset),
+                "metadata_profile_id": profile.id,
+                "memory_id": memory.id if memory else None,
+                "boundary_id": boundary.id,
+                "embedding_record_id": embedding.id if embedding else None,
+                "prompt": prompt,
+                "variant_key": variant_key,
+                "variant_label": variant_label,
+                "truth_status": candidate_truth_status,
+                "source_truth_status": source_truth_status,
+                "candidate_response_truth_status": candidate_truth_status,
+                "photo_pair_generation_batch_id": generation_batch_id,
+                "retrieval_gap_origin": retrieval_origin,
+                "existing_task_id": existing.id if existing else None,
+            }
+            candidates.append(candidate)
+            if dry_run or existing:
+                continue
+
+            prompt_spec = PromptSpec(
+                human_id=_human_id("PROMPT_PHOTO_PAIR", _count(session, PromptSpec)),
+                prompt_type="photo_memory_prompt_pair_candidate",
+                voice_mode=compiled["voice_mode"],
+                truth_mode=candidate_truth_status,
+                prompt_text=compiled["prompt"],
+                success_criteria={
+                    "must_preserve_truth_boundary": True,
+                    "must_link_source_photo": True,
+                    "must_remain_review_candidate_until_adam_gold_edit": True,
+                    "must_not_claim_archival_quote": True,
+                },
+                metadata_json={
+                    "system_prompt": compiled["system_prompt"],
+                    "source_photo_id": asset.id,
+                    "source_photo_profile_id": profile.id,
+                    "source_photo_memory_id": memory.id if memory else None,
+                    "source_embedding_record_id": embedding.id if embedding else None,
+                    "source_profile_status": profile.metadata_status,
+                    "source_truth_status": source_truth_status,
+                    "candidate_response_truth_status": candidate_truth_status,
+                    "photo_pair_generation_batch_id": generation_batch_id,
+                    "photo_pair_variant_key": variant_key,
+                    "photo_pair_variant_label": variant_label,
+                    "retrieval_gap_origin": retrieval_origin,
+                    "export_preview_yaml": compiled["yaml_preview"],
+                },
+            )
+            session.add(prompt_spec)
+            session.flush()
+
+            context_pack = ContextPack(
+                human_id=_human_id("CTX_PHOTO_PAIR", _count(session, ContextPack)),
+                user_intent="photo_memory_prompt_pair_generation",
+                requested_voice_mode=compiled["voice_mode"],
+                truth_mode=candidate_truth_status,
+                allowed_facts=[embedding_text[:1800]] if embedding_text else [],
+                boundaries_snapshot={
+                    "source_photo_id": asset.id,
+                    "source_photo_profile_id": profile.id,
+                    "source_photo_memory_id": memory.id if memory else None,
+                    "source_embedding_record_id": embedding.id if embedding else None,
+                    "source_truth_status": source_truth_status,
+                    "candidate_response_truth_status": candidate_truth_status,
+                    "photo_pair_generation_batch_id": generation_batch_id,
+                    "photo_pair_variant_key": variant_key,
+                    "photo_pair_variant_label": variant_label,
+                    "retrieval_gap_origin": retrieval_origin,
+                    "requires_adam_gold_edit": True,
+                    "candidate_only": True,
+                    "boundary": boundary.model_dump(mode="json"),
+                },
+                style_guidance={
+                    "system_prompt": compiled["system_prompt"],
+                    "voice_mode": compiled["voice_mode"],
+                    "artifact_mode": compiled["artifact_mode"],
+                    "source_modality": "photo",
+                    "photo_pair_variant": variant_label,
+                    "photo_pair_generation_batch_id": generation_batch_id,
+                    "retrieval_gap_origin_policy": "workflow provenance only; not a source fact or memory claim"
                     if retrieval_origin
-                    else "",
-                    profile.adam_context_note or "",
-                ]
-                if part
-            ),
-            "grounding_asset_id": asset.id,
-        }
-        compiled = compile_pair_export(pair, fallback_truth_status=truth_status)
-        candidate = {
-            "asset_id": asset.id,
-            "asset_title": _asset_title(asset),
-            "metadata_profile_id": profile.id,
-            "memory_id": memory.id if memory else None,
-            "boundary_id": boundary.id,
-            "embedding_record_id": embedding.id if embedding else None,
-            "prompt": prompt,
-            "truth_status": truth_status,
-            "retrieval_gap_origin": retrieval_origin,
-            "existing_task_id": existing.id if existing else None,
-        }
-        candidates.append(candidate)
-        if dry_run or existing:
-            continue
+                    else None,
+                },
+            )
+            session.add(context_pack)
+            session.flush()
 
-        prompt_spec = PromptSpec(
-            human_id=_human_id("PROMPT_PHOTO_PAIR", _count(session, PromptSpec)),
-            prompt_type="photo_memory_prompt_pair_candidate",
-            voice_mode=compiled["voice_mode"],
-            truth_mode=truth_status,
-            prompt_text=compiled["prompt"],
-            success_criteria={
-                "must_preserve_truth_boundary": True,
-                "must_link_source_photo": True,
-                "must_remain_review_candidate_until_adam_gold_edit": True,
-                "must_not_claim_archival_quote": True,
-            },
-            metadata_json={
-                "system_prompt": compiled["system_prompt"],
-                "source_photo_id": asset.id,
-                "source_photo_profile_id": profile.id,
-                "source_photo_memory_id": memory.id if memory else None,
-                "source_embedding_record_id": embedding.id if embedding else None,
-                "source_profile_status": profile.metadata_status,
-                "source_truth_status": truth_status,
-                "retrieval_gap_origin": retrieval_origin,
-                "export_preview_yaml": compiled["yaml_preview"],
-            },
-        )
-        session.add(prompt_spec)
-        session.flush()
+            task = Task(
+                human_id=_human_id("TASK_PHOTO_PAIR", _count(session, Task)),
+                task_type="gold_voice_edit",
+                target_type="prompt_pair",
+                target_id=prompt_spec.id,
+                priority=82,
+                queue="prompt_pairs_needing_gold_edits",
+                reason_created="Photo memory record generated a prompt-pair candidate for Adam gold-edit review.",
+                input_payload={
+                    **compiled,
+                    "export_flags": {"sft": False, "dpo": False, "eval": False, "anti_pattern": False, "style_rule": False},
+                    "prompt_spec_id": prompt_spec.id,
+                    "context_pack_id": context_pack.id,
+                    "source_title": profile.title or _asset_title(asset),
+                    "source_excerpt": embedding_text[:6000],
+                    "source_photo_id": asset.id,
+                    "source_photo_profile_id": profile.id,
+                    "source_photo_memory_id": memory.id if memory else None,
+                    "source_embedding_record_id": embedding.id if embedding else None,
+                    "retrieval_gap_origin": retrieval_origin,
+                    "embedding_input_text": embedding_text,
+                    "boundary_snapshot": boundary.model_dump(mode="json"),
+                    "source_profile_status": profile.metadata_status,
+                    "source_truth_status": source_truth_status,
+                    "candidate_response_truth_status": candidate_truth_status,
+                    "photo_pair_generation_batch_id": generation_batch_id,
+                    "photo_pair_variant_key": variant_key,
+                    "photo_pair_variant_label": variant_label,
+                    "photo_pair_generation_strategy": "deterministic_photo_memory_reconstruction_template",
+                    "candidate_requires_adam_gold_edit": True,
+                    "no_live_model_call": True,
+                    "pair_index": f"photo-{len(created_task_ids) + 1:03d}",
+                    "failure_modes": ["photo_grounded_synthetic_candidate_needs_adam_review"],
+                },
+                required_decisions=["artifact_mode", "voice_mode", "prompt", "content", "response_rubric"],
+                created_by="photo_memory_prompt_pair_generation",
+            )
+            session.add(task)
+            session.flush()
+            created_task_ids.append(task.id)
+            candidate["created_task_id"] = task.id
 
-        context_pack = ContextPack(
-            human_id=_human_id("CTX_PHOTO_PAIR", _count(session, ContextPack)),
-            user_intent="photo_memory_prompt_pair_generation",
-            requested_voice_mode=compiled["voice_mode"],
-            truth_mode=truth_status,
-            allowed_facts=[embedding_text[:1800]] if embedding_text else [],
-            boundaries_snapshot={
-                "source_photo_id": asset.id,
-                "source_photo_profile_id": profile.id,
-                "source_photo_memory_id": memory.id if memory else None,
-                "source_embedding_record_id": embedding.id if embedding else None,
-                "retrieval_gap_origin": retrieval_origin,
-                "requires_adam_gold_edit": True,
-                "candidate_only": True,
-                "boundary": boundary.model_dump(mode="json"),
-            },
-            style_guidance={
-                "system_prompt": compiled["system_prompt"],
-                "voice_mode": compiled["voice_mode"],
-                "artifact_mode": compiled["artifact_mode"],
-                "source_modality": "photo",
-                "retrieval_gap_origin_policy": "workflow provenance only; not a source fact or memory claim"
-                if retrieval_origin
-                else None,
-            },
-        )
-        session.add(context_pack)
-        session.flush()
-
-        task = Task(
-            human_id=_human_id("TASK_PHOTO_PAIR", _count(session, Task)),
-            task_type="gold_voice_edit",
-            target_type="prompt_pair",
-            target_id=prompt_spec.id,
-            priority=82,
-            queue="prompt_pairs_needing_gold_edits",
-            reason_created="Photo memory record generated a prompt-pair candidate for Adam gold-edit review.",
-            input_payload={
-                **compiled,
-                "export_flags": {"sft": False, "dpo": False, "eval": False, "anti_pattern": False, "style_rule": False},
-                "prompt_spec_id": prompt_spec.id,
-                "context_pack_id": context_pack.id,
-                "source_title": profile.title or _asset_title(asset),
-                "source_excerpt": embedding_text[:6000],
-                "source_photo_id": asset.id,
-                "source_photo_profile_id": profile.id,
-                "source_photo_memory_id": memory.id if memory else None,
-                "source_embedding_record_id": embedding.id if embedding else None,
-                "retrieval_gap_origin": retrieval_origin,
-                "embedding_input_text": embedding_text,
-                "boundary_snapshot": boundary.model_dump(mode="json"),
-                "source_profile_status": profile.metadata_status,
-                "source_truth_status": truth_status,
-                "candidate_requires_adam_gold_edit": True,
-                "no_live_model_call": True,
-                "pair_index": f"photo-{len(created_task_ids) + 1:03d}",
-                "failure_modes": ["photo_grounded_synthetic_candidate_needs_adam_review"],
-            },
-            required_decisions=["artifact_mode", "voice_mode", "prompt", "content", "response_rubric"],
-            created_by="photo_memory_prompt_pair_generation",
-        )
-        session.add(task)
-        session.flush()
-        created_task_ids.append(task.id)
-        candidate["created_task_id"] = task.id
-
-    if not dry_run:
+    if not dry_run and commit:
         session.commit()
+    generation_batch_ids = sorted(
+        {
+            str(candidate["photo_pair_generation_batch_id"])
+            for candidate in candidates
+            if candidate.get("photo_pair_generation_batch_id")
+        }
+    )
     return {
         "dry_run": dry_run,
         "requested_limit": limit,
+        "asset_id": asset_id,
+        "metadata_profile_id": metadata_profile_id,
+        "generation_batch_id": generation_batch_ids[0] if len(generation_batch_ids) == 1 else None,
+        "generation_batch_ids": generation_batch_ids,
         "created_count": len(candidates),
         "created_task_ids": created_task_ids,
         "candidates": candidates,
@@ -488,13 +657,13 @@ def _existing_photo_memory_profile(session: Session, asset_id: str) -> Optional[
         select(MetadataProfile)
         .where(MetadataProfile.target_type == "asset")
         .where(MetadataProfile.target_id == asset_id)
-        .where(MetadataProfile.profile_type == "photo_memory")
+        .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
     ).first()
 
 
 def _profile_has_human_truth(profile: MetadataProfile) -> bool:
-    return profile.metadata_status in {"adam_reviewed", "approved"} or profile.truth_status in {
-        "adam_memory",
+    return profile.metadata_status in {PHOTO_STATUS_ADAM_REVIEWED, "approved"} or profile.truth_status in {
+        PHOTO_TRUTH_ADAM_MEMORY,
         "adam_inference",
         "adam_expert_reconstruction",
         "archival_source",
@@ -540,14 +709,14 @@ def _upsert_profile(
 ) -> MetadataProfile:
     profile = _existing_photo_memory_profile(session, asset.id)
     if profile is None:
-        profile = MetadataProfile(target_type="asset", target_id=asset.id, profile_type="photo_memory")
+        profile = MetadataProfile(target_type="asset", target_id=asset.id, profile_type=PHOTO_MEMORY_PROFILE_TYPE)
     profile.profile_version = "v1"
-    profile.metadata_status = "machine_draft_needs_adam_review"
+    profile.metadata_status = PHOTO_STATUS_MACHINE_DRAFT
     profile.title = str(template["title"])
     profile.summary = str(template["summary"])
     profile.adam_context_note = str(template["context"])
     profile.source_genre = "photo"
-    profile.truth_status = "system_inference"
+    profile.truth_status = PHOTO_TRUTH_SYSTEM
     profile.date_label = str(asset.source_modified_time.date()) if asset.source_modified_time else "unknown"
     profile.date_confidence = "source_file_modified_time" if asset.source_modified_time else "unknown"
     profile.people = list(template["people"])
@@ -591,7 +760,7 @@ def _upsert_memory(
             human_id=f"MEM_PHOTO_DRAFT_{_count(session, Memory):06d}",
             title=profile.title or _asset_title(asset),
             summary="",
-            truth_status="system_inference",
+            truth_status=PHOTO_TRUTH_SYSTEM,
             reliability="low",
             maturity_level="L2_machine_draft",
         )
@@ -609,7 +778,7 @@ def _upsert_memory(
         ]
         if part
     )
-    memory.truth_status = "system_inference"
+    memory.truth_status = PHOTO_TRUTH_SYSTEM
     memory.reliability = "low"
     memory.themes = profile.themes
     memory.open_questions = profile.open_questions
@@ -724,16 +893,24 @@ def _upsert_review_task(
     profile: MetadataProfile,
     template: Dict[str, Any],
 ) -> Tuple[Task, bool]:
-    existing = session.exec(
+    ready_existing = session.exec(
+        select(Task)
+        .where(Task.task_type == "vision_draft_review")
+        .where(Task.target_type == "metadata_profile")
+        .where(Task.target_id == profile.id)
+        .where(Task.status == "ready")
+        .order_by(Task.created_at.asc())
+    ).first()
+    if ready_existing:
+        return ready_existing, False
+    previous = session.exec(
         select(Task)
         .where(Task.task_type == "vision_draft_review")
         .where(Task.target_type == "metadata_profile")
         .where(Task.target_id == profile.id)
         .where(Task.status != "canceled")
-        .order_by(Task.created_at.asc())
+        .order_by(Task.created_at.desc())
     ).first()
-    if existing:
-        return existing, False
     task = Task(
         human_id=f"TASK_PHOTO_MEMORY_REVIEW_{_count(session, Task):06d}",
         task_type="vision_draft_review",
@@ -741,7 +918,11 @@ def _upsert_review_task(
         target_id=profile.id,
         priority=78,
         queue="vision_drafts_needing_review",
-        reason_created="Machine photo-memory draft needs Adam review before being treated as durable memory.",
+        reason_created=(
+            "Machine photo-memory draft needs Adam review before being treated as durable memory."
+            if previous is None
+            else "Machine photo-memory draft is still held, so a fresh ready review ticket was opened."
+        ),
         input_payload={
             "asset_id": asset.id,
             "asset_type": asset.asset_type,
@@ -750,11 +931,13 @@ def _upsert_review_task(
             "source_type": asset.asset_type,
             "metadata_profile_id": profile.id,
             "draft_type": "photo_memory_machine_draft",
-            "truth_status": "system_inference",
+            "truth_status": PHOTO_TRUTH_SYSTEM,
             "vision_draft": _vision_draft_from_template(template),
             "suggested_questions": _vision_draft_from_template(template)["suggested_questions"],
             "no_live_model_call": True,
             "source_photo_memory_draft": True,
+            "previous_review_task_id": previous.id if previous else None,
+            "previous_review_task_status": previous.status if previous else None,
         },
         required_decisions=[
             "vision_accuracy",
@@ -830,7 +1013,7 @@ def create_photo_memory_drafts(session: Session, *, limit: int = 5, dry_run: boo
             ),
             modality="text",
             embedding_type="memory_text",
-            truth_status="system_inference",
+            truth_status=PHOTO_TRUTH_SYSTEM,
             boundary_snapshot=boundary.model_dump(mode="json"),
             metadata={
                 "source": "photo_memory_machine_draft",

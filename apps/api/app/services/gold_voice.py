@@ -16,7 +16,7 @@ from app.models import (
     utcnow,
 )
 from app.services.embeddings import upsert_embedding_record
-from app.services.pair_export import compile_pair_export, sft_export_blockers
+from app.services.pair_export import compile_pair_export, sft_export_blockers, source_section_export_blockers
 from app.services.voice_modes import upsert_voice_mode
 
 
@@ -342,7 +342,9 @@ def upsert_gold_voice_artifacts(
     export_status = "approved" if _rating_passes(ratings) else "candidate"
 
     if export_flags.get("sft"):
-        sft_blockers = sft_export_blockers(system_prompt, prompt, gold_text)
+        source_section_blockers = source_section_export_blockers({**task.input_payload, **decisions})
+        sft_blockers = sft_export_blockers(system_prompt, prompt, gold_text) + source_section_blockers
+        sft_blockers = list(dict.fromkeys(sft_blockers))
         sft_export_status = "candidate" if sft_blockers else export_status
         sft = _first_or_none(
             session,
@@ -372,7 +374,9 @@ def upsert_gold_voice_artifacts(
         created["sft_candidate_id"] = sft.id
 
     if export_flags.get("dpo"):
-        dpo_blockers = _dpo_export_blockers(prompt, gold_text, model_draft, failure_modes)
+        source_section_blockers = source_section_export_blockers({**task.input_payload, **decisions})
+        dpo_blockers = _dpo_export_blockers(prompt, gold_text, model_draft, failure_modes) + source_section_blockers
+        dpo_blockers = list(dict.fromkeys(dpo_blockers))
         dpo_export_status = "candidate" if dpo_blockers else export_status
         dpo = _first_or_none(
             session,

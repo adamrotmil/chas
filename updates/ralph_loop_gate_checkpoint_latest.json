@@ -1,5 +1,5 @@
 {
-  "check_count": 48,
+  "check_count": 54,
   "checkpoint_type": "charlesops_ralph_loop_gate_checkpoint",
   "checks": [
     {
@@ -27,6 +27,7 @@
             "does_not_create_memory_claim",
             "requires_adam_context",
             "missing_field_counts",
+            "field_guidance",
             "items",
             "content_sha256",
             "export_preview_yaml",
@@ -74,6 +75,8 @@
             "status_counts",
             "blocked_reason_counts",
             "retrieval_gap_missing_field_counts",
+            "review_session_task_count",
+            "provenance_policy",
             "items",
             "content_sha256"
           ],
@@ -88,6 +91,8 @@
             "completion_signal",
             "source_progress_content_sha256",
             "status_counts",
+            "review_session_task_count",
+            "provenance_policy",
             "items",
             "content_sha256"
           ],
@@ -96,6 +101,39 @@
             "review_policy",
             "worklist_key",
             "completion_signal",
+            "items",
+            "content_sha256"
+          ],
+          "/api/assets/photo-review-priority": [
+            "summary_type",
+            "review_policy",
+            "throughput_policy",
+            "does_not_mutate_state",
+            "does_not_create_memory_claim",
+            "no_live_model_call",
+            "no_live_embedding_call",
+            "completion_signal",
+            "items",
+            "content_sha256",
+            "export_preview_yaml",
+            "export_preview_sha256"
+          ],
+          "/api/context-packs/photo-context-readiness-audit": [
+            "audit_type",
+            "readiness_status",
+            "review_policy",
+            "does_not_mutate_state",
+            "requires_boundary_clearance",
+            "uses_reviewed_photo_context",
+            "excludes_system_inference_drafts",
+            "completion_signal",
+            "machine_draft_profile_count",
+            "held_for_adam_review_count",
+            "next_review_action_count",
+            "next_review_actions",
+            "ready_context_pack_asset_count",
+            "filename_only_fallback_count",
+            "system_inference_leak_count",
             "items",
             "content_sha256"
           ],
@@ -132,6 +170,25 @@
             "report_markdown",
             "content_sha256"
           ],
+          "/api/model-status/demo-generation-request-preview": [
+            "preview_type",
+            "review_policy",
+            "does_not_mutate_state",
+            "no_live_model_call",
+            "no_generation_created",
+            "does_not_promote_to_training_export",
+            "api",
+            "model_name",
+            "reasoning_effort",
+            "store",
+            "live_generation_blockers",
+            "request_count",
+            "requests",
+            "safety_policy",
+            "content_sha256",
+            "export_preview_yaml",
+            "export_preview_sha256"
+          ],
           "/api/prompt-pairs/dpo-rejected-reason-repair-pack": [
             "packet_type",
             "review_policy",
@@ -146,6 +203,7 @@
             "review_policy",
             "does_not_mutate_task",
             "input_patch",
+            "suggested_rejected_issue",
             "before",
             "after",
             "yaml_diff_preview",
@@ -170,11 +228,24 @@
             "completion_signal",
             "content_sha256"
           ],
+          "/api/prompt-pairs/source-boundary-training-review-pack": [
+            "packet_type",
+            "review_policy",
+            "does_not_mutate_source",
+            "does_not_promote_to_training_export",
+            "blocker",
+            "completion_signal",
+            "items",
+            "content_sha256",
+            "export_preview_yaml"
+          ],
           "/api/prompt-pairs/top-blocker-review-session-plan": [
             "plan_type",
             "review_policy",
             "does_not_mutate_state",
             "does_not_promote_to_training_export",
+            "selection_policy",
+            "requested_blocker",
             "blocker",
             "selected_count",
             "field_plan",
@@ -186,6 +257,8 @@
           "/api/prompt-pairs/top-blocker-slice": [
             "slice_type",
             "review_policy",
+            "selection_policy",
+            "requested_blocker",
             "blocker",
             "completion_signal",
             "items",
@@ -229,7 +302,7 @@
             "content_sha256"
           ]
         },
-        "runtime_contract_source_sha256": "967cca2362c514bcecd9913a6da2298b795bfc39c9eb76b23b7177c446efa995"
+        "runtime_contract_source_sha256": "0cfb65946c7bbde4a0f31076bcff7aa2a021400dfc339591eada769553b518c6"
       },
       "name": "API runtime contract matches checked-out source",
       "passed": true
@@ -238,13 +311,23 @@
       "detail": "source-review Generate Pairs dry-run exposes required fields without mutating tasks",
       "evidence": {
         "candidate_pair_count": 1,
-        "content_sha256": "4554a2d7dea15ee28c0140384ac44762c97cffd94b3462a60f87acbc8c028fc3",
+        "content_sha256": "55e8fafcf256dd27222eba92b9ce384f44c31aba770701783e98d6e0f2512b13",
         "primary_strategy": "deterministic_fallback_source_text",
         "projected_created_pair_count": 1,
         "required_field_count": 16,
         "task_human_id": "TASK_TEXT_DRV_16NEJI1SFNKO8EOGOV_OYQMSWEFYBNGSB_1"
       },
       "name": "Source Review pair generation preview is contract-checked",
+      "passed": true
+    },
+    {
+      "detail": "focused contract tests passed",
+      "evidence": {
+        "command": "docker compose exec -T api pytest -q tests/test_context_packs.py::test_context_pack_builder_excludes_missing_boundaries_by_default tests/test_context_packs.py::test_real_photo_context_submit_feeds_context_pack_with_photo_memory_profile_shape tests/test_task_submit.py::test_task_submit_rejects_non_ready_resubmission_without_duplicate_artifacts tests/test_ralph_phase2_photo_spine.py::test_family_private_retrieval_excludes_sensitive_privacy_even_if_flags_are_wrong tests/test_dataset_exports.py::test_approved_actual_rows_with_quality_or_structural_blockers_are_excluded tests/test_ralph_phase3_prompt_pair_audit.py::test_prompt_pair_source_boundary_preflight_respects_artifact_mode_permissions",
+        "output_tail": "......                                                                   [100%]\n6 passed in 1.38s",
+        "returncode": 0
+      },
+      "name": "Production slice stabilization regressions are protected",
       "passed": true
     },
     {
@@ -267,10 +350,48 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "npx --prefix apps/web playwright test --config apps/web/playwright.config.ts",
-        "output_tail": "Running 11 tests using 1 worker\n\n  \u2713   1 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:3:5 \u203a exports readiness exposes demo gate and retrieval actions (14.1s)\n  \u2713   2 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:273:5 \u203a photo vector summary action opens the fastest held vector review task (10.9s)\n  \u2713   3 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:285:5 \u203a gallery draft review action opens the photo memory review task (11.1s)\n  \u2713   4 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:321:5 \u203a photo submit receipt exposes vector handoff without mutating the archive (11.1s)\n  \u2713   5 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:402:5 \u203a asset dossier shows vector handoff details from task receipts (359ms)\n  \u2713   6 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:518:5 \u203a photo review exposes image preview and downstream memory text preview (610ms)\n  \u2713   7 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:621:5 \u203a source review previews Generate Pairs ticket creation before submit (1.3s)\n  \u2713   8 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:648:5 \u203a retrieval no-claim action opens a photo context task with query provenance (18.1s)\n  \u2713   9 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:791:5 \u203a prompt pairs can be filtered and searched as singleton tickets (2.1s)\n  \u2713  10 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:931:5 \u203a prompt pair ticket explains why backend preflight is held (1.1s)\n  \u2713  11 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:977:5 \u203a DPO rejected reason focus aid applies a provisional rejected-side note (1.1s)\n\n  11 passed (1.2m)\n(node:38058) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:38058) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)",
+        "output_tail": "vector handoff without mutating the archive (15.8s)\n  \u2713   6 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:637:5 \u203a asset dossier shows vector handoff details from task receipts (477ms)\n  \u2713   7 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:753:5 \u203a photo review exposes image preview and downstream memory text preview (669ms)\n  \u2713   8 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:865:5 \u203a source review previews Generate Pairs ticket creation before submit (1.1s)\n  \u2713   9 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:901:5 \u203a retrieval no-claim action opens a photo context task with query provenance (25.2s)\n  \u2713  10 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1071:5 \u203a photo context workbench visual checkpoint captures review seed and memory fields (23.0s)\n  \u2713  11 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1207:5 \u203a prompt pairs can be filtered and searched as singleton tickets (2.5s)\n  \u2713  12 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1445:5 \u203a prompt pairs work queue visual checkpoint captures live work surface (1.1s)\n  \u2713  13 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1520:5 \u203a prompt pair ticket explains why backend preflight is held (1.2s)\n  \u2713  14 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1566:5 \u203a prompt pair editor exposes an audit-preserving delete candidate action (1.3s)\n  \u2713  15 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1618:5 \u203a source-boundary prompt pair blocker exposes non-mutating permission guidance (1.3s)\n  \u2713  16 [chromium] \u203a apps/web/tests/readiness-smoke.spec.ts:1656:5 \u203a DPO rejected reason focus aid applies a provisional rejected-side note (1.2s)\n\n  16 passed (2.6m)\n(node:23963) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:23963) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)",
         "returncode": 0
       },
       "name": "Web readiness UI exposes demo gate, photo review, and retrieval actions",
+      "passed": true
+    },
+    {
+      "detail": "Prompt Pairs screenshot and sidecar match the live queue counts from this gate run",
+      "evidence": {
+        "height": 1200,
+        "metadata_captured_at": "2026-04-30T13:12:17.959Z",
+        "metadata_path": "updates/prompt_pairs_work_queue_2026-04-29.json",
+        "preflight_blocker_counts": {
+          "dpo_rejected_reason_empty": 25,
+          "source_boundary_blocks_training": 6
+        },
+        "preflight_gate_counts": {
+          "approved": 403,
+          "candidate": 31
+        },
+        "screenshot_path": "updates/prompt_pairs_work_queue_2026-04-29.png",
+        "screenshot_sha256": "138345be07acf97ac1437c2982bdc4112314f4bc95de81b85e3ebc958dbb9489",
+        "width": 1440
+      },
+      "name": "Prompt Pairs working surface has a fresh visual checkpoint",
+      "passed": true
+    },
+    {
+      "detail": "Photo Context screenshot and sidecar match live review seed, progress, and field hashes",
+      "evidence": {
+        "height": 1200,
+        "metadata_captured_at": "2026-04-30T13:12:14.379Z",
+        "metadata_path": "updates/photo_context_workbench_2026-04-29.json",
+        "reported_task_count": 3,
+        "review_session_task_count": 2,
+        "screenshot_path": "updates/photo_context_workbench_2026-04-29.png",
+        "screenshot_sha256": "b9c3d534dcae54c35584486197d4a70043fdd60b297751ab3caa97b66b85ba6e",
+        "selected_task_title": "Rotmil 2021 III.jpg",
+        "source_query": "Old Orchard beach",
+        "width": 1440
+      },
+      "name": "Photo Context workbench has a fresh visual checkpoint",
       "passed": true
     },
     {
@@ -283,24 +404,24 @@
           "vector_handoff",
           "demo_generation"
         ],
-        "queue_sha256": "abd6670fbb3c484fc3b6e4e4c3c09d2b89037ca3772b1b4e8489beed8b2b4609",
+        "queue_sha256": "8ab8bec77a70546caffb99969a299339f0343383334b3c8928b0488c88050b14",
         "sample_actions": [
           {
             "action_type": "open_held_prompt_pair_candidate",
             "area_key": "prompt_pairs",
-            "count": 30,
+            "count": 31,
             "enabled": true
           },
           {
             "action_type": "open_existing_photo_context_task",
             "area_key": "photo_context",
-            "count": 22,
+            "count": 21,
             "enabled": true
           },
           {
             "action_type": "open_photo_vector_review",
             "area_key": "vector_handoff",
-            "count": 5,
+            "count": 6,
             "enabled": true
           },
           {
@@ -318,8 +439,9 @@
     {
       "detail": "artifact manifest lists downstream outputs with hashes, formats, endpoints, and eligibility policy",
       "evidence": {
-        "artifact_count": 19,
+        "artifact_count": 23,
         "artifact_families": [
+          "model_generation_preview",
           "operator_handoff",
           "photo_context_review",
           "photo_vector_handoff",
@@ -330,7 +452,7 @@
           "training_dataset",
           "training_review_dry_run"
         ],
-        "content_sha256": "f00c352b8d59cc3da4e9e19c376804f7c3500c90c16a26d47b0d143c4e4d3050",
+        "content_sha256": "a35981488fb8da8dee3e8e923ba578d31bebd07105059b0eb05e017711bcf231",
         "formats": [
           "json",
           "jsonl",
@@ -342,8 +464,8 @@
           "prompt_pair_review_progress_json",
           "prompt_pair_top_blocker_session_plan_yaml",
           "dpo_rejected_reason_repair_yaml",
-          "source_review_pair_generation_preview_json",
-          "prompt_pair_reference_jsonl"
+          "source_boundary_training_review_yaml",
+          "source_review_pair_generation_preview_json"
         ]
       },
       "name": "Downstream artifact manifest lists inspectable outputs",
@@ -352,29 +474,45 @@
     {
       "detail": "artifact audit recomputes declared artifact hashes and finds no mismatches",
       "evidence": {
-        "checked_count": 19,
-        "content_sha256": "a4deb3344060a49d14d87dfc7f3466954ed67f2d6f1045d58ddc992cd3d7c32c",
-        "manifest_content_sha256": "f00c352b8d59cc3da4e9e19c376804f7c3500c90c16a26d47b0d143c4e4d3050",
+        "checked_count": 23,
+        "content_sha256": "c113ea4a4094837b57918fa74261ef1812390079cc650d7096177783c4e52c5e",
+        "manifest_content_sha256": "a35981488fb8da8dee3e8e923ba578d31bebd07105059b0eb05e017711bcf231",
         "mismatch_count": 0,
         "sample_artifacts": [
           "prompt_pair_audit_markdown",
           "prompt_pair_review_progress_json",
           "prompt_pair_top_blocker_session_plan_yaml",
           "dpo_rejected_reason_repair_yaml",
-          "source_review_pair_generation_preview_json",
-          "prompt_pair_reference_jsonl"
+          "source_boundary_training_review_yaml",
+          "source_review_pair_generation_preview_json"
         ]
       },
       "name": "Downstream artifact hash audit verifies manifest outputs",
       "passed": true
     },
     {
+      "detail": "reviewed photo context-pack audit exposes boundary, truth-status, and leak checks",
+      "evidence": {
+        "blocked_context_pack_asset_count": 1,
+        "candidate_photo_asset_count": 1,
+        "content_sha256": "13612514bc6e4fe7c7e6e9b24efc4f5cd57e409140933b8dcb312ec79cdfda42",
+        "filename_only_fallback_count": 0,
+        "held_for_adam_review_count": 5,
+        "next_review_action_count": 5,
+        "readiness_status": "needs_adam_review",
+        "ready_context_pack_asset_count": 0,
+        "system_inference_leak_count": 0
+      },
+      "name": "Photo context-pack readiness audit is machine-checkable",
+      "passed": true
+    },
+    {
       "detail": "handoff names top bottlenecks, artifact hash status, and safety boundaries",
       "evidence": {
-        "artifact_count": 18,
+        "artifact_count": 22,
         "artifact_hashes_match": true,
         "checklist_count": 4,
-        "content_sha256": "6a0f9cbf03cfe3ea6971b31db5735daa27179241bdaf93c0f29b52f022c03ffe",
+        "content_sha256": "b8beaf28f6e57c5f4e844678517ee7fef75b73d5e9f673c90022cf56b0112bcf",
         "ordered_bottleneck_area_keys": [
           "prompt_pairs",
           "photo_context",
@@ -389,9 +527,9 @@
           "demo_generation",
           "artifacts"
         ],
-        "retrieval_gap_candidate_count": 27,
-        "retrieval_gap_hash": "858f02e157cc8d6bfde49342724a232d7191aabfe218bf7f1d6db4d6be89d528",
-        "retrieval_gap_query": "airplane in Maine"
+        "retrieval_gap_candidate_count": 26,
+        "retrieval_gap_hash": "4b0921118d0a169e9da450d0063b73b4adf0217c7d9dd82ed09cd32ae910a409",
+        "retrieval_gap_query": "Old Orchard beach"
       },
       "name": "Morning handoff summarizes current loop state",
       "passed": true
@@ -399,19 +537,19 @@
     {
       "detail": "prompt-pair audit meets live milestone threshold",
       "evidence": {
-        "inspectable_pair_count": 433,
+        "inspectable_pair_count": 434,
         "invalid_pair_count": 0,
         "preflight_gate_counts": {
           "approved": 403,
-          "candidate": 30
+          "candidate": 31
         },
         "preflight_mismatch_count": 0,
         "preflight_mismatches": [],
         "quality_counts": {
-          "review_candidate": 433
+          "review_candidate": 434
         },
         "sample_count": 20,
-        "total_pairs": 433,
+        "total_pairs": 434,
         "voice_mode_counts": {
           "comic_observation": 10,
           "father_to_adam": 67,
@@ -420,7 +558,7 @@
           "mundane_text_message": 70,
           "nb_digression": 44,
           "philosophical_fragment": 19,
-          "photography_reflection": 37,
+          "photography_reflection": 38,
           "ps_digression": 61,
           "source_based_story_recall": 1,
           "verbatim_email_reply": 26
@@ -434,9 +572,9 @@
       "evidence": {
         "blocker_counts": {
           "dpo_rejected_reason_empty": 25,
-          "source_boundary_blocks_training": 5
+          "source_boundary_blocks_training": 6
         },
-        "content_sha256": "4d6ac9430cb830fb7be412d5e0cd91deabc988d2ed01e563002092e344d9c303",
+        "content_sha256": "3a5231411f82e661eea46edcab7f5094937c37b2206d7f238319bdfd713b7596",
         "reported_candidate_count": 30,
         "sample_tasks": [
           "TASK_DPO_CANDIDATE_000700",
@@ -449,7 +587,7 @@
           "prompt_pair_blocker:dpo_rejected_reason_empty",
           "prompt_pair_blocker:source_boundary_blocks_training"
         ],
-        "total_candidate_count": 30,
+        "total_candidate_count": 31,
         "worklist_count": 2
       },
       "name": "Held prompt-pair review pack is actionable",
@@ -459,9 +597,9 @@
       "detail": "review-progress endpoint mirrors audit counts and preserves candidate-only policy",
       "evidence": {
         "approved_count": 403,
-        "candidate_count": 30,
+        "candidate_count": 31,
         "completion_signal": "candidate_count_decreases_or_blocker_worklist_changes",
-        "content_sha256": "da499b6e2e0515446b43acca81d51e4688521e15c7b6dec02d644dc5ba66b652",
+        "content_sha256": "f5c121912978a631deaa4c369cdc47f999e538eabb81630d87338c0f1b6b7193",
         "top_blocker": "dpo_rejected_reason_empty",
         "top_blocker_count": 25
       },
@@ -473,7 +611,7 @@
       "evidence": {
         "blocker": "dpo_rejected_reason_empty",
         "candidate_count": 25,
-        "content_sha256": "1f78f8f20d2412c9c62084bfc5e07c5959bb595be45c0cc32cdab91d1b336426",
+        "content_sha256": "1fc7ea86c3ad37aee21e91db1da56e93547f33f82daae8130a53052e37d9b5ad",
         "reported_candidate_count": 5,
         "sample_tasks": [
           "TASK_DPO_CANDIDATE_000700",
@@ -491,8 +629,8 @@
       "evidence": {
         "blocker": "dpo_rejected_reason_empty",
         "candidate_count": 25,
-        "content_sha256": "32bd329b112a77c1057c6542b0dae01d564bc78d7a77ed6d09276154974acf63",
-        "export_preview_sha256": "53109c5cef910d2c1beec0ca27c7a6fc6c0c57715bfe33994ebb7d7a5d53df42",
+        "content_sha256": "142d9a0345911b1ac8958520feb95a9f1a854db2b24b04caf65260c753fceff4",
+        "export_preview_sha256": "47fe774deee128ff3f8729bc0363b82c05ceb755ba96e980136cedccbaa4759b",
         "field_plan": [
           "failure_modes",
           "rejected_rubric"
@@ -510,10 +648,33 @@
       "passed": true
     },
     {
+      "detail": "source-boundary prompt-pair blockers can be selected even when they are not the largest worklist",
+      "evidence": {
+        "reported_candidate_count": 5,
+        "sample_tasks": [
+          "TASK_PHOTO_PAIR_000730",
+          "TASK_PHOTO_PAIR_000739",
+          "TASK_PHOTO_PAIR_000731",
+          "TASK_PHOTO_PAIR_000732",
+          "TASK_PHOTO_PAIR_000733"
+        ],
+        "selection_policy": "requested_backend_blocker_exact_match",
+        "session_selected_count": 5,
+        "source_boundary_blocks_training": 6
+      },
+      "name": "Prompt-pair source-boundary blocker slice is directly addressable",
+      "passed": true
+    },
+    {
       "detail": "DPO repair packet exposes rejected-side reason gaps with YAML, blockers, and open-ticket actions",
       "evidence": {
-        "content_sha256": "c5e8502815d5e853588b66e9ec21bf45e689a2bf0bf65240b97a3b476455a427",
-        "export_preview_sha256": "4c62588bcfe042f6977b900b624a0eacbc4e43c11147b0052c37f69d663e3afa",
+        "content_sha256": "87823b8cf6e4ca622189ae148779e9bfe3d2eb07213cca9d2c9188dd3d99c14b",
+        "export_preview_sha256": "a99822d00ef4adfa7f9753e6bdd40fd6d3e7220db7da6031c2c91139d1fe85f1",
+        "first_suggested_failure_modes": [
+          "rejected_explains_instead_of_speaking_as_charles",
+          "rejected_missing_charles_line_break_cadence",
+          "rejected_too_formal_for_text_message"
+        ],
         "reported_candidate_count": 25,
         "sample_tasks": [
           "TASK_DPO_CANDIDATE_000700",
@@ -530,7 +691,7 @@
     {
       "detail": "large human audit pack exposes exact prompt/response/export previews without final-authenticity claims",
       "evidence": {
-        "markdown_chars": 687039,
+        "markdown_chars": 686894,
         "markdown_sample_sections": 200,
         "represented_modes": [
           "comic_observation",
@@ -553,7 +714,7 @@
     {
       "detail": "prompt-pair tickets compile into a stable reference corpus for future model drafting",
       "evidence": {
-        "content_sha256": "450ecceb3476d1a57e65750b7b20b8a97638905cefd0dc926448711c17669673",
+        "content_sha256": "b98266024663170c2d44ed6d3863fd4d9fe4a0c7b3d5d6e9b6d1dde5229f37b1",
         "duplicate_excluded_count": 25,
         "represented_modes": [
           "comic_observation",
@@ -568,7 +729,7 @@
           "verbatim_email_reply"
         ],
         "sample_count": 200,
-        "unique_reference_count": 408
+        "unique_reference_count": 409
       },
       "name": "Prompt-pair voice reference pack feeds generation context",
       "passed": true
@@ -629,7 +790,7 @@
           "included_artifact_types": [
             "prompt_pair_sft_review_candidate"
           ],
-          "included_count": 408,
+          "included_count": 409,
           "included_duplicate_count": 0,
           "mode": "candidate_allowed",
           "sample_included": [
@@ -669,8 +830,8 @@
     {
       "detail": "focused contract tests passed",
       "evidence": {
-        "command": "docker compose exec -T api pytest -q tests/test_dataset_exports.py::test_export_dry_run_excludes_boundary_blocked_and_candidate_items tests/test_ralph_phase1_training_spine.py::test_sft_export_guard_blocks_filename_placeholder_prompt_even_with_clean_rubric tests/test_ralph_phase1_training_spine.py::test_dpo_export_guard_blocks_identical_or_unexplained_rejected_response tests/test_ralph_phase3_prompt_pair_audit.py::test_prompt_pair_audit_and_reference_pack_exclude_structural_sft_blockers",
-        "output_tail": "....                                                                     [100%]\n4 passed in 1.29s",
+        "command": "docker compose exec -T api pytest -q tests/test_dataset_exports.py::test_export_dry_run_excludes_boundary_blocked_and_candidate_items tests/test_dataset_exports.py::test_candidate_export_dry_run_preserves_prompt_pair_provenance_backstage tests/test_ralph_phase1_training_spine.py::test_sft_export_guard_blocks_filename_placeholder_prompt_even_with_clean_rubric tests/test_ralph_phase1_training_spine.py::test_dpo_export_guard_blocks_identical_or_unexplained_rejected_response tests/test_ralph_phase3_prompt_pair_audit.py::test_prompt_pair_audit_and_reference_pack_exclude_structural_sft_blockers",
+        "output_tail": ".....                                                                    [100%]\n5 passed in 1.04s",
         "returncode": 0
       },
       "name": "Dataset export build creates exact retrievable JSONL",
@@ -680,7 +841,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_task_submit.py::test_gold_voice_submission_creates_annotation_and_training_artifacts tests/test_task_submit.py::test_gold_voice_response_b_minor_issue_stays_candidate_until_resolved tests/test_task_submit.py::test_unified_dpo_gold_submission_creates_dpo_only_artifact",
-        "output_tail": "...                                                                      [100%]\n3 passed in 0.96s",
+        "output_tail": "...                                                                      [100%]\n3 passed in 0.77s",
         "returncode": 0
       },
       "name": "Prompt-pair submit receipts explain export artifact status",
@@ -691,6 +852,10 @@
       "evidence": {
         "fine_tuning_enabled_in_mvp": false,
         "openai_api_key_configured": false,
+        "required_env": [
+          "OPENAI_API_KEY",
+          "TEXT_GENERATION_LIVE_CALLS_ENABLED"
+        ],
         "text_generation_live_calls_enabled": false,
         "text_generation_live_ready": false,
         "text_generation_model": "gpt-5.5",
@@ -707,6 +872,7 @@
           "openai_api_key_missing"
         ],
         "can_generate": false,
+        "credential_requirement_api": "responses",
         "held_out_prompt_count": 5,
         "sample_prompts": [
           "How's Portland today?",
@@ -719,10 +885,25 @@
       "passed": true
     },
     {
+      "detail": "demo generation has inspectable no-live Responses API request bodies before credentials are enabled",
+      "evidence": {
+        "content_sha256": "45a8f519dd3545ec203b54856c1baf0ae75056ace2aed502dfa5250e5294383b",
+        "export_preview_sha256": "032825b99c8f6da1eb65d7b29bcff15c9deea2f78477509dbbe3cbcc1eae5a00",
+        "request_count": 5,
+        "sample_request_hashes": [
+          "bd5829ccae9a04e1a2ff5bb4605e15e02820c48742c8510f79ebbf2700b66533",
+          "74a05047d4891ac8fee9445ba5deecc5e13dff5a3540deeed7dce23e5e99109e",
+          "3522e5cfd986bdd1cabe161d54a07f48e1cf7847fc3378f775193b0057aa77a0"
+        ]
+      },
+      "name": "Model demo request preview is exact and non-mutating",
+      "passed": true
+    },
+    {
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_blocker tests/test_ralph_phase1_training_spine.py::test_demo_generation_endpoint_stores_model_generated_outputs_without_training_truth",
-        "output_tail": "..                                                                       [100%]\n2 passed in 0.85s",
+        "output_tail": "..                                                                       [100%]\n2 passed in 0.74s",
         "returncode": 0
       },
       "name": "Model demo generations stay model-generated and outside training truth",
@@ -731,8 +912,8 @@
     {
       "detail": "focused contract tests passed",
       "evidence": {
-        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_plain_text_extraction_prefers_natural_sections_over_single_arbitrary_chunk tests/test_ralph_phase1_training_spine.py::test_source_review_generate_pairs_from_natural_sections_creates_singleton_prompt_pair_tasks",
-        "output_tail": "..                                                                       [100%]\n2 passed in 0.78s",
+        "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_plain_text_extraction_prefers_natural_sections_over_single_arbitrary_chunk tests/test_ralph_phase1_training_spine.py::test_docx_extraction_uses_natural_sections_with_exact_locators tests/test_ralph_phase1_training_spine.py::test_eml_extraction_uses_body_natural_sections_not_headers tests/test_ralph_phase1_training_spine.py::test_source_review_generate_pairs_from_natural_sections_creates_singleton_prompt_pair_tasks tests/test_ralph_phase1_training_spine.py::test_natural_section_generation_holds_split_sections_and_blocks_contextless_export",
+        "output_tail": ".....                                                                    [100%]\n5 passed in 0.77s",
         "returncode": 0
       },
       "name": "Natural text intake creates singleton Prompt Pair tickets",
@@ -742,7 +923,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase1_training_spine.py::test_source_review_fallback_pair_records_generation_metadata_without_archival_claim",
-        "output_tail": ".                                                                        [100%]\n1 passed in 0.80s",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.72s",
         "returncode": 0
       },
       "name": "Source-review fallback pair generation records model/no-live metadata",
@@ -767,7 +948,7 @@
         ],
         "mirrored_count": 82,
         "photo_count": 273,
-        "preview_ready_count": 82
+        "preview_ready_count": 81
       },
       "name": "Mirrored photos have reliable live previews",
       "passed": true
@@ -776,17 +957,12 @@
       "detail": "photo inventory summarizes review gaps without creating low-quality memories",
       "evidence": {
         "duplicate_group_count": 46,
-        "needs_context_count": 71,
-        "needs_context_group_count": 22,
+        "needs_context_count": 67,
+        "needs_context_group_count": 21,
         "photo_count": 273,
-        "preview_ready_count": 82,
-        "profile_count": 5,
+        "preview_ready_count": 81,
+        "profile_count": 6,
         "sample_groups": [
-          {
-            "asset_count": 4,
-            "display_title": "Rotmil 2021 II.jpg",
-            "needs_context_count": 4
-          },
           {
             "asset_count": 4,
             "display_title": "Rotmil 2021 III.jpg",
@@ -806,6 +982,11 @@
             "asset_count": 4,
             "display_title": "Rotmil 2021 VI.jpg",
             "needs_context_count": 4
+          },
+          {
+            "asset_count": 4,
+            "display_title": "Rotmil Baboo 19.jpg",
+            "needs_context_count": 4
           }
         ]
       },
@@ -815,7 +996,7 @@
     {
       "detail": "photo context pack exposes no-claim gaps, held machine drafts, and reviewed vector handoff preview",
       "evidence": {
-        "content_sha256": "23f669dce0fbe74f3e86c6ed385924fe4d63adfe722e9733b5fe88add0d343b4",
+        "content_sha256": "75cd9d3a728c594dd3d56338d7b0e55bd3633cb38a6e7d727da1ecebaca3c624",
         "dry_run_session": {
           "created_count": 0,
           "existing_count": 1,
@@ -824,32 +1005,32 @@
         },
         "gallery_preview_item_count": 5,
         "held_for_adam_review_count": 5,
-        "needs_context_group_count": 22,
+        "needs_context_group_count": 21,
         "photo_context_worklist_count": 3,
         "photo_count": 273,
-        "preview_ready_count": 82,
+        "preview_ready_count": 81,
         "retrieval_field_worklist": {
-          "content_sha256": "e36261c4e2a170e78ada985ea8f6a71f8de4140b16aa02c80236edb01420ce3f",
-          "export_preview_sha256": "3695d5c2339d785dc9e5e9da4965faed22e3992f95c411856c3403bf42ad8f88",
-          "missing_field_total": 2,
-          "reported_item_count": 1
+          "content_sha256": "d54ede5392909a0b1204599b0d214cfb32ae4d24d8531a01da2db62714835ebb",
+          "export_preview_sha256": "40b9711ad7143c811ed3e05eb3a46815c527f1ba368c47e40c7a81964fe6fa31",
+          "missing_field_total": 4,
+          "reported_item_count": 2
         },
         "retrieval_payoff_preview": {
-          "content_sha256": "cef7e8b7d94102bbd5827813832c6768320219e566c9fe9ffe8f595226b5a2dd",
-          "reported_item_count": 1,
-          "source_worklist_content_sha256": "e36261c4e2a170e78ada985ea8f6a71f8de4140b16aa02c80236edb01420ce3f",
-          "unlockable_vector_record_count": 1
+          "content_sha256": "74fd4c8aa443d13a4f88d2db6075a6a379d8217d60cf94cf19bdf875ed97f6b4",
+          "reported_item_count": 2,
+          "source_worklist_content_sha256": "d54ede5392909a0b1204599b0d214cfb32ae4d24d8531a01da2db62714835ebb",
+          "unlockable_vector_record_count": 0
         },
         "reviewed_vector_ready_count": 0,
         "sample_held_titles": [
           "Romil and Japanese Flute IV.jpg",
           "Rotmil 2021 I.jpg",
-          "Rotmil Honors VIII.jpg"
+          "Rotmil 2021 II.jpg"
         ],
         "sample_no_claim_titles": [
-          "Rotmil 2021 II.jpg",
           "Rotmil 2021 III.jpg",
-          "Rotmil 2021 IV.jpg"
+          "Rotmil 2021 IV.jpg",
+          "Rotmil 2021 V.jpg"
         ],
         "sample_worklists": [
           "photo_context:no_claim_needs_context",
@@ -858,23 +1039,25 @@
         ],
         "session_progress": {
           "blocked_reason_counts": {
-            "held_pending_downstream_clearance": 1,
-            "not_ready_for_downstream": 1
+            "held_missing_memory_context": 1,
+            "held_pending_downstream_clearance": 2,
+            "missing_reviewed_memory_text": 2,
+            "not_ready_for_downstream": 2
           },
           "completion_signal": "submit_ready_count_increases_or_retrieval_gap_missing_fields_decrease",
-          "content_sha256": "563679a1d380da7d6b60beb5fc739b4f96a47bb4ee137ded83f792c26d16d370",
-          "draft_count": 2,
+          "content_sha256": "46ed71c306987317d77bd3aa8e0d5a22e0a99f3e92d67ef449fd42676267f3fb",
+          "draft_count": 3,
           "retrieval_gap_missing_field_counts": {
-            "retrieval_query_relevance": 1,
-            "visual_description_correction": 1
+            "adam_context": 2,
+            "visual_description_correction": 2
           },
-          "retrieval_gap_task_count": 2,
+          "retrieval_gap_task_count": 3,
           "status_counts": {
             "held_pending_downstream_clearance": 1,
-            "submit_ready": 1
+            "needs_more_context": 2
           },
-          "submit_ready_count": 1,
-          "total_context_task_count": 2
+          "submit_ready_count": 0,
+          "total_context_task_count": 3
         }
       },
       "name": "Photo context review pack previews Adam work queue and vector-safe records",
@@ -883,15 +1066,15 @@
     {
       "detail": "top photo context slice exposes preview URLs, no-claim policy, suggested fields, and completion criteria",
       "evidence": {
-        "candidate_count": 22,
-        "content_sha256": "4ed1fe5c50a37c1420e7fe451c03b7114890f9bbeaa35b876bf81354b8d77eba",
+        "candidate_count": 21,
+        "content_sha256": "4b08ee7353925831b9f61f7aa7c349606c0dfccaac63e02f86bcd33ff9ee4487",
         "reported_candidate_count": 5,
         "sample_titles": [
-          "Rotmil 2021 II.jpg",
           "Rotmil 2021 III.jpg",
           "Rotmil 2021 IV.jpg",
           "Rotmil 2021 V.jpg",
-          "Rotmil 2021 VI.jpg"
+          "Rotmil 2021 VI.jpg",
+          "Rotmil Baboo 19.jpg"
         ],
         "worklist_key": "photo_context:no_claim_needs_context"
       },
@@ -905,18 +1088,18 @@
           "create_photo_context_task": 4,
           "open_existing_photo_context_task": 1
         },
-        "candidate_count": 22,
-        "content_sha256": "ac0ac75460dc312630a7953dae2a01f1c9466c5029033fc9287f27578080db99",
-        "export_preview_sha256": "abe72c9b88dfca2cdc4b4084016080d5ba1cf7a58bf867997cc42a9477fab35d",
+        "candidate_count": 21,
+        "content_sha256": "f3ae0f6723fa78b6e5c882520634a7b501cfaf6ed8e53ba1e6a09a30ee910963",
+        "export_preview_sha256": "d0cd40e421621e67d60c8c794d10952b2bddabe79fc00ca3eed565ae31893c89",
         "sample_titles": [
-          "Rotmil 2021 II.jpg",
           "Rotmil 2021 III.jpg",
           "Rotmil 2021 IV.jpg",
           "Rotmil 2021 V.jpg",
-          "Rotmil 2021 VI.jpg"
+          "Rotmil 2021 VI.jpg",
+          "Rotmil Baboo 19.jpg"
         ],
         "selected_count": 5,
-        "source_query": "airplane in Maine"
+        "source_query": "Old Orchard beach"
       },
       "name": "Photo context review session plan is no-claim and actionable",
       "passed": true
@@ -930,9 +1113,9 @@
         "item_count": 5,
         "reviewed_item_count": 0,
         "sample_titles": [
-          "Photo memory: Adam with flowers",
           "Photo memory: Charles with Japanese flute",
-          "Photo memory: honors ceremony"
+          "Photo memory: honors ceremony",
+          "Photo memory: Mr. Nixon student performance"
         ]
       },
       "name": "Gallery preview is boundary-aware and review-labeled",
@@ -942,7 +1125,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_gallery_review_endpoint_defaults_to_reviewed_and_can_preview_drafts",
-        "output_tail": ".                                                                        [100%]\n1 passed in 0.94s",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.95s",
         "returncode": 0
       },
       "name": "Gallery endpoint defaults to reviewed photos and can preview drafts",
@@ -952,7 +1135,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_review_inventory_groups_copy_variants_and_counts_context_gap tests/test_ralph_phase2_photo_spine.py::test_photo_context_task_created_from_retrieval_gap_preserves_query_origin tests/test_ralph_phase2_photo_spine.py::test_photo_context_question_answers_become_searchable_memory_and_embedding_text",
-        "output_tail": "...                                                                      [100%]\n3 passed in 1.32s",
+        "output_tail": "...                                                                      [100%]\n3 passed in 1.05s",
         "returncode": 0
       },
       "name": "Photo inventory context tasks promote Adam answers",
@@ -962,7 +1145,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_submit_projection_is_non_mutating_and_matches_downstream_readiness tests/test_ralph_phase2_photo_spine.py::test_photo_context_submit_receipt_carries_projection_hash_and_payload_preview tests/test_ralph_phase2_photo_spine.py::test_photo_context_submit_projection_reports_boundary_and_context_holds_without_mutation",
-        "output_tail": "...                                                                      [100%]\n3 passed in 1.18s",
+        "output_tail": "...                                                                      [100%]\n3 passed in 0.99s",
         "returncode": 0
       },
       "name": "Photo context submit projection and receipts are auditable",
@@ -981,10 +1164,10 @@
     {
       "detail": "photo profiles and memories meet milestone threshold",
       "evidence": {
-        "memory_count": 5,
-        "metadata_profile_count": 6,
-        "photo_memory_count": 5,
-        "photo_profile_count": 5
+        "memory_count": 6,
+        "metadata_profile_count": 7,
+        "photo_memory_count": 6,
+        "photo_profile_count": 6
       },
       "name": "Reviewed photos have memory/profile records",
       "passed": true
@@ -996,9 +1179,9 @@
         "sample_titles": [
           "Romil and Japanese Flute IV.jpg",
           "Rotmil Honors VIII.jpg",
-          "Rotmil_Scan_15_2-2018 - Adam with flowers.jpg",
           "Rotmil-Street Walker.jpg",
-          "Rotmil 2021 I.jpg"
+          "Rotmil 2021 I.jpg",
+          "Rotmil 2021 II.jpg"
         ]
       },
       "name": "Photo memory drafts are reviewable tasks",
@@ -1007,7 +1190,8 @@
     {
       "detail": "photo priority summary ranks fastest review work with missing fields and no-claim safeguards",
       "evidence": {
-        "reported_count": 7,
+        "content_sha256": "a53434e8837bd8324402ad2ca5bea08dbe17e6ba946983c40a5922d046e99234",
+        "reported_count": 8,
         "sample_paths": [
           "Fastest vector path",
           "Fastest vector path",
@@ -1016,13 +1200,13 @@
           "Fastest vector path"
         ],
         "sample_tasks": [
+          "TASK_PHOTO_MEMORY_REVIEW_000737",
           "TASK_PHOTO_MEMORY_REVIEW_000729",
           "TASK_PHOTO_MEMORY_REVIEW_000728",
-          "TASK_PHOTO_MEMORY_REVIEW_000727",
           "TASK_PHOTO_MEMORY_REVIEW_000726",
           "TASK_PHOTO_MEMORY_REVIEW_000725"
         ],
-        "total_candidate_count": 7
+        "total_candidate_count": 8
       },
       "name": "Photo priority summary is no-claim and actionable",
       "passed": true
@@ -1031,7 +1215,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_claim_policy",
-        "output_tail": ".                                                                        [100%]\n1 passed in 0.91s",
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.97s",
         "returncode": 0
       },
       "name": "Photo priority summary orders review work without memory claims",
@@ -1041,7 +1225,7 @@
       "detail": "focused contract tests passed",
       "evidence": {
         "command": "docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_machine_photo_memory_drafts_create_profiles_memories_embeddings_and_retrieval tests/test_ralph_phase2_photo_spine.py::test_machine_photo_memory_review_promotes_adam_context_over_system_inference tests/test_ralph_phase2_photo_spine.py::test_sealed_photo_review_receipt_reports_boundary_exclusion_from_vector_handoff tests/test_ralph_phase2_photo_spine.py::test_machine_photo_memory_drafts_do_not_overwrite_adam_reviewed_photo_profiles tests/test_ralph_phase2_photo_spine.py::test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_embedding_text tests/test_ralph_phase2_photo_spine.py::test_reviewed_photo_memory_demo_readiness_is_truthful_before_and_after_adam_review",
-        "output_tail": "......                                                                   [100%]\n6 passed in 1.41s",
+        "output_tail": "......                                                                   [100%]\n6 passed in 1.25s",
         "returncode": 0
       },
       "name": "Photo memory draft generation is idempotent and review-safe",
@@ -1050,7 +1234,7 @@
     {
       "detail": "photo memories produce review-gated prompt-pair candidates with provenance",
       "evidence": {
-        "photo_prompt_pair_count": 5,
+        "photo_prompt_pair_count": 6,
         "sample_prompts": [
           {
             "human_id": "TASK_PHOTO_PAIR_000730",
@@ -1091,7 +1275,7 @@
       "detail": "photo-memory corpus exposes reviewed-only, boundary-filtered embedding inputs",
       "evidence": {
         "corpus_type": "photo_memory_embedding_text",
-        "excluded_count": 5,
+        "excluded_count": 6,
         "next_review_action_count": 5,
         "record_count": 0,
         "retrieval_origin_no_claim_count": 0,
@@ -1105,11 +1289,11 @@
     {
       "detail": "photo-memory embedding JSONL handoff has manifest, provenance, and no inline vectors",
       "evidence": {
-        "boundary_excluded_count": 0,
+        "boundary_excluded_count": 1,
         "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "draft_preview_only": true,
         "draft_preview_record_count": 5,
-        "excluded_count": 5,
+        "excluded_count": 6,
         "held_for_adam_review_count": 5,
         "next_review_action_count": 5,
         "record_count": 0,
@@ -1135,10 +1319,10 @@
           },
           {
             "reasons": [
-              "requires_adam_review"
+              "boundary_not_allowed_for_scope"
             ],
-            "review_status": "held_for_adam_review",
-            "review_task_human_id": "TASK_PHOTO_MEMORY_REVIEW_000727",
+            "review_status": "excluded_by_boundary",
+            "review_task_human_id": null,
             "source_photo_title": "Rotmil_Scan_15_2-2018 - Adam with flowers.jpg"
           }
         ],
@@ -1323,23 +1507,23 @@
     {
       "detail": "query either resolves to a reviewed/flagged memory or returns a no-claim photo-context gap",
       "evidence": {
-        "query": "airplane in Maine",
+        "query": "Old Orchard beach",
         "result_count": 0,
         "retrieval_gap": {
-          "backlog_only_candidate_count": 27,
+          "backlog_only_candidate_count": 26,
           "candidate_group_selection_policy": "reviewable_evidence_overlap_then_backlog_sample",
-          "candidate_photo_group_count": 27,
+          "candidate_photo_group_count": 26,
           "message": "No boundary-cleared photo memory matched this query yet.",
           "next_queue": "photo_assets_needing_context",
           "next_queues": [
             "photo_assets_needing_context",
             "vision_drafts_needing_review"
           ],
-          "photo_assets_needing_context_count": 71,
-          "photo_groups_needing_context_count": 22,
+          "photo_assets_needing_context_count": 67,
+          "photo_groups_needing_context_count": 21,
           "photo_groups_needing_draft_review_count": 5,
-          "preview_ready_photo_count": 82,
-          "query": "airplane in Maine",
+          "preview_ready_photo_count": 81,
+          "query": "Old Orchard beach",
           "sample_context_groups": [
             {
               "candidate_evidence": {
@@ -1389,55 +1573,8 @@
                 "evidence_source": "title_filename_only",
                 "not_memory_claim": true,
                 "profile_status": "missing",
-                "review_task_human_id": "TASK_PHOTO_CONTEXT_000736",
-                "review_task_id": "3bc1a651-d3d1-414f-9f58-b50abb1aceab",
-                "source_fields": [
-                  "asset.title",
-                  "asset.original_filename",
-                  "asset.human_id"
-                ],
-                "source_photo_ids": [
-                  "5fa5f3a1-4d4a-4131-9820-4dc2a8a8a6dd",
-                  "e88fc76e-bb47-45b8-a121-f479fb25f1f6",
-                  "73599d1d-2cdf-4b35-b32c-8cd4f3e6a9f2",
-                  "e95a66fd-ddb4-4781-9fa4-ba814e22c274"
-                ],
-                "source_titles": [
-                  "Rotmil 2021 II.jpg",
-                  "Rotmil 2021 II - Copy.jpg",
-                  "Rotmil 2021 II - Copy - Copy.jpg",
-                  "Rotmil 2021 II - Copy (2).jpg"
-                ],
-                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
-                "truth_status": "no_claim"
-              },
-              "candidate_match_quality": "backlog_only",
-              "candidate_media_kind": "photograph_like",
-              "candidate_queue": "photo_assets_needing_context",
-              "candidate_status": "needs_photo_context",
-              "canonical_asset_id": "5fa5f3a1-4d4a-4131-9820-4dc2a8a8a6dd",
-              "display_title": "Rotmil 2021 II.jpg",
-              "group_key": "rotmil 2021 ii",
-              "matched_query_terms": [],
-              "preview_ready_count": 4,
-              "primary_action": {
-                "action_type": "open_existing_photo_context_task",
-                "label": "Open context task",
-                "queue": "photo_assets_needing_context",
-                "task_human_id": "TASK_PHOTO_CONTEXT_000736",
-                "task_id": "3bc1a651-d3d1-414f-9f58-b50abb1aceab"
-              },
-              "selection_reason": "backlog_sample_no_semantic_match"
-            },
-            {
-              "candidate_evidence": {
-                "candidate_media_kind": "photograph_like",
-                "candidate_queue": "photo_assets_needing_context",
-                "evidence_source": "title_filename_only",
-                "not_memory_claim": true,
-                "profile_status": "missing",
-                "review_task_human_id": null,
-                "review_task_id": null,
+                "review_task_human_id": "TASK_PHOTO_CONTEXT_000738",
+                "review_task_id": "b1d443f8-cb43-458c-a745-6d40487cc7b2",
                 "source_fields": [
                   "asset.title",
                   "asset.original_filename",
@@ -1468,21 +1605,11 @@
               "matched_query_terms": [],
               "preview_ready_count": 4,
               "primary_action": {
-                "action_type": "create_photo_context_task",
-                "label": "Create context task",
+                "action_type": "open_existing_photo_context_task",
+                "label": "Open context task",
                 "queue": "photo_assets_needing_context",
-                "request": {
-                  "body": {
-                    "asset_id": "28abb4a5-7968-4ac2-b944-ae38576a167b",
-                    "candidate_match_quality": "backlog_only",
-                    "candidate_selection_reason": "backlog_sample_no_semantic_match",
-                    "group_key": "rotmil 2021 iii",
-                    "source_query": "airplane in Maine",
-                    "use_canonical": true
-                  },
-                  "endpoint": "/api/assets/photo-review-inventory/context-task",
-                  "method": "POST"
-                }
+                "task_human_id": "TASK_PHOTO_CONTEXT_000738",
+                "task_id": "b1d443f8-cb43-458c-a745-6d40487cc7b2"
               },
               "selection_reason": "backlog_sample_no_semantic_match"
             },
@@ -1534,7 +1661,7 @@
                     "candidate_match_quality": "backlog_only",
                     "candidate_selection_reason": "backlog_sample_no_semantic_match",
                     "group_key": "rotmil 2021 iv",
-                    "source_query": "airplane in Maine",
+                    "source_query": "Old Orchard beach",
                     "use_canonical": true
                   },
                   "endpoint": "/api/assets/photo-review-inventory/context-task",
@@ -1591,7 +1718,64 @@
                     "candidate_match_quality": "backlog_only",
                     "candidate_selection_reason": "backlog_sample_no_semantic_match",
                     "group_key": "rotmil 2021 v",
-                    "source_query": "airplane in Maine",
+                    "source_query": "Old Orchard beach",
+                    "use_canonical": true
+                  },
+                  "endpoint": "/api/assets/photo-review-inventory/context-task",
+                  "method": "POST"
+                }
+              },
+              "selection_reason": "backlog_sample_no_semantic_match"
+            },
+            {
+              "candidate_evidence": {
+                "candidate_media_kind": "photograph_like",
+                "candidate_queue": "photo_assets_needing_context",
+                "evidence_source": "title_filename_only",
+                "not_memory_claim": true,
+                "profile_status": "missing",
+                "review_task_human_id": null,
+                "review_task_id": null,
+                "source_fields": [
+                  "asset.title",
+                  "asset.original_filename",
+                  "asset.human_id"
+                ],
+                "source_photo_ids": [
+                  "f0a2623d-9555-4f41-a4e4-b8293e76876d",
+                  "b7dc7c64-82ca-49d7-a1ad-20506c2fb5f9",
+                  "9edc10d2-4714-4f13-ba42-94e430e2de5a",
+                  "f4d1535e-670a-4faf-81f2-7a9d6ba975ab"
+                ],
+                "source_titles": [
+                  "Rotmil 2021 VI - Copy.jpg",
+                  "Rotmil 2021 VI - Copy - Copy.jpg",
+                  "Rotmil 2021 VI.jpg",
+                  "Rotmil 2021 VI - Copy (2).jpg"
+                ],
+                "suggested_next_action": "Create or open a photo context task and add Adam-authored context before treating this as memory.",
+                "truth_status": "no_claim"
+              },
+              "candidate_match_quality": "backlog_only",
+              "candidate_media_kind": "photograph_like",
+              "candidate_queue": "photo_assets_needing_context",
+              "candidate_status": "needs_photo_context",
+              "canonical_asset_id": "9edc10d2-4714-4f13-ba42-94e430e2de5a",
+              "display_title": "Rotmil 2021 VI.jpg",
+              "group_key": "rotmil 2021 vi",
+              "matched_query_terms": [],
+              "preview_ready_count": 4,
+              "primary_action": {
+                "action_type": "create_photo_context_task",
+                "label": "Create context task",
+                "queue": "photo_assets_needing_context",
+                "request": {
+                  "body": {
+                    "asset_id": "9edc10d2-4714-4f13-ba42-94e430e2de5a",
+                    "candidate_match_quality": "backlog_only",
+                    "candidate_selection_reason": "backlog_sample_no_semantic_match",
+                    "group_key": "rotmil 2021 vi",
+                    "source_query": "Old Orchard beach",
                     "use_canonical": true
                   },
                   "endpoint": "/api/assets/photo-review-inventory/context-task",
@@ -1617,17 +1801,17 @@
     {
       "detail": "retrieval-gap query has a first-class no-claim review slice with previews and query provenance",
       "evidence": {
-        "backlog_only_candidate_count": 27,
-        "candidate_count": 27,
-        "content_sha256": "858f02e157cc8d6bfde49342724a232d7191aabfe218bf7f1d6db4d6be89d528",
-        "query": "airplane in Maine",
+        "backlog_only_candidate_count": 26,
+        "candidate_count": 26,
+        "content_sha256": "4b0921118d0a169e9da450d0063b73b4adf0217c7d9dd82ed09cd32ae910a409",
+        "query": "Old Orchard beach",
         "reported_candidate_count": 5,
         "sample_titles": [
           "Rotmil_10_19 - Cathryn WIlson.jpg",
-          "Rotmil 2021 II.jpg",
           "Rotmil 2021 III.jpg",
           "Rotmil 2021 IV.jpg",
-          "Rotmil 2021 V.jpg"
+          "Rotmil 2021 V.jpg",
+          "Rotmil 2021 VI.jpg"
         ],
         "weak_evidence_candidate_count": 0
       },
@@ -1637,7 +1821,7 @@
   ],
   "failed_checks": [],
   "failed_count": 0,
-  "generated_at": "2026-04-29T20:01:10.593145Z",
-  "passed_count": 48,
+  "generated_at": "2026-04-30T13:12:50.675850Z",
+  "passed_count": 54,
   "status": "pass"
 }

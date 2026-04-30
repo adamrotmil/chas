@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
@@ -22,6 +24,14 @@ def create_drafts(
 def create_prompt_pair_candidates(
     limit: int = 5,
     dry_run: bool = True,
+    asset_id: Optional[str] = None,
+    metadata_profile_id: Optional[str] = None,
     session: Session = Depends(get_session),
 ) -> dict:
-    return create_photo_prompt_pair_candidates(session=session, limit=limit, dry_run=dry_run)
+    return create_photo_prompt_pair_candidates(
+        session=session,
+        limit=limit,
+        dry_run=dry_run,
+        asset_id=asset_id,
+        metadata_profile_id=metadata_profile_id,
+    )

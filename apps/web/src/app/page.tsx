@@ -19,7 +19,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  createPhotoPromptPairCandidates,
   createVisionDraftBatch,
+  deletePromptPairCandidate,
   flagTask,
   getAssets,
   getAssetPreviewUrl,
@@ -27,13 +29,14 @@ import {
   getMemories,
   getPhotoContextSessionProgress,
   getPhotoReviewPriority,
+  getDpoRejectedReasonRepairPacket,
   getPromptPairAudit,
   getPromptPairReviewProgress,
   getTasks,
   skipTask,
   submitTask
 } from "@/lib/api";
-import type { Annotation, Asset, AssetUploadResponse, GoldVoiceExample, Memory, PhotoContextSessionProgress, PhotoReviewPriorityItem, PhotoReviewPrioritySummary, PromptPairAudit, PromptPairReviewProgress, Task } from "@/lib/types";
+import type { Annotation, Asset, AssetUploadResponse, DpoRejectedReasonRepairPacket, GoldVoiceExample, Memory, PhotoContextSessionProgress, PhotoPromptPairCandidateResponse, PhotoReviewPriorityItem, PhotoReviewPrioritySummary, PromptPairAudit, PromptPairReviewProgress, Task } from "@/lib/types";
 import { ArtifactUpload } from "@/components/ArtifactUpload";
 import { ExportDryRunPanel } from "@/components/ExportDryRunPanel";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
@@ -69,6 +72,16 @@ type PhotoContactSheetGroup = {
   variants: Asset[];
   relatedTask?: Task;
   title: string;
+};
+type PhotoPromptPairBatchGroup = {
+  batchId: string;
+  sourceTitle: string;
+  sourcePhotoId: string;
+  count: number;
+  firstTaskId: string;
+  firstPrompt: string;
+  variantLabels: string[];
+  updatedAt: string;
 };
 
 type NavItem = { id: NavMode; label: string; icon: React.ReactNode; tooltip: string };
@@ -332,6 +345,20 @@ function promptPairSourceKind(task: Task): string {
   return promptPairValue(task, "source_type") || "other";
 }
 
+function photoPairGenerationBatchId(task: Task): string {
+  return promptPairValue(task, "photo_pair_generation_batch_id");
+}
+
+function photoPairSourceTitle(task: Task): string {
+  return (
+    promptPairValue(task, "source_title") ||
+    promptPairValue(task, "asset_title") ||
+    promptPairValue(task, "source_filename") ||
+    promptPairValue(task, "source_photo_id") ||
+    "Reviewed photo"
+  );
+}
+
 function taskMatchesPromptPairFilters(task: Task, filters: PromptPairFilters): boolean {
   if (filters.voiceMode !== "all" && promptPairValue(task, "voice_mode") !== filters.voiceMode) {
     return false;
@@ -391,6 +418,7 @@ function taskSubtitle(task: Task): string {
         ordinal || null,
         artifactMode,
         typeof payload.source_photo_id === "string" ? "Photo grounded" : null,
+        typeof payload.photo_pair_variant_label === "string" ? payload.photo_pair_variant_label : null,
         sourceTitle,
         typeof payload.source_prompt_pair_example_index === "number" ? `source example ${payload.source_prompt_pair_example_index}` : null
       ].filter(Boolean)
@@ -823,6 +851,43 @@ function receiptRecord(record: Record<string, unknown> | null, key: string): Rec
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+function annotationOutputString(annotation: Annotation | null, key: string): string {
+  const value = annotation?.creates_or_updates?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function annotationPhotoPromptPairBatch(annotation: Annotation | null): PhotoPromptPairCandidateResponse | null {
+  const value = annotation?.creates_or_updates?.photo_prompt_pair_generation;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Partial<PhotoPromptPairCandidateResponse>;
+  return Array.isArray(record.candidates) ? (record as PhotoPromptPairCandidateResponse) : null;
+}
+
+function submittedPhotoAssetId(annotation: Annotation | null): string {
+  if (!annotation) {
+    return "";
+  }
+  return annotation.target_type === "asset" && typeof annotation.target_id === "string"
+    ? annotation.target_id
+    : annotationOutputString(annotation, "source_photo_id");
+}
+
+function isPhotoSubmitAnnotation(annotation: Annotation | null): boolean {
+  if (!annotation) {
+    return false;
+  }
+  return (
+    annotation.annotation_type === "photo_context" ||
+    annotation.annotation_type === "vision_draft_review" ||
+    Boolean(submittedPhotoAssetId(annotation)) ||
+    Boolean(annotationOutputString(annotation, "metadata_profile_id")) ||
+    Boolean(annotationOutputString(annotation, "memory_embedding_record_id")) ||
+    Boolean(annotationOutputString(annotation, "vector_handoff_record_id"))
+  );
+}
+
 function exportArtifactModes(exportArtifact: Record<string, unknown> | null): string[] {
   const value = exportArtifact?.artifact_modes;
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
@@ -973,6 +1038,121 @@ function SubmitReceiptBanner({ annotation }: { annotation: Annotation | null }) 
   );
 }
 
+function SubmittedResultPanel({
+  annotation,
+  photoPairStatus,
+  photoPairBatch,
+  onViewExports,
+  onCreatePhotoPromptPair,
+  onOpenPhotoPromptPair
+}: {
+  annotation: Annotation | null;
+  photoPairStatus?: string | null;
+  photoPairBatch?: PhotoPromptPairCandidateResponse | null;
+  onViewExports: () => void;
+  onCreatePhotoPromptPair: () => void | Promise<void>;
+  onOpenPhotoPromptPair: (taskId: string) => void;
+}) {
+  const receipt = annotationReceipt(annotation);
+  if (!receipt) {
+    return null;
+  }
+  const isPhoto = isPhotoSubmitAnnotation(annotation);
+  const assetId = submittedPhotoAssetId(annotation);
+  const outputs = [
+    ["Metadata profile", annotationOutputString(annotation, "metadata_profile_id")],
+    ["Boundary", annotationOutputString(annotation, "boundary_id")],
+    ["Memory", annotationOutputString(annotation, "memory_id")],
+    ["Graph link", annotationOutputString(annotation, "graph_edge_id")],
+    ["Gallery item", annotationOutputString(annotation, "gallery_item_id")],
+    ["Profile embedding", annotationOutputString(annotation, "embedding_record_id")],
+    ["Memory embedding", annotationOutputString(annotation, "memory_embedding_record_id") || receiptString(receipt, "vector_handoff_record_id")]
+  ].filter(([, value]) => value);
+  const vectorStatus = receiptString(receipt, "vector_handoff_status");
+  const vectorReason = receiptString(receipt, "vector_handoff_reason");
+  const nextAction = receiptString(receipt, "next_action_label") || "Pick the next ready task";
+  const receiptPhotoPairBatch = annotationPhotoPromptPairBatch(annotation);
+  const effectivePhotoPairBatch = photoPairBatch ?? receiptPhotoPairBatch;
+  const photoPairBatchId = effectivePhotoPairBatch?.generation_batch_id || effectivePhotoPairBatch?.generation_batch_ids?.[0] || "";
+  const photoPairButtonLabel = effectivePhotoPairBatch ? "Open/recheck 5 prompt-pair candidates" : "Create 5 prompt-pair candidates";
+
+  return (
+    <section className="submitted-result-panel" aria-label="Submitted result landing">
+      <header>
+        <div>
+          <span>Where it went</span>
+          <strong>This task is now submitted, so it left the ready queue.</strong>
+          <p>
+            The review was saved as durable records. You can inspect the IDs here, open the source dossier, or move into Exports to see
+            aggregate downstream readiness.
+          </p>
+        </div>
+        <button type="button" onClick={onViewExports}>
+          View Exports
+        </button>
+      </header>
+      {outputs.length > 0 ? (
+        <div className="submitted-output-grid" aria-label="Submitted output records">
+          {outputs.map(([label, value]) => (
+            <span key={label}>
+              <em>{label}</em>
+              <strong>{String(value).slice(0, 12)}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {isPhoto ? (
+        <div className="submitted-next-step" aria-label="Photo submit next steps">
+          <div>
+            <span>Photo path</span>
+            <strong>{vectorStatus ? `Vector: ${queueLabel(vectorStatus)}` : nextAction}</strong>
+            <p>
+              {effectivePhotoPairBatch
+                ? "Photo review produced retrieval, gallery, memory, embedding context, and five review-gated prompt-pair candidates. The candidates are not training truth until Adam edits and approves them."
+                : "Photo review produces retrieval, gallery, memory, and embedding-ready context first. You can create review-gated prompt-pair candidates from that source material when ready."}
+            </p>
+            {vectorReason ? <p>{vectorReason}</p> : null}
+            {photoPairStatus ? <em>{photoPairStatus}</em> : null}
+          </div>
+          <div className="submitted-next-actions">
+            {assetId ? (
+              <a href={`/assets/${assetId}`}>
+                Open asset dossier
+              </a>
+            ) : null}
+            <button type="button" onClick={() => void onCreatePhotoPromptPair()}>
+              {photoPairButtonLabel}
+            </button>
+          </div>
+          {effectivePhotoPairBatch && effectivePhotoPairBatch.candidates.length > 0 ? (
+            <div className="photo-pair-handoff-list" aria-label="Photo prompt-pair candidate handoff">
+              <span>
+                {effectivePhotoPairBatch.created_task_ids.length > 0 ? "Created" : "Opened"} {effectivePhotoPairBatch.candidates.length} candidate
+                {effectivePhotoPairBatch.candidates.length === 1 ? "" : "s"}
+              </span>
+              {photoPairBatchId ? <code>{photoPairBatchId}</code> : null}
+              {effectivePhotoPairBatch.candidates.slice(0, 5).map((candidate, index) => {
+                const taskId = candidate.created_task_id || candidate.existing_task_id || "";
+                return (
+                  <button
+                    type="button"
+                    key={`${candidate.metadata_profile_id}-${candidate.variant_key ?? index}`}
+                    onClick={() => taskId && onOpenPhotoPromptPair(taskId)}
+                    disabled={!taskId}
+                  >
+                    <em>{candidate.variant_label || `Candidate ${index + 1}`}</em>
+                    <strong>{candidate.prompt}</strong>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export default function Home() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -982,6 +1162,7 @@ export default function Home() {
   const [photoContextProgress, setPhotoContextProgress] = useState<PhotoContextSessionProgress | null>(null);
   const [promptPairAudit, setPromptPairAudit] = useState<PromptPairAudit | null>(null);
   const [promptPairProgress, setPromptPairProgress] = useState<PromptPairReviewProgress | null>(null);
+  const [dpoRepairPacket, setDpoRepairPacket] = useState<DpoRejectedReasonRepairPacket | null>(null);
   const [shellWidths, setShellWidths] = useState<Record<ShellColumn, number>>({ sidebar: 212, queue: 326 });
   const [selectedMode, setSelectedMode] = useState<NavMode>("review");
   const [selectedCollection, setSelectedCollection] = useState<CollectionId>("all");
@@ -991,6 +1172,9 @@ export default function Home() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [completedThisSession, setCompletedThisSession] = useState(0);
   const [lastSubmitAnnotation, setLastSubmitAnnotation] = useState<Annotation | null>(null);
+  const [photoPairStatus, setPhotoPairStatus] = useState<string | null>(null);
+  const [photoPairBatch, setPhotoPairBatch] = useState<PhotoPromptPairCandidateResponse | null>(null);
+  const [activePhotoPairBatchId, setActivePhotoPairBatchId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [visionBatchBusy, setVisionBatchBusy] = useState(false);
@@ -1000,7 +1184,17 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const [assetData, taskData, memoryData, goldData, photoPriorityData, photoContextProgressData, promptPairAuditData, promptPairProgressData] = await Promise.all([
+      const [
+        assetData,
+        taskData,
+        memoryData,
+        goldData,
+        photoPriorityData,
+        photoContextProgressData,
+        promptPairAuditData,
+        promptPairProgressData,
+        dpoRepairPacketData
+      ] = await Promise.all([
         getAssets(),
         getTasks(),
         getMemories(),
@@ -1008,7 +1202,8 @@ export default function Home() {
         getPhotoReviewPriority("fastest_vector", 50),
         getPhotoContextSessionProgress("family_private", 100),
         getPromptPairAudit(1),
-        getPromptPairReviewProgress()
+        getPromptPairReviewProgress(),
+        getDpoRejectedReasonRepairPacket(25)
       ]);
       setAssets(assetData);
       setTasks(taskData);
@@ -1018,6 +1213,7 @@ export default function Home() {
       setPhotoContextProgress(photoContextProgressData);
       setPromptPairAudit(promptPairAuditData);
       setPromptPairProgress(promptPairProgressData);
+      setDpoRepairPacket(dpoRepairPacketData);
       const readyTasks = taskData.filter((task) => task.status === "ready");
       if (!selectedTaskId || !readyTasks.some((task) => task.id === selectedTaskId)) {
         setSelectedTaskId(readyTasks[0]?.id ?? null);
@@ -1037,6 +1233,7 @@ export default function Home() {
     }
     setSelectedTaskId(reviewTaskId);
     setSelectedCollection("all");
+    setActivePhotoPairBatchId(null);
     setQueueSearch("");
     setSelectedMode(upload.segment_ids.length > 0 ? "review" : "intake");
   }
@@ -1067,15 +1264,19 @@ export default function Home() {
       const promptPairFiltered = selectedMode === "make_gold"
         ? collectionFiltered.filter((task) => taskMatchesPromptPairFilters(task, promptPairFilters))
         : collectionFiltered;
+      const photoBatchFiltered =
+        selectedMode === "make_gold" && activePhotoPairBatchId
+          ? promptPairFiltered.filter((task) => photoPairGenerationBatchId(task) === activePhotoPairBatchId)
+          : promptPairFiltered;
       const photoFocused =
         selectedMode === "review" && selectedCollection === "photos" && photoTaskFocus !== "all"
-          ? [...promptPairFiltered.filter((task) => taskMatchesPhotoFocus(task, photoTaskFocus))].sort(
+          ? [...photoBatchFiltered.filter((task) => taskMatchesPhotoFocus(task, photoTaskFocus))].sort(
               (left, right) =>
                 photoPromotionRank(left) - photoPromotionRank(right) ||
                 right.priority - left.priority ||
                 new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
             )
-          : promptPairFiltered;
+          : photoBatchFiltered;
       const searchTerm = queueSearch.trim().toLowerCase();
       if (!searchTerm) {
         return photoFocused;
@@ -1095,6 +1296,7 @@ export default function Home() {
           payloadString(task.input_payload.source_title),
           payloadString(task.input_payload.source_filename),
           payloadString(task.input_payload.voice_mode),
+          payloadString(task.input_payload.photo_pair_generation_batch_id),
           promptPairSourceKind(task)
         ]
           .join(" ")
@@ -1102,7 +1304,7 @@ export default function Home() {
         return haystack.includes(searchTerm);
       });
     },
-    [modeTasks, photoTaskFocus, promptPairFilters, queueSearch, selectedCollection, selectedMode]
+    [activePhotoPairBatchId, modeTasks, photoTaskFocus, promptPairFilters, queueSearch, selectedCollection, selectedMode]
   );
   const nextPhotoPromotionDryRun = useMemo(
     () => {
@@ -1163,7 +1365,42 @@ export default function Home() {
     }),
     [promptPairBaseTasks]
   );
-  const activePromptPairFilterCount = Object.values(promptPairFilters).filter((value) => value !== "all").length;
+  const promptPairBatchGroups = useMemo(() => {
+    const groups = new Map<string, PhotoPromptPairBatchGroup>();
+    for (const task of promptPairBaseTasks) {
+      if (!taskMatchesPromptPairFilters(task, promptPairFilters)) {
+        continue;
+      }
+      const batchId = photoPairGenerationBatchId(task);
+      if (!batchId) {
+        continue;
+      }
+      const existing = groups.get(batchId);
+      const variantLabel = promptPairValue(task, "photo_pair_variant_label");
+      if (existing) {
+        existing.count += 1;
+        existing.updatedAt =
+          new Date(task.updated_at).getTime() > new Date(existing.updatedAt).getTime() ? task.updated_at : existing.updatedAt;
+        if (variantLabel && !existing.variantLabels.includes(variantLabel)) {
+          existing.variantLabels.push(variantLabel);
+        }
+        continue;
+      }
+      groups.set(batchId, {
+        batchId,
+        sourceTitle: photoPairSourceTitle(task),
+        sourcePhotoId: promptPairValue(task, "source_photo_id"),
+        count: 1,
+        firstTaskId: task.id,
+        firstPrompt: promptPairValue(task, "prompt"),
+        variantLabels: variantLabel ? [variantLabel] : [],
+        updatedAt: task.updated_at
+      });
+    }
+    return Array.from(groups.values()).sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+  }, [promptPairBaseTasks, promptPairFilters]);
+  const activePromptPairFilterCount =
+    Object.values(promptPairFilters).filter((value) => value !== "all").length + (activePhotoPairBatchId ? 1 : 0);
   const promptPairReadinessCounts = promptPairAudit?.preflight_gate_counts ?? {};
   const promptPairHeldAction = promptPairAudit?.next_review_actions?.find(
     (action) => action.action_type === "open_held_prompt_pair_candidate" && typeof action.task_id === "string"
@@ -1172,7 +1409,9 @@ export default function Home() {
     promptPairAudit?.blocker_review_actions?.filter((action) => action.action_type === "open_prompt_pair_blocker" && typeof action.task_id === "string") ?? [];
   const selectedCollectionDef = collectionDefs.find((collection) => collection.id === selectedCollection) ?? collectionDefs[0];
   const queueScopeTitle = showCollectionFilters ? selectedCollectionDef.label : modeLabel(selectedMode);
-  const queueScopeSubtitle = queueSearch.trim()
+  const queueScopeSubtitle = selectedMode === "make_gold" && activePhotoPairBatchId
+    ? `${filteredTasks.length} items in photo batch ${activePhotoPairBatchId.slice(0, 22)}`
+    : queueSearch.trim()
     ? `${filteredTasks.length} of ${modeTasks.length} items match "${queueSearch.trim()}"`
     : selectedMode === "review" && selectedCollection === "photos" && photoTaskFocus === "fastest_vector"
       ? `${filteredTasks.length} fastest vector-memory tasks`
@@ -1246,6 +1485,7 @@ export default function Home() {
     setSelectedCollection(defaultCollectionForMode(mode));
     setPromptPairFilters(defaultPromptPairFilters);
     setPhotoTaskFocus(defaultPhotoTaskFocus);
+    setActivePhotoPairBatchId(null);
     setQueueSearch("");
     setSelectedTaskId(null);
   }
@@ -1272,6 +1512,7 @@ export default function Home() {
     setSelectedCollection("all");
     setPromptPairFilters(defaultPromptPairFilters);
     setPhotoTaskFocus(defaultPhotoTaskFocus);
+    setActivePhotoPairBatchId(null);
     setQueueSearch("");
     openTask(taskId);
   }, [openTask]);
@@ -1281,6 +1522,7 @@ export default function Home() {
     setSelectedCollection("photos");
     setPromptPairFilters(defaultPromptPairFilters);
     setPhotoTaskFocus(defaultPhotoTaskFocus);
+    setActivePhotoPairBatchId(null);
     setQueueSearch("");
     setSelectedTaskId(taskId);
     await load();
@@ -1295,6 +1537,18 @@ export default function Home() {
     }
     const annotation = await submitTask(selectedTask.id, decisions, notes);
     setLastSubmitAnnotation(annotation);
+    setPhotoPairStatus(null);
+    setPhotoPairBatch(null);
+    const submittedPhotoPairBatch = annotationPhotoPromptPairBatch(annotation);
+    if (submittedPhotoPairBatch) {
+      setPhotoPairBatch(submittedPhotoPairBatch);
+      setActivePhotoPairBatchId(submittedPhotoPairBatch.generation_batch_id ?? submittedPhotoPairBatch.generation_batch_ids?.[0] ?? null);
+      setPhotoPairStatus(
+        submittedPhotoPairBatch.created_task_ids.length > 0
+          ? `Created ${submittedPhotoPairBatch.created_task_ids.length} Prompt Pair candidates from this photo.`
+          : "Opened the existing Prompt Pair candidates for this photo."
+      );
+    }
     const nextSegmentationTaskId =
       typeof annotation.creates_or_updates.segment_boundary_review_task_id === "string"
         ? annotation.creates_or_updates.segment_boundary_review_task_id
@@ -1305,6 +1559,9 @@ export default function Home() {
         : null;
     const makeGoldTaskIds = Array.isArray(annotation.creates_or_updates.make_gold_task_ids)
       ? annotation.creates_or_updates.make_gold_task_ids.filter((id): id is string => typeof id === "string")
+      : [];
+    const photoPromptPairTaskIds = Array.isArray(annotation.creates_or_updates.photo_prompt_pair_task_ids)
+      ? annotation.creates_or_updates.photo_prompt_pair_task_ids.filter((id): id is string => typeof id === "string")
       : [];
     const nextReviewTaskId =
       typeof annotation.creates_or_updates.review_task_id === "string"
@@ -1323,13 +1580,26 @@ export default function Home() {
     if (makeGoldTaskIds.length > 0) {
       setSelectedMode("make_gold");
       setSelectedCollection("all");
-      setSelectedTaskId(makeGoldTaskIds[0]);
+      setActivePhotoPairBatchId(null);
+      setQueueSearch("");
+      openTask(makeGoldTaskIds[0]);
+      return;
+    }
+    if (photoPromptPairTaskIds.length > 0) {
+      setSelectedMode("make_gold");
+      setSelectedCollection("all");
+      setPromptPairFilters(defaultPromptPairFilters);
+      setActivePhotoPairBatchId(submittedPhotoPairBatch?.generation_batch_id ?? submittedPhotoPairBatch?.generation_batch_ids?.[0] ?? null);
+      setQueueSearch("");
+      openTask(photoPromptPairTaskIds[0]);
       return;
     }
     if (nextPromptPairTaskId) {
       setSelectedMode("make_gold");
       setSelectedCollection("all");
-      setSelectedTaskId(nextPromptPairTaskId);
+      setActivePhotoPairBatchId(null);
+      setQueueSearch("");
+      openTask(nextPromptPairTaskId);
       return;
     }
     if (nextReviewTaskId) {
@@ -1372,6 +1642,68 @@ export default function Home() {
       setError(caught instanceof Error ? caught.message : "Unable to create vision draft tasks.");
     } finally {
       setVisionBatchBusy(false);
+    }
+  }
+
+  async function handleCreateSubmittedPhotoPromptPair() {
+    const assetId = submittedPhotoAssetId(lastSubmitAnnotation);
+    const metadataProfileId = annotationOutputString(lastSubmitAnnotation, "metadata_profile_id");
+    if (!assetId && !metadataProfileId) {
+      setPhotoPairStatus("No reviewed photo profile is attached to the last submit receipt.");
+      return;
+    }
+    setPhotoPairStatus("Creating 5 photo-grounded prompt-pair candidates...");
+    setPhotoPairBatch(null);
+    try {
+      const response = await createPhotoPromptPairCandidates(5, false, {
+        assetId: assetId || undefined,
+        metadataProfileId: metadataProfileId || undefined
+      });
+      setPhotoPairBatch(response);
+      setActivePhotoPairBatchId(response.generation_batch_id ?? response.generation_batch_ids?.[0] ?? null);
+      const taskId = response.created_task_ids[0] || response.candidates[0]?.existing_task_id || "";
+      await load();
+      if (taskId) {
+        setSelectedMode("make_gold");
+        setSelectedCollection("all");
+        setPromptPairFilters(defaultPromptPairFilters);
+        setActivePhotoPairBatchId(response.generation_batch_id ?? response.generation_batch_ids?.[0] ?? null);
+        setQueueSearch("");
+        setSelectedTaskId(taskId);
+        setPhotoPairStatus(
+          response.created_task_ids.length > 0
+            ? `Created ${response.created_task_ids.length} Prompt Pairs candidates from this photo.`
+            : "Opened the existing Prompt Pairs candidates for this photo."
+        );
+      } else {
+        setPhotoPairStatus("No prompt-pair candidates were created. Check Exports for skipped/held photo-pair candidates.");
+      }
+    } catch (caught) {
+      setPhotoPairStatus(caught instanceof Error ? caught.message : "Unable to create photo prompt-pair candidates.");
+    }
+  }
+
+  async function handleDeletePromptPairCandidate(reason?: string) {
+    if (!selectedTask) {
+      return;
+    }
+    const fallbackTaskId =
+      filteredTasks[selectedTaskIndex + 1]?.id ||
+      filteredTasks[selectedTaskIndex - 1]?.id ||
+      null;
+    try {
+      const annotation = await deletePromptPairCandidate(
+        selectedTask.id,
+        reason || "Rejected from Prompt Pairs editor",
+        "Removed from active review queue by Adam during prompt-pair triage."
+      );
+      setLastSubmitAnnotation(annotation);
+      await load();
+      setSelectedMode("make_gold");
+      setSelectedCollection("all");
+      setSelectedTaskId(fallbackTaskId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to delete prompt-pair candidate.");
     }
   }
 
@@ -1504,6 +1836,7 @@ export default function Home() {
                       setSelectedCollection(collection.id);
                       setPromptPairFilters(defaultPromptPairFilters);
                       setPhotoTaskFocus(defaultPhotoTaskFocus);
+                      setActivePhotoPairBatchId(null);
                       setQueueSearch("");
                       setSelectedTaskId(null);
                     }}
@@ -1524,6 +1857,7 @@ export default function Home() {
                         type="button"
                         onClick={() => {
                           setPromptPairFilters(defaultPromptPairFilters);
+                          setActivePhotoPairBatchId(null);
                           setQueueSearch("");
                           setSelectedTaskId(null);
                         }}
@@ -1548,6 +1882,7 @@ export default function Home() {
                         value={promptPairFilters[key]}
                         onChange={(event) => {
                           setPromptPairFilters((current) => ({ ...current, [key]: event.target.value }));
+                          setActivePhotoPairBatchId(null);
                           setSelectedTaskId(null);
                         }}
                       >
@@ -1585,6 +1920,42 @@ export default function Home() {
                         </small>
                         <small>{promptPairProgress.completion_signal}</small>
                         <code>{promptPairProgress.content_sha256.slice(0, 16)}</code>
+                      </div>
+                    ) : null}
+                    {dpoRepairPacket?.items.length ? (
+                      <div className="prompt-pair-dpo-repair-queue" aria-label="DPO rejected reason repair queue">
+                        <span>DPO rejected reason queue</span>
+                        <strong>
+                          {dpoRepairPacket.reported_candidate_count} shown / {dpoRepairPacket.total_candidate_count} rejected-reason gaps
+                        </strong>
+                        <small>{dpoRepairPacket.completion_signal}</small>
+                        <small>
+                          Review-only packet. {dpoRepairPacket.requires_adam_gold_edit ? "Adam gold edit still required." : "Adam review status unknown."}
+                        </small>
+                        <ol>
+                          {dpoRepairPacket.items.slice(0, 3).map((item) => (
+                            <li key={item.task_id}>
+                              <span>
+                                <em>{item.task_human_id}</em>
+                                <strong>{item.prompt}</strong>
+                                <small>{item.repair_projection.target_blocker_cleared ? "Projected rejected-reason blocker clears" : "Needs rejected-side reason"}</small>
+                                {item.suggested_rejected_issue?.note ? (
+                                  <p aria-label="Suggested DPO rejected reason">{item.suggested_rejected_issue.note}</p>
+                                ) : null}
+                                {item.suggested_failure_modes?.length ? (
+                                  <ul className="prompt-pair-dpo-failure-modes" aria-label="Suggested DPO failure modes">
+                                    {item.suggested_failure_modes.slice(0, 3).map((mode) => (
+                                      <li key={mode}>{queueLabel(mode)}</li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                              </span>
+                              <button type="button" onClick={() => openPromptPairReviewAction(item.task_id)}>
+                                Open DPO reason
+                              </button>
+                            </li>
+                          ))}
+                        </ol>
                       </div>
                     ) : null}
                     {promptPairHeldAction?.task_id ? (
@@ -1763,6 +2134,35 @@ export default function Home() {
 
             {error ? <div className="error-banner">{error}</div> : null}
 
+            {selectedMode === "review" && selectedCollection === "photos" && photoPrioritySummary ? (
+              <section className="photo-priority-dry-run" aria-label="Photo context throughput artifact">
+                <header>
+                  <span>Photo context throughput artifact</span>
+                  <strong>
+                    {photoPrioritySummary.reported_count} shown / {photoPrioritySummary.total_candidate_count} ranked tasks
+                  </strong>
+                </header>
+                <p>{photoPrioritySummary.throughput_policy.replaceAll("_", " ")}</p>
+                <div>
+                  <em>Completion signal</em>
+                  <span>{photoPrioritySummary.completion_signal.replaceAll("_", " ")}</span>
+                </div>
+                <div className="photo-priority-submit-preview" aria-label="Throughput ranking proof">
+                  <em>Ranking proof</em>
+                  <span>{photoPrioritySummary.items[0]?.source_photo_title ?? "No ranked photo task"}</span>
+                  <small>
+                    Missing Adam fields: {photoPrioritySummary.items[0]?.missing_adam_field_count ?? 0} / payoff{" "}
+                    {photoPrioritySummary.items[0]?.downstream_payoff_score ?? 0}
+                  </small>
+                  <small>
+                    {photoPrioritySummary.items[0]?.preview_ready ? "preview ready" : "preview pending"} /{" "}
+                    {photoPrioritySummary.items[0]?.path_label ?? "no path"}
+                  </small>
+                </div>
+                <code>{photoPrioritySummary.content_sha256.slice(0, 16)}</code>
+              </section>
+            ) : null}
+
             {nextPhotoPromotionDryRun ? (
               <section className="photo-priority-dry-run" aria-label="Next photo promotion dry run">
                 <header>
@@ -1835,6 +2235,110 @@ export default function Home() {
                 <p>
                   Visual scan only. Duplicate variants are grouped from imported mirrored copies; downstream memory text still requires Adam-authored review.
                 </p>
+              </section>
+            ) : null}
+
+            {selectedMode === "make_gold" && promptPairBatchGroups.length > 0 ? (
+              <section className="photo-pair-batch-shelf" aria-label="Photo prompt-pair batches">
+                <header>
+                  <div>
+                    <span>Photo candidate batches</span>
+                    <strong>
+                      {promptPairBatchGroups.length} batch{promptPairBatchGroups.length === 1 ? "" : "es"} / candidate-only until gold edit
+                    </strong>
+                  </div>
+                  {activePhotoPairBatchId ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivePhotoPairBatchId(null);
+                        setSelectedTaskId(null);
+                      }}
+                    >
+                      Clear batch
+                    </button>
+                  ) : null}
+                </header>
+                <div className="photo-pair-batch-list">
+                  {promptPairBatchGroups.slice(0, 6).map((batch) => (
+                    <button
+                      key={batch.batchId}
+                      type="button"
+                      className={activePhotoPairBatchId === batch.batchId ? "active" : ""}
+                      onClick={() => {
+                        setActivePhotoPairBatchId(batch.batchId);
+                        setQueueSearch("");
+                        setSelectedTaskId(batch.firstTaskId);
+                      }}
+                    >
+                      <span>
+                        <strong>{batch.sourceTitle}</strong>
+                        <em>
+                          {batch.count} candidate{batch.count === 1 ? "" : "s"}
+                          {batch.variantLabels.length ? ` / ${batch.variantLabels.slice(0, 2).join(", ")}` : ""}
+                        </em>
+                      </span>
+                      <small>{batch.firstPrompt || batch.sourcePhotoId || "Photo-grounded prompt-pair batch"}</small>
+                      <code>{batch.batchId}</code>
+                    </button>
+                  ))}
+                </div>
+                <p>
+                  These are generated draft tickets from reviewed photo memory records. Keep the strongest versions, edit them in
+                  Charles' voice, and delete weak candidates before export review.
+                </p>
+              </section>
+            ) : null}
+
+            {selectedMode === "make_gold" && photoPairBatch && photoPairBatch.candidates.length > 0 ? (
+              <section className="photo-pair-batch-shelf latest-photo-pair-handoff" aria-label="Latest generated photo prompt-pair handoff">
+                <header>
+                  <div>
+                    <span>Latest generated photo prompts</span>
+                    <strong>
+                      {photoPairBatch.candidates.length} candidate{photoPairBatch.candidates.length === 1 ? "" : "s"} from the photo you just submitted
+                    </strong>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivePhotoPairBatchId(photoPairBatch.generation_batch_id ?? photoPairBatch.generation_batch_ids?.[0] ?? null);
+                      setPromptPairFilters(defaultPromptPairFilters);
+                      setQueueSearch("");
+                      setSelectedTaskId(photoPairBatch.created_task_ids[0] || photoPairBatch.candidates[0]?.existing_task_id || null);
+                    }}
+                  >
+                    Show this batch
+                  </button>
+                </header>
+                <div className="photo-pair-batch-list">
+                  {photoPairBatch.candidates.slice(0, 5).map((candidate, index) => {
+                    const taskId = candidate.created_task_id || candidate.existing_task_id || "";
+                    return (
+                      <button
+                        key={`${candidate.metadata_profile_id}-${candidate.variant_key ?? index}`}
+                        type="button"
+                        className={selectedTask?.id === taskId ? "active" : ""}
+                        onClick={() => {
+                          setActivePhotoPairBatchId(photoPairBatch.generation_batch_id ?? photoPairBatch.generation_batch_ids?.[0] ?? null);
+                          setPromptPairFilters(defaultPromptPairFilters);
+                          setQueueSearch("");
+                          if (taskId) {
+                            openTask(taskId);
+                          }
+                        }}
+                        disabled={!taskId}
+                      >
+                        <span>
+                          <strong>{candidate.variant_label || `Candidate ${index + 1}`}</strong>
+                          <em>{candidate.asset_title}</em>
+                        </span>
+                        <small>{candidate.prompt}</small>
+                        <code>{taskId ? taskId.slice(0, 8) : "no task"}</code>
+                      </button>
+                    );
+                  })}
+                </div>
               </section>
             ) : null}
 
@@ -1950,6 +2454,20 @@ export default function Home() {
           ) : (
             <div className={selectedMode === "make_gold" ? "workbench-stack has-utility" : "workbench-stack"}>
               <SubmitReceiptBanner annotation={lastSubmitAnnotation} />
+              <SubmittedResultPanel
+                annotation={lastSubmitAnnotation}
+                photoPairStatus={photoPairStatus}
+                photoPairBatch={photoPairBatch}
+                onViewExports={() => navigateMode("exports")}
+                onCreatePhotoPromptPair={handleCreateSubmittedPhotoPromptPair}
+                onOpenPhotoPromptPair={(taskId) => {
+                  setSelectedMode("make_gold");
+                  setSelectedCollection("all");
+                  setPromptPairFilters(defaultPromptPairFilters);
+                  setActivePhotoPairBatchId(photoPairBatch?.generation_batch_id ?? photoPairBatch?.generation_batch_ids?.[0] ?? null);
+                  setSelectedTaskId(taskId);
+                }}
+              />
               {selectedTask ? (
                 <TaskWorkbench
                   key={selectedTask.id}
@@ -1965,6 +2483,7 @@ export default function Home() {
                   onSubmit={handleSubmit}
                   onSkip={handleSkip}
                   onFlag={handleFlag}
+                  onDeleteCandidate={handleDeletePromptPairCandidate}
                   onPrevious={() => {
                     if (selectedTaskIndex > 0) {
                       openTask(filteredTasks[selectedTaskIndex - 1].id);

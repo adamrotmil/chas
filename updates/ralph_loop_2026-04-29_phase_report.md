@@ -7434,3 +7434,805 @@ Current live checkpoint:
 Next useful loop target:
 
 - Make the reviewed-photo context-pack behavior visible as an artifact or audit check, so the Ralph gate can prove photo-memory context packs are downstream-ready rather than relying only on the unit test.
+
+## Continuation Update: Query-Generalized Photo Field Payoff
+
+This loop removed the accidental over-focus on a single example memory query and made the photo-context task form show exactly how Adam-required fields unlock downstream memory work.
+
+What changed:
+
+- The Exports readiness surface now lets the operator switch the memory retrieval query instead of relying on the original `airplane in Maine` example.
+- The selected query now flows through the photo context review session plan, retrieval gap review slice, morning handoff, artifact manifest links, artifact audit links, and task provenance.
+- The photo-context task form now shows field-level payoff notes for Adam-required fields, including which downstream records they unlock and whether each field still blocks the review-session metric.
+- The missing-field jump list and required-field drawer both distinguish `Blocks session metric until answered` from `Ready for session metric on submit`.
+- The browser proof explicitly clears Adam fields first, verifies the blocker state, pastes Adam answers, and verifies the blocker state disappears.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "retrieval no-claim action opens a photo context task"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 52 live checks
+
+python3 scripts/write_ralph_morning_status.py --output updates/ralph_loop_2026-04-29_morning_status.md --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+
+git diff --check
+# clean
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260429T232716_756513Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+## Continuation Update: Source-Boundary Prompt Pair Focus Aid
+
+This loop made the smaller prompt-pair blocker class easier to work down. DPO rejected-reason candidates already had a rich focus aid; source-boundary blockers now have an equivalent ticket-level surface.
+
+What changed:
+
+- Added a `Source boundary training focus aid` panel to prompt-pair tickets whose backend preflight reports `source_boundary_blocks_training`.
+- The panel shows the linked source photo id, privacy level, SFT permission, DPO permission, reviewer, and blocked training uses.
+- The panel repeats the key safety rule: pair Submit saves candidate review progress only and does not mutate the imported source, source boundary, or approved training export.
+- Added a strict Playwright proof that opens the source-boundary blocker from the Prompt Pairs readiness panel and verifies the non-mutating permission guidance.
+- Full browser readiness coverage now includes 13 tests, including both DPO and source-boundary prompt-pair blocker paths.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "source-boundary prompt pair blocker"
+# 1 passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "prompt pair ticket explains|DPO rejected reason|source-boundary prompt pair blocker"
+# 3 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 52 live checks; browser readiness slice reports 13 passed
+
+python3 scripts/write_ralph_morning_status.py --output updates/ralph_loop_2026-04-29_morning_status.md --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+
+git diff --check
+# clean
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260429T233338_861483Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Continue working down the top Prompt Pairs bottleneck by adding more session-level help for the 25 DPO rejected-reason candidates, ideally without creating approved training rows or mutating source boundaries.
+
+## Continuation Update: DPO Repair Queue In Prompt Pairs
+
+This loop moved the DPO rejected-reason repair packet into the Prompt Pairs working surface, not only the Exports surface.
+
+What changed:
+
+- Review > Prompt Pairs now loads `/api/prompt-pairs/dpo-rejected-reason-repair-pack`.
+- The prompt-pair readiness summary shows a `DPO rejected reason queue` card with reported/total rejected-reason gaps, completion signal, and Adam gold edit reminder.
+- The card lists the first three repair candidates with task id, prompt, projected blocker-clear status, and `Open DPO reason` actions.
+- The browser proof compares the UI card against the live repair-pack API payload, so it cannot pass with stale or hard-coded counts.
+- Candidate material remains review-only; this does not create approved SFT/DPO rows and does not bypass Adam gold review.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "prompt pairs can be filtered"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 52 live checks; browser readiness slice reports 13 passed
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260429T233940_686992Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Add a machine-checkable visual/status checkpoint for the Prompt Pairs working surface itself, so the morning handoff has proof not only for Exports but also for the actual review queue where Adam will work down candidates.
+
+## Continuation Update: Prompt Pairs Visual Checkpoint
+
+This loop added a machine-checkable visual checkpoint for the Prompt Pairs working surface.
+
+What changed:
+
+- The browser readiness suite now captures `updates/prompt_pairs_work_queue_2026-04-29.png` from the live Prompt Pairs queue after verifying filters, readiness counts, the DPO rejected-reason queue, a selected ticket, and the export-gate panel.
+- The capture writes `updates/prompt_pairs_work_queue_2026-04-29.json` with the live API counts used to render the screenshot.
+- `scripts/ralph_loop_gate.py` now includes a dedicated check that rejects the checkpoint if the PNG is missing, malformed, too small, stale, or if the sidecar counts do not match the current `/api/prompt-pairs/audit` and DPO repair-packet APIs.
+- `scripts/write_ralph_morning_status.py` now lists both the Exports visual checkpoint and the Prompt Pairs visual checkpoint in the morning handoff.
+- This is still read-only review proof: it does not promote prompt pairs to approved training export and does not mutate source boundaries.
+
+Verification:
+
+```bash
+python3 -m py_compile scripts/ralph_loop_gate.py scripts/write_ralph_morning_status.py
+# passed
+
+npm run typecheck --prefix apps/web
+# passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "prompt pairs work queue visual checkpoint"
+# 1 passed
+
+file updates/prompt_pairs_work_queue_2026-04-29.png
+# PNG image data, 1440 x 1200
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --output updates/ralph_loop_2026-04-29_morning_status.md --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint and visual checkpoint references
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260429T234559_000148Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Visual artifacts:
+
+- `updates/prompt_pairs_work_queue_2026-04-29.png`
+- `updates/prompt_pairs_work_queue_2026-04-29.json`
+
+Next useful loop target:
+
+- The top live bottleneck is still 30 held Prompt Pairs: 25 DPO rejected-reason gaps and 5 source-boundary training blocks. The next loop should reduce operator friction in one of those two worklists without certifying final authenticity or creating approved rows.
+
+## Continuation Update: DPO Suggested Reasons In Queue
+
+This loop made the DPO rejected-reason worklist more actionable before opening a ticket.
+
+What changed:
+
+- The Prompt Pairs `DPO rejected reason queue` now shows each candidate's suggested rejected-side issue note directly in the queue card.
+- The queue also shows up to three suggested failure-mode labels for the rejected response.
+- The existing `Open DPO reason` action still opens the singleton prompt-pair ticket; the queue addition does not apply changes or approve rows by itself.
+- The browser proof now compares the visible queue text against the live `/api/prompt-pairs/dpo-rejected-reason-repair-pack` response, including the suggested issue note and failure modes.
+- The full Ralph gate recaptured the Prompt Pairs visual checkpoint after this UI change.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+docker cp apps/web/src/app/page.tsx chas-web-1:/app/src/app/page.tsx
+docker cp apps/web/src/app/globals.css chas-web-1:/app/src/app/globals.css
+docker compose restart web
+# web restarted
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "prompt pairs can be filtered"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --output updates/ralph_loop_2026-04-29_morning_status.md --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260429T235052_335539Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- The DPO worklist is easier to inspect, but the actual live bottleneck count is unchanged because Adam has not submitted repairs. The next loop should add a non-mutating session outcome preview for a selected DPO ticket, so Adam can see exactly which blockers would remain before committing a review edit.
+
+## Continuation Update: DPO Session Outcome Preview
+
+This loop added the selected-ticket outcome preview for DPO rejected-reason repairs.
+
+What changed:
+
+- The DPO rejected-reason focus aid now includes a `Session outcome preview` panel when the backend repair projection is available.
+- The panel shows blockers that would clear, blockers that would remain, projected export status, and dataset outcome.
+- The preview explicitly says Submit saves review-candidate material only and creates no approved DPO row until Adam completes gold review.
+- The focused browser proof first failed because the running web container still had the old component; after syncing the component into `chas-web-1` and restarting, the same proof passed. This confirmed the test is checking the live build, not just local files.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "DPO rejected reason focus aid"
+# failed before web container sync, as expected
+
+docker cp apps/web/src/components/TaskWorkbench.tsx chas-web-1:/app/src/components/TaskWorkbench.tsx
+docker cp apps/web/src/app/globals.css chas-web-1:/app/src/app/globals.css
+docker compose restart web
+# web restarted
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "DPO rejected reason focus aid"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --output updates/ralph_loop_2026-04-29_morning_status.md --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+
+git diff --check
+# clean
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260429T235530_496679Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Shift attention to the photo-context bottleneck. Prompt Pairs now has stronger queue and ticket guidance, while Photo Context still has 22 groups needing Adam context and zero reviewed vector-ready photos.
+
+## Continuation Update: Photo Context Session Action Provenance
+
+This loop tightened the photo-context review-session plan so task actions preserve why a photo was selected without turning that reason into a memory claim.
+
+What changed:
+
+- Review-session plan actions now carry `query_provenance` with `source_query`, `query_is_context_prioritization_only`, `not_memory_claim`, `candidate_match_quality`, and `candidate_selection_reason`.
+- `create_photo_context_task` request bodies now carry the same provenance plus session sequence/count metadata, so an operator-created task can preserve its review-session origin.
+- The YAML preview now exposes `action_source_query`, `candidate_match_quality`, and `candidate_selection_reason` for each session item.
+- The strict gate now fails if the live session plan drops query provenance from the item action or create-task body.
+
+Verification:
+
+```bash
+python3 -m py_compile scripts/ralph_loop_gate.py apps/api/app/services/photo_context_review_pack.py
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/api/app/services/photo_context_review_pack.py chas-api-1:/app/app/services/photo_context_review_pack.py
+docker cp apps/api/tests/test_ralph_phase2_photo_spine.py chas-api-1:/app/tests/test_ralph_phase2_photo_spine.py
+docker compose restart api
+# api restarted
+
+docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_review_pack_combines_no_claim_gaps_held_drafts_and_vector_ready_records
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T000324_295831Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Continue reducing photo-context friction by making the ordered photo review-session UI show the provenance and expected task outcome before Adam opens or creates each context task.
+
+## Continuation Update: Photo Session Provenance In The Operator UI
+
+This loop surfaced the photo-context review-session provenance directly in the Exports workbench.
+
+What changed:
+
+- Each ordered photo context review-session item now shows an `Action provenance` block before the create/open button.
+- The block displays the carried query, the backlog/match quality, the selection reason, and the prioritization-only/not-memory-claim boundary.
+- The web response type now understands action-level query provenance and session sequence metadata from the API.
+- The browser readiness test now asserts the provenance block is visible with the expected `backlog_only`, `selected_from_photo_context_review_session_plan`, carried query, and not-memory-claim language.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/web/src/components/DownstreamReadinessPanel.tsx chas-web-1:/app/src/components/DownstreamReadinessPanel.tsx
+docker cp apps/web/src/lib/types.ts chas-web-1:/app/src/lib/types.ts
+docker cp apps/web/src/app/globals.css chas-web-1:/app/src/app/globals.css
+docker compose restart web
+# web restarted
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "exports readiness exposes demo gate"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T000934_970314Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Tighten photo context task forms so the task itself shows the same session provenance and a concise “what completing this unlocks” summary while Adam is filling in context.
+
+## Continuation Update: Session Provenance Reaches The Photo Context Task
+
+This loop closed a propagation gap between the ordered session queue and the opened Photo Context task.
+
+What changed:
+
+- Opening a session item now passes the session action's candidate match quality and selection reason into `createPhotoContextTaskFromInventory`.
+- Batch review-session task creation also propagates those fields from the session plan action body into task payloads.
+- Existing photo-context tasks are now backfilled when the same create/open endpoint is called with query provenance, replacing stale `unknown` candidate fields without mutating raw source assets.
+- Photo Context task forms now show `Selection basis` and `Selection reason` in the review-session strip, keeping the no-claim provenance visible while Adam fills in context.
+- The API test now asserts session-created tasks preserve `backlog_only` and `selected_from_photo_context_review_session_plan`; the browser test asserts the opened task form displays those values.
+
+Verification:
+
+```bash
+python3 -m py_compile apps/api/app/routers/assets.py
+# passed
+
+npm run typecheck --prefix apps/web
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/api/app/routers/assets.py chas-api-1:/app/app/routers/assets.py
+docker cp apps/api/tests/test_ralph_phase2_photo_spine.py chas-api-1:/app/tests/test_ralph_phase2_photo_spine.py
+docker cp apps/web/src/components/DownstreamReadinessPanel.tsx chas-web-1:/app/src/components/DownstreamReadinessPanel.tsx
+docker cp apps/web/src/components/TaskWorkbench.tsx chas-web-1:/app/src/components/TaskWorkbench.tsx
+docker cp apps/web/src/lib/types.ts chas-web-1:/app/src/lib/types.ts
+docker cp apps/web/src/app/globals.css chas-web-1:/app/src/app/globals.css
+docker compose restart api
+docker compose restart web
+# services restarted
+
+docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_review_session_dry_runs_then_creates_no_claim_context_tasks
+# 1 passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "retrieval no-claim action"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T001553_652087Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Add a stricter machine-readable photo session progress artifact check that proves opened/held context tasks retain no-claim provenance and retrieval/session origins before any vector-ready export is allowed.
+
+## Continuation Update: Photo Session Progress Provenance Artifact
+
+This loop made the photo session-progress endpoint and artifact stricter about provenance.
+
+What changed:
+
+- `session-progress` items now include `review_session_origin` and a `provenance_boundary` object alongside `retrieval_gap_origin`.
+- `session-progress` now reports `review_session_task_count` and a `provenance_policy` that explicitly says retrieval/session origins are not memory claims, queries are prioritization-only, and vector readiness requires submit.
+- `session-progress/artifact` now carries the same provenance policy plus retrieval/session origins for each item.
+- The runtime contract now requires `review_session_task_count` and `provenance_policy` on progress responses and progress artifacts.
+- The Ralph gate now calls the progress artifact endpoint directly and fails if provenance policy, no-claim origin boundaries, or artifact/source hashes drift.
+
+Verification:
+
+```bash
+python3 -m py_compile apps/api/app/services/photo_context_progress.py apps/api/app/runtime_contract.py scripts/ralph_loop_gate.py
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/api/app/services/photo_context_progress.py chas-api-1:/app/app/services/photo_context_progress.py
+docker cp apps/api/app/runtime_contract.py chas-api-1:/app/app/runtime_contract.py
+docker cp apps/api/tests/test_ralph_phase2_photo_spine.py chas-api-1:/app/tests/test_ralph_phase2_photo_spine.py
+docker compose restart api
+# api restarted
+
+docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T002342_830180Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Move from provenance hardening to throughput: make the Photo Context workbench easier to complete quickly, especially by reducing repeated manual entry for Adam-required fields while keeping Adam-authored meaning/context untouched.
+
+## Continuation Update: Photo Context Answer Template
+
+This loop added a small throughput aid to the Photo Context workbench.
+
+What changed:
+
+- The Adam answer paste parser now has a `Start answer template` button.
+- It pre-fills the paste box with only the currently missing Adam-required fields, preserving the numbered format the parser expects.
+- The template does not generate any memory text; it only creates blank slots for Adam-authored answers.
+- The browser proof now asserts the template is generated before replacing it with Adam answers and applying them.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/web/src/components/TaskWorkbench.tsx chas-web-1:/app/src/components/TaskWorkbench.tsx
+docker compose restart web
+# web restarted
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "retrieval no-claim action"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T002923_834484Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Add a compact per-photo “ready-to-submit checklist” artifact or panel that shows exactly which remaining fields block vector handoff for the current task, in the same order as the answer template.
+
+## Continuation Update: Photo Review Seed Reframe
+
+This loop corrected the Photo Context review model after Adam tested `Rotmil_10_19 - Cathryn Wilson.jpg`.
+
+What changed:
+
+- Backlog-only retrieval entries now display as a `Review seed`, not as a required memory query.
+- Photo context review no longer asks Adam to explain why every backlog photo should answer a seeded query like `airplane in Maine`.
+- The required Adam fields are now centered on the photo itself: reviewed visible facts, the memory or association it brings up, invisible context, open questions, and boundary readiness.
+- Search/result relevance remains available only when a photo actually surfaced from search evidence; for backlog-only items it is optional workflow provenance.
+- Existing backlog-created photo tasks are backfilled so stale `retrieval_query_relevance` fields do not block review.
+
+Verification:
+
+```bash
+docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields tests/test_ralph_phase2_photo_spine.py::test_photo_context_task_created_from_retrieval_gap_preserves_query_origin
+# 2 passed
+
+npm run typecheck --prefix apps/web
+# passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "exports readiness exposes demo gate|gallery draft review action|photo review exposes image preview"
+# 3 passed
+
+git diff --check
+# clean
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 53 live checks; browser readiness slice reports 14 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T010650_025601Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Add a Photo Context workbench visual checkpoint and JSON sidecar that prove image preview, review seed handling, Adam-required memory fields, and ready-to-submit checklist are visible together for a real photo task.
+
+## Continuation Update: Photo Context Visual Checkpoint
+
+This loop added the Photo Context sibling to the existing Prompt Pairs visual checkpoint.
+
+What changed:
+
+- The Photo Context workbench now visibly labels backlog review seeds as `workflow provenance only`.
+- A new Playwright checkpoint captures the live Photo Context workbench with image preview, review seed, required Adam memory fields, optional search note, downstream memory preview, and ready-to-submit checklist visible together.
+- The checkpoint writes a PNG plus JSON sidecar:
+  - `updates/photo_context_workbench_2026-04-29.png`
+  - `updates/photo_context_workbench_2026-04-29.json`
+- The JSON sidecar records session-plan, session-progress, and top-slice hashes so stale screenshots or mismatched live state fail the Ralph gate.
+- The morning status now lists the Photo Context visual checkpoint next to the Exports and Prompt Pairs visual checkpoints.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+python3 -m py_compile scripts/ralph_loop_gate.py scripts/write_ralph_morning_status.py
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/web/src/components/TaskWorkbench.tsx chas-web-1:/app/src/components/TaskWorkbench.tsx
+docker compose restart web
+# web restarted
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "photo context workbench visual checkpoint"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 54 live checks; browser readiness slice reports 15 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T011609_637370Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Add an explicit photo-context throughput artifact that ranks the fastest next photo tasks by missing Adam fields, preview readiness, and downstream payoff, then wire it into the workbench action queue.
+
+## Continuation Update: Photo Context Throughput Artifact
+
+This loop promoted the existing photo priority summary into a durable throughput artifact and surfaced it in the photo workbench queue.
+
+What changed:
+
+- `/api/assets/photo-review-priority` now returns a hashable/export-previewable artifact with:
+  - `throughput_policy`
+  - `completion_signal`
+  - `content_sha256`
+  - `export_preview_yaml`
+  - `export_preview_sha256`
+  - `does_not_create_memory_claim`
+  - `no_live_embedding_call`
+- Each ranked photo task now carries explicit ranking inputs:
+  - path rank
+  - preview readiness
+  - missing Adam field count
+  - downstream payoff score
+  - retrieval-query presence
+- Added `/api/assets/photo-review-priority/yaml` for direct YAML inspection.
+- Added the endpoint to the runtime contract so stale API containers or missing fields fail the Ralph gate.
+- The Review → Photos queue now shows a `Photo context throughput artifact` panel with ranked task count, policy, completion signal, top task, missing Adam fields, payoff score, preview readiness, and hash.
+
+Verification:
+
+```bash
+python3 -m py_compile apps/api/app/services/photo_review_priority.py apps/api/app/routers/assets.py apps/api/app/runtime_contract.py scripts/ralph_loop_gate.py scripts/write_ralph_morning_status.py
+# passed
+
+npm run typecheck --prefix apps/web
+# passed
+
+git diff --check
+# clean
+
+docker cp apps/api/app/services/photo_review_priority.py chas-api-1:/app/app/services/photo_review_priority.py
+docker cp apps/api/app/routers/assets.py chas-api-1:/app/app/routers/assets.py
+docker cp apps/api/app/runtime_contract.py chas-api-1:/app/app/runtime_contract.py
+docker cp apps/api/tests/test_ralph_phase2_photo_spine.py chas-api-1:/app/tests/test_ralph_phase2_photo_spine.py
+docker cp apps/web/src/app/page.tsx chas-web-1:/app/src/app/page.tsx
+docker cp apps/web/src/lib/types.ts chas-web-1:/app/src/lib/types.ts
+docker cp apps/web/src/lib/api.ts chas-web-1:/app/src/lib/api.ts
+docker compose restart api
+docker compose restart web
+# live containers refreshed
+
+docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_claim_policy
+# 1 passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "photo review exposes image preview"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 54 live checks; browser readiness slice reports 15 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T012534_800225Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Promote the photo throughput artifact into the downstream artifact manifest/hash audit so it is tracked alongside the other exportable review artifacts.
+
+## Continuation Update: Photo Throughput Artifact In Manifest And Downloads
+
+This loop closed the handoff from the photo-context throughput artifact into the downstream artifact system.
+
+What changed:
+
+- Added `photo_review_priority_yaml` to the downstream artifact manifest.
+- Added hash-audit coverage for the exact YAML body served by `/api/assets/photo-review-priority/yaml?focus=fastest_vector&limit=10`.
+- Preserved policy fields in the manifest snapshot:
+  - `throughput_policy`
+  - `completion_signal`
+  - `does_not_create_memory_claim`
+  - `no_live_embedding_call`
+  - ranking inputs and priority hash
+- Added a direct `Photo throughput priority` card to the Exports readiness downloads strip with a `Priority YAML` link.
+- Stabilized the Exports readiness UI by disabling prompt-pair blocker focus actions while the panel is still refreshing, preventing the initial readiness load from overwriting a focused blocker view.
+- Raised the broad Exports readiness smoke timeout to match the real work it now performs.
+
+Verification:
+
+```bash
+python3 -m py_compile apps/api/app/services/downstream_readiness.py scripts/ralph_loop_gate.py
+# passed
+
+docker cp apps/api/app/services/downstream_readiness.py chas-api-1:/app/app/services/downstream_readiness.py
+docker cp apps/api/tests/test_ralph_phase3_prompt_pair_audit.py chas-api-1:/app/tests/test_ralph_phase3_prompt_pair_audit.py
+docker compose restart api
+# live API refreshed
+
+docker compose exec -T api pytest -q tests/test_ralph_phase3_prompt_pair_audit.py::test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effects tests/test_ralph_phase3_prompt_pair_audit.py::test_downstream_artifact_audit_recomputes_manifest_hashes
+# 2 passed
+
+npm run typecheck --prefix apps/web
+# passed
+
+docker cp apps/web/src/components/DownstreamReadinessPanel.tsx chas-web-1:/app/src/components/DownstreamReadinessPanel.tsx
+docker compose restart web
+# live web refreshed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "exports readiness exposes demo gate"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 54 live checks; browser readiness slice reports 15 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T014625_494917Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Reduce remaining conceptual residue around demo retrieval queries by distinguishing example search probes from photo-context review seeds everywhere the operator sees them.
+
+## Continuation Update: Retrieval Probe Language
+
+This loop tightened the Exports readiness wording so the operator sees seeded retrieval checks as probes, not as questions every photo must answer.
+
+What changed:
+
+- Renamed the visible Exports query control from `Memory query` to `Example retrieval probe`.
+- Updated the helper copy to say the active text is an example search for retrieval readiness, not a memory claim or required answer for every photo.
+- Changed the Morning Handoff mini-card label from `Retrieval gap` to `Example probe gap`.
+- Kept the input's accessible label stable as `Memory query` so existing keyboard/test flows remain intact.
+
+Verification:
+
+```bash
+npm run typecheck --prefix apps/web
+# passed
+
+docker cp apps/web/src/components/DownstreamReadinessPanel.tsx chas-web-1:/app/src/components/DownstreamReadinessPanel.tsx
+docker compose restart web
+# live web refreshed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "exports readiness lets the operator switch"
+# 1 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 54 live checks; browser readiness slice reports 15 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T015121_881596Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Continue reducing source-of-truth ambiguity by adding an operator-facing distinction between reviewed photo memories and machine-drafted photo memories in the retrieval proof panel.
+
+## Continuation Update: Retrieval Proof Labels And Photo Review Search Seeds
+
+This loop removed a confusing operator prompt in Photo Context review: a seeded search is now framed as workflow provenance, not as a question every photo must answer.
+
+What changed:
+
+- Retrieval proof in Exports now labels machine-drafted versus Adam-reviewed memory results so provenance is visible before any narrative use.
+- Photo Context review now says `Review seed`, `Search seed`, and `Optional search connection` instead of asking whether a photo should answer a retrieval query.
+- The optional search field now tells Adam to write the memory the photo sparks above, and to leave the search connection blank unless it is genuinely useful.
+- API-side photo context plans now label the field as `Search seed connection`, keeping the internal key stable while improving human-facing language.
+
+Verification:
+
+```bash
+python3 -m py_compile apps/api/app/routers/assets.py apps/api/app/services/photo_context_projection.py apps/api/app/services/photo_context_progress.py
+# passed
+
+npm run typecheck --prefix apps/web
+# passed
+
+docker compose exec -T api pytest -q tests/test_ralph_phase2_photo_spine.py::test_photo_context_task_created_from_retrieval_gap_preserves_query_origin tests/test_ralph_phase2_photo_spine.py::test_existing_photo_context_task_opened_from_retrieval_gap_backfills_review_plan tests/test_ralph_phase2_photo_spine.py::test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields
+# 3 passed
+
+npx --prefix apps/web playwright test --config apps/web/playwright.config.ts -g "retrieval no-claim action opens|photo context workbench visual checkpoint"
+# 2 passed
+
+python3 scripts/ralph_loop_gate.py --honest-gap-query "Old Orchard beach" --write-checkpoint --json
+# PASS, 54 live checks; browser readiness slice reports 15 passed
+
+python3 scripts/write_ralph_morning_status.py --retrieval-gap-query "Old Orchard beach"
+# refreshed latest checkpoint reference
+```
+
+Current live checkpoint:
+
+- `updates/ralph_loop_gate_checkpoint_20260430T020556_209385Z.json`
+- `updates/ralph_loop_gate_checkpoint_latest.json`
+- `updates/ralph_loop_gate_checkpoint_latest.md`
+
+Next useful loop target:
+
+- Make the photo-context task itself more generative by adding a compact “memory seed worksheet” that separates visible facts, sparked memories, people/place/date, uncertainty, and downstream retrieval text preview.

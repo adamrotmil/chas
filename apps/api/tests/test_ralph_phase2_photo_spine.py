@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.db.session import get_session
 from app.main import app
+from app.routers.tasks import _attach_photo_prompt_pair_candidates
 from app.models import (
     Annotation,
     Asset,
@@ -213,8 +214,8 @@ def test_gallery_review_endpoint_defaults_to_reviewed_and_can_preview_drafts():
         reviewed_profile = MetadataProfile(
             target_type="asset",
             target_id=reviewed_photo.id,
-            profile_type="photo_context",
-            metadata_status="reviewed",
+            profile_type="photo_memory",
+            metadata_status="adam_reviewed",
             title="Reviewed airplane memory",
             summary="Adam and Charles near a small airplane in Maine.",
             adam_context_note="Adam says this anchors the flying-in-Maine memory.",
@@ -224,8 +225,8 @@ def test_gallery_review_endpoint_defaults_to_reviewed_and_can_preview_drafts():
         draft_profile = MetadataProfile(
             target_type="asset",
             target_id=draft_photo.id,
-            profile_type="photo_context",
-            metadata_status="machine_draft",
+            profile_type="photo_memory",
+            metadata_status="machine_draft_needs_adam_review",
             title="Draft flute memory",
             summary="Charles holding a Japanese flute.",
             truth_status="system_inference",
@@ -487,6 +488,45 @@ def test_photo_semantic_retrieval_finds_matching_memory_and_respects_boundaries(
     assert len([result["source_photo_id"] for result in harbor.json()["results"]]) == len(
         {result["source_photo_id"] for result in harbor.json()["results"]}
     )
+
+
+def test_family_private_retrieval_excludes_sensitive_privacy_even_if_flags_are_wrong():
+    client, engine = build_client()
+    sensitive_photo_id = _create_photo_memory(
+        client,
+        engine,
+        human_id="ASSET_RALPH_RETRIEVAL_SENSITIVE",
+        title="Sensitive airplane memory",
+        description="A private-sensitive airplane photograph.",
+        context="This sensitive private context should never be retrieved from family-private search.",
+        place="Maine",
+        event="sensitive airplane",
+        themes=["airplane", "Maine", "sensitive"],
+        privacy_level="private_sensitive",
+    )
+    with Session(engine) as session:
+        boundary = session.exec(
+            select(Boundary).where(Boundary.target_type == "asset").where(Boundary.target_id == sensitive_photo_id)
+        ).one()
+        boundary.searchable = True
+        boundary.retrievable_in_chat = True
+        session.add(boundary)
+        records = session.exec(select(EmbeddingRecord)).all()
+        for record in records:
+            if (record.metadata_json or {}).get("asset_id") == sensitive_photo_id:
+                snapshot = dict(record.boundary_snapshot or {})
+                snapshot["privacy_level"] = "private_sensitive"
+                snapshot["searchable"] = True
+                snapshot["retrievable_in_chat"] = True
+                snapshot["reviewed_by"] = "adam"
+                record.boundary_snapshot = snapshot
+                session.add(record)
+        session.commit()
+
+    response = client.get("/api/retrieval/search", params={"q": "sensitive airplane Maine", "scope": "family_private"})
+    assert response.status_code == 200
+    body = response.json()
+    assert sensitive_photo_id not in [result["source_photo_id"] for result in body["results"]]
 
 
 def test_photo_review_inventory_groups_copy_variants_and_counts_context_gap():
@@ -866,6 +906,24 @@ def test_photo_context_review_pack_combines_no_claim_gaps_held_drafts_and_vector
     }
     assert plan["items"][0]["field_plan"][1]["field"] == "invisible_context"
     assert plan["items"][0]["action"]["action_type"] == "create_photo_context_task"
+    action = plan["items"][0]["action"]
+    assert action["query_provenance"] == {
+        "source_query": "airplane in Maine",
+        "query_is_context_prioritization_only": True,
+        "not_memory_claim": True,
+        "candidate_match_quality": "backlog_only",
+        "candidate_selection_reason": "selected_from_photo_context_review_session_plan",
+    }
+    assert action["session_sequence_number"] == 1
+    assert action["session_selected_count"] == 1
+    action_body = action["request"]["body"]
+    assert action_body["source_query"] == "airplane in Maine"
+    assert action_body["query_is_context_prioritization_only"] is True
+    assert action_body["not_memory_claim"] is True
+    assert action_body["candidate_match_quality"] == "backlog_only"
+    assert action_body["candidate_selection_reason"] == "selected_from_photo_context_review_session_plan"
+    assert action_body["session_sequence_number"] == 1
+    assert action_body["session_selected_count"] == 1
 
     plan_yaml = client.get(
         "/api/assets/photo-context-review-pack/review-session-plan/yaml",
@@ -875,6 +933,9 @@ def test_photo_context_review_pack_combines_no_claim_gaps_held_drafts_and_vector
     assert plan_yaml.headers["content-type"].startswith("text/yaml")
     assert plan_yaml.text == plan["export_preview_yaml"]
     assert "query_is_context_prioritization_only: true" in plan_yaml.text
+    assert "action_source_query: airplane in Maine" in plan_yaml.text
+    assert "candidate_match_quality: backlog_only" in plan_yaml.text
+    assert "candidate_selection_reason: selected_from_photo_context_review_session_plan" in plan_yaml.text
 
     contract = client.get("/api/runtime-contract").json()
     assert "/api/assets/photo-context-review-pack/review-session-plan" in contract["required_response_fields"]
@@ -920,7 +981,7 @@ def test_photo_context_review_session_dry_runs_then_creates_no_claim_context_tas
     assert dry_body["review_task_ids"] == []
     assert dry_body["review_policy"] == "no_claim_until_adam_context_submission"
     assert dry_body["selection_policy"] == "from_photo_context_review_session_plan"
-    assert dry_body["source_query"] == "airplane in Maine"
+    assert dry_body["source_query"] == "Old Orchard beach"
     assert len(dry_body["plan_content_sha256"]) == 64
     assert len(dry_body["plan_export_preview_sha256"]) == 64
     assert dry_body["selected_item_keys"] == [item["group_key"] for item in dry_body["items"]]
@@ -939,6 +1000,12 @@ def test_photo_context_review_session_dry_runs_then_creates_no_claim_context_tas
     assert all(item["review_session_origin"]["selected_count"] == 2 for item in dry_body["items"])
     assert all(item["review_session_origin"]["plan_content_sha256"] == dry_body["plan_content_sha256"] for item in dry_body["items"])
     assert all(item["review_session_origin"]["not_memory_claim"] is True for item in dry_body["items"])
+    assert all(item["review_session_origin"]["query_is_context_prioritization_only"] is True for item in dry_body["items"])
+    assert all(item["review_session_origin"]["candidate_match_quality"] == "backlog_only" for item in dry_body["items"])
+    assert all(
+        item["review_session_origin"]["candidate_selection_reason"] == "selected_from_photo_context_review_session_plan"
+        for item in dry_body["items"]
+    )
     with Session(engine) as session:
         assert session.exec(select(Task).where(Task.task_type == "photo_context")).all() == []
 
@@ -982,6 +1049,17 @@ def test_photo_context_review_session_dry_runs_then_creates_no_claim_context_tas
         assert all(task.input_payload["review_session_origin"]["selected_count"] == 2 for task in tasks)
         assert all(task.input_payload["review_session_origin"]["plan_content_sha256"] == created_body["plan_content_sha256"] for task in tasks)
         assert all(task.input_payload["review_session_origin"]["not_memory_claim"] is True for task in tasks)
+        assert all(task.input_payload["review_session_origin"]["query_is_context_prioritization_only"] is True for task in tasks)
+        assert all(task.input_payload["review_session_origin"]["candidate_match_quality"] == "backlog_only" for task in tasks)
+        assert all(
+            task.input_payload["review_session_origin"]["candidate_selection_reason"] == "selected_from_photo_context_review_session_plan"
+            for task in tasks
+        )
+        assert all(task.input_payload["retrieval_gap_origin"]["candidate_match_quality"] == "backlog_only" for task in tasks)
+        assert all(
+            task.input_payload["retrieval_gap_origin"]["selection_reason"] == "selected_from_photo_context_review_session_plan"
+            for task in tasks
+        )
         assert all(task.status == "ready" for task in tasks)
 
     contract = client.get("/api/runtime-contract").json()
@@ -1485,6 +1563,8 @@ def test_photo_context_session_progress_summarizes_drafts_and_projection_blocker
     required_fields = contract["required_response_fields"]["/api/assets/photo-context-review-pack/session-progress"]
     assert "does_not_create_memory_claim" in required_fields
     assert "does_not_create_embedding_record" in required_fields
+    assert "review_session_task_count" in required_fields
+    assert "provenance_policy" in required_fields
     assert "content_sha256" in required_fields
 
 
@@ -1495,14 +1575,26 @@ def test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields(
         "query": "airplane in Maine",
         "review_policy": "retrieval_gap_no_claim_until_adam_context",
         "not_memory_claim": True,
-        "completion_signal": "visual_facts_query_relevance_adam_context_uncertainty_boundary",
+        "completion_signal": "visual_facts_memory_context_uncertainty_boundary",
         "required_fields": [
             {"field_key": "visual_description_correction", "label": "Visible facts"},
-            {"field_key": "retrieval_query_relevance", "label": "Connection to retrieval query"},
             {"field_key": "invisible_context_note", "label": "Adam context"},
             {"field_key": "open_questions", "label": "Uncertainty"},
             {"field_key": "privacy_level", "label": "Boundary"},
         ],
+    }
+    review_session_origin = {
+        "session_type": "photo_context_review_session",
+        "sequence_number": 1,
+        "selected_count": 2,
+        "source_query": "airplane in Maine",
+        "plan_content_sha256": "a" * 64,
+        "completion_signal": "create_or_open_context_tasks_then_submit_adam_context_until_needs_context_count_decreases",
+        "review_policy": "query_aware_photo_context_session_plan_no_mutation",
+        "not_memory_claim": True,
+        "query_is_context_prioritization_only": True,
+        "candidate_match_quality": "backlog_only",
+        "candidate_selection_reason": "selected_from_photo_context_review_session_plan",
     }
 
     with Session(engine) as session:
@@ -1548,6 +1640,7 @@ def test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields(
                         "not_memory_claim": True,
                     },
                     "retrieval_gap_review": review_plan,
+                    "review_session_origin": {**review_session_origin, "sequence_number": index},
                 },
                 required_decisions=["visual_description_correction", "question_answers", "privacy_level"],
                 created_by="test",
@@ -1586,8 +1679,14 @@ def test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields(
     assert body["completion_signal"] == "submit_ready_count_increases_or_retrieval_gap_missing_fields_decrease"
     assert len(body["content_sha256"]) == 64
     assert body["retrieval_gap_task_count"] == 2
+    assert body["review_session_task_count"] == 2
+    assert body["provenance_policy"] == {
+        "retrieval_gap_origin_is_not_memory_claim": True,
+        "review_session_origin_is_not_memory_claim": True,
+        "query_is_context_prioritization_only": True,
+        "vector_ready_requires_submit": True,
+    }
     assert body["retrieval_gap_missing_field_counts"] == {
-        "retrieval_query_relevance": 2,
         "visual_description_correction": 1,
         "invisible_context_note": 1,
         "open_questions": 1,
@@ -1597,18 +1696,46 @@ def test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields(
     draft_item = by_title["Retrieval progress draft.jpg"]
     no_draft_item = by_title["Retrieval progress no draft.jpg"]
     assert draft_item["retrieval_gap_origin"]["query"] == "airplane in Maine"
+    assert draft_item["retrieval_gap_origin"]["truth_status"] == "no_claim"
+    assert draft_item["retrieval_gap_origin"]["not_memory_claim"] is True
+    assert draft_item["review_session_origin"]["source_query"] == "airplane in Maine"
+    assert draft_item["review_session_origin"]["not_memory_claim"] is True
+    assert draft_item["review_session_origin"]["query_is_context_prioritization_only"] is True
+    assert draft_item["review_session_origin"]["candidate_match_quality"] == "backlog_only"
+    assert draft_item["review_session_origin"]["candidate_selection_reason"] == "selected_from_photo_context_review_session_plan"
+    assert draft_item["provenance_boundary"] == {
+        "retrieval_origin_truth_status": "no_claim",
+        "retrieval_origin_not_memory_claim": True,
+        "review_session_origin_not_memory_claim": True,
+        "query_is_context_prioritization_only": True,
+        "vector_ready_requires_submit": True,
+    }
     assert draft_item["retrieval_gap_review_policy"] == "retrieval_gap_no_claim_until_adam_context"
-    assert draft_item["retrieval_gap_completion_signal"] == (
-        "visual_facts_query_relevance_adam_context_uncertainty_boundary"
-    )
-    assert draft_item["retrieval_gap_missing_fields"] == ["retrieval_query_relevance"]
+    assert draft_item["retrieval_gap_completion_signal"] == "visual_facts_memory_context_uncertainty_boundary"
+    assert draft_item["retrieval_gap_missing_fields"] == []
     assert no_draft_item["retrieval_gap_missing_fields"] == [
         "visual_description_correction",
-        "retrieval_query_relevance",
         "invisible_context_note",
         "open_questions",
         "privacy_level",
     ]
+
+    artifact_response = client.get(
+        "/api/assets/photo-context-review-pack/session-progress/artifact",
+        params={"scope": "family_private", "limit": 10},
+    )
+    assert artifact_response.status_code == 200
+    artifact = artifact_response.json()
+    assert artifact["artifact_type"] == "photo_context_session_progress_artifact"
+    assert artifact["source_progress_content_sha256"] == body["content_sha256"]
+    assert artifact["does_not_create_memory_claim"] is True
+    assert artifact["does_not_create_embedding_record"] is True
+    assert artifact["review_session_task_count"] == 2
+    assert artifact["provenance_policy"] == body["provenance_policy"]
+    artifact_by_title = {item["source_photo_title"]: item for item in artifact["items"]}
+    assert artifact_by_title["Retrieval progress draft.jpg"]["retrieval_gap_origin"] == draft_item["retrieval_gap_origin"]
+    assert artifact_by_title["Retrieval progress draft.jpg"]["review_session_origin"] == draft_item["review_session_origin"]
+    assert artifact_by_title["Retrieval progress draft.jpg"]["provenance_boundary"] == draft_item["provenance_boundary"]
 
     worklist_response = client.get(
         "/api/assets/photo-context-review-pack/retrieval-gap-field-worklist",
@@ -1623,20 +1750,30 @@ def test_photo_context_session_progress_summarizes_retrieval_gap_missing_fields(
     assert worklist["requires_adam_context"] is True
     assert worklist["no_live_embedding_call"] is True
     assert worklist["retrieval_gap_task_count"] == 2
-    assert worklist["reported_item_count"] == 2
+    assert worklist["reported_item_count"] == 1
     assert len(worklist["content_sha256"]) == 64
     assert len(worklist["export_preview_sha256"]) == 64
     assert hashlib.sha256(worklist["export_preview_yaml"].encode("utf-8")).hexdigest() == worklist["export_preview_sha256"]
-    assert worklist["missing_field_counts"][0] == {"field_key": "retrieval_query_relevance", "count": 2}
-    assert worklist["query_counts"] == [{"query": "airplane in Maine", "count": 2}]
-    assert worklist["items"][0]["missing_field_count"] == 5
+    assert worklist["missing_field_counts"][0] == {"field_key": "invisible_context_note", "count": 1}
+    guidance = {item["field_key"]: item for item in worklist["field_guidance"]}
+    assert set(guidance) == {
+        "visual_description_correction",
+        "invisible_context_note",
+        "open_questions",
+        "privacy_level",
+    }
+    assert guidance["invisible_context_note"]["unlocks"] == (
+        "Embedding text that can support memory-like retrieval after Adam review."
+    )
+    assert worklist["query_counts"] == [{"query": "airplane in Maine", "count": 1}]
+    assert worklist["items"][0]["missing_field_count"] == 4
     assert worklist["items"][0]["truth_status"] == "no_claim"
     assert worklist["items"][0]["not_memory_claim"] is True
-    assert worklist["items"][0]["completion_signal"] == (
-        "visual_facts_query_relevance_adam_context_uncertainty_boundary"
-    )
+    assert worklist["items"][0]["completion_signal"] == "visual_facts_memory_context_uncertainty_boundary"
     assert "photo_context_retrieval_gap_field_worklist:" in worklist["export_preview_yaml"]
-    assert "retrieval_query_relevance" in worklist["export_preview_yaml"]
+    assert "field_guidance:" in worklist["export_preview_yaml"]
+    assert "retrieval_query_relevance" not in worklist["export_preview_yaml"]
+    assert "backlog-only review seeds are not memory questions" not in worklist["export_preview_yaml"]
 
     worklist_yaml = client.get(
         "/api/assets/photo-context-review-pack/retrieval-gap-field-worklist/yaml",
@@ -1902,15 +2039,92 @@ def test_existing_photo_context_task_opened_from_retrieval_gap_backfills_review_
         }
         assert [field["field_key"] for field in task.input_payload["retrieval_gap_review"]["required_fields"]] == [
             "visual_description_correction",
-            "retrieval_query_relevance",
             "invisible_context_note",
             "open_questions",
             "privacy_level",
         ]
-        assert any(
+        assert not any(
             question["id"] == "retrieval_query_relevance"
             for question in task.input_payload["suggested_questions"]
         )
+
+
+def test_existing_backlog_photo_context_task_refreshes_stale_review_seed():
+    client, engine = build_client()
+
+    with Session(engine) as session:
+        photo = Asset(
+            human_id="ASSET_RALPH_STALE_REVIEW_SEED",
+            asset_type="photo",
+            title="Old Orchard archive photo.jpg",
+            original_filename="Old Orchard archive photo.jpg",
+            mime_type="image/jpeg",
+            processing_status="image_preview_ready",
+        )
+        session.add(photo)
+        session.commit()
+        photo_id = photo.id
+        old_task = Task(
+            human_id="TASK_STALE_BACKLOG_REVIEW_SEED",
+            task_type="photo_context",
+            target_type="asset",
+            target_id=photo_id,
+            priority=80,
+            status="ready",
+            queue="photo_assets_needing_context",
+            reason_created="Older context task created from a generic backlog seed.",
+            input_payload={
+                "asset_id": photo_id,
+                "asset_title": "Old Orchard archive photo.jpg",
+                "asset_type": "photo",
+                "photo_group_key": "old orchard archive photo",
+                "retrieval_gap_origin": {
+                    "query": "airplane in Maine",
+                    "candidate_match_quality": "backlog_only",
+                    "selection_reason": "backlog_sample_no_semantic_match",
+                    "truth_status": "no_claim",
+                    "not_memory_claim": True,
+                },
+                "retrieval_gap_review": {
+                    "query": "airplane in Maine",
+                    "review_policy": "retrieval_gap_no_claim_until_adam_context",
+                    "not_memory_claim": True,
+                    "completion_signal": "visual_facts_memory_context_uncertainty_boundary",
+                    "required_fields": [{"field_key": "visual_description_correction", "label": "Visible facts"}],
+                },
+                "source_photo_inventory": True,
+            },
+            required_decisions=["visual_description_correction", "question_answers", "privacy_level"],
+        )
+        session.add(old_task)
+        session.commit()
+        old_task_id = old_task.id
+
+    response = client.post(
+        "/api/assets/photo-review-inventory/context-task",
+        json={
+            "asset_id": photo_id,
+            "source_query": "Old Orchard beach",
+            "candidate_match_quality": "backlog_only",
+            "candidate_selection_reason": "selected_from_photo_context_review_session_plan",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["created"] is False
+    assert response.json()["task_id"] == old_task_id
+
+    with Session(engine) as session:
+        task = session.get(Task, old_task_id)
+        assert task is not None
+        assert task.input_payload["retrieval_gap_origin"] == {
+            "query": "Old Orchard beach",
+            "candidate_match_quality": "backlog_only",
+            "selection_reason": "selected_from_photo_context_review_session_plan",
+            "truth_status": "no_claim",
+            "not_memory_claim": True,
+        }
+        assert task.input_payload["retrieval_gap_review"]["query"] == "Old Orchard beach"
+        assert task.input_payload["retrieval_gap_review"]["completion_signal"] == "visual_facts_memory_context_uncertainty_boundary"
 
 
 def test_photo_retrieval_gap_is_actionable_without_inventing_memory():
@@ -2346,8 +2560,12 @@ def test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_emb
     assert response.status_code == 200
     body = response.json()
     assert body["created_count"] == 1
-    assert len(body["created_task_ids"]) == 1
+    assert body["created_task_ids"] == []
+    assert body["generation_batch_id"].startswith("PHOTO_PAIR_BATCH_")
+    assert body["generation_batch_ids"] == [body["generation_batch_id"]]
     assert body["candidates"][0]["asset_id"] == photo_id
+    assert body["candidates"][0]["existing_task_id"]
+    assert body["candidates"][0]["photo_pair_generation_batch_id"] == body["generation_batch_id"]
     assert body["candidates"][0]["prompt"] == "Dad, what do you remember about flying in Maine?"
     assert body["candidates"][0]["retrieval_gap_origin"] == {
         "query": "airplane in Maine",
@@ -2356,10 +2574,13 @@ def test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_emb
         "truth_status": "no_claim",
         "not_memory_claim": True,
     }
+    assert body["candidates"][0]["truth_status"] == "interpretive_synthesis"
+    assert body["candidates"][0]["source_truth_status"] == "adam_memory"
+    assert body["candidates"][0]["candidate_response_truth_status"] == "interpretive_synthesis"
     assert ".jpg" not in body["candidates"][0]["prompt"].lower()
 
     with Session(engine) as session:
-        task = session.get(Task, body["created_task_ids"][0])
+        task = session.get(Task, body["candidates"][0]["existing_task_id"])
         assert task is not None
         payload = task.input_payload
         profile = session.get(MetadataProfile, payload["source_photo_profile_id"])
@@ -2374,8 +2595,10 @@ def test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_emb
         assert payload["prompt"] == "Dad, what do you remember about flying in Maine?"
         assert payload["content"].endswith("love\ndad")
         assert payload["synthetic"] is True
-        assert payload["truth_status"] == "adam_memory"
+        assert payload["truth_status"] == "interpretive_synthesis"
         assert payload["source_truth_status"] == "adam_memory"
+        assert payload["candidate_response_truth_status"] == "interpretive_synthesis"
+        assert payload["photo_pair_generation_batch_id"] == body["generation_batch_id"]
         assert payload["source_photo_id"] == photo_id
         assert payload["grounding_asset_id"] == photo_id
         assert payload["source_photo_profile_id"] == profile.id
@@ -2401,19 +2624,28 @@ def test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_emb
         }
         assert "small airplane" in payload["embedding_input_text"]
         assert "flying an airplane together in Maine" in payload["embedding_input_text"]
+        assert payload["photo_pair_generation_strategy"] == "deterministic_photo_memory_reconstruction_template"
         assert "photo_grounded_synthetic_candidate_needs_adam_review" in payload["failure_modes"]
 
         assert prompt_spec is not None
         assert prompt_spec.prompt_type == "photo_memory_prompt_pair_candidate"
+        assert prompt_spec.truth_mode == "interpretive_synthesis"
         assert prompt_spec.prompt_text == payload["prompt"]
         assert prompt_spec.metadata_json["source_photo_id"] == photo_id
         assert prompt_spec.metadata_json["source_photo_profile_id"] == profile.id
+        assert prompt_spec.metadata_json["source_truth_status"] == "adam_memory"
+        assert prompt_spec.metadata_json["candidate_response_truth_status"] == "interpretive_synthesis"
+        assert prompt_spec.metadata_json["photo_pair_generation_batch_id"] == body["generation_batch_id"]
         assert prompt_spec.metadata_json["retrieval_gap_origin"]["not_memory_claim"] is True
         assert prompt_spec.success_criteria["must_link_source_photo"] is True
 
         assert context_pack is not None
         assert context_pack.user_intent == "photo_memory_prompt_pair_generation"
+        assert context_pack.truth_mode == "interpretive_synthesis"
         assert context_pack.boundaries_snapshot["source_photo_id"] == photo_id
+        assert context_pack.boundaries_snapshot["source_truth_status"] == "adam_memory"
+        assert context_pack.boundaries_snapshot["candidate_response_truth_status"] == "interpretive_synthesis"
+        assert context_pack.boundaries_snapshot["photo_pair_generation_batch_id"] == body["generation_batch_id"]
         assert context_pack.boundaries_snapshot["retrieval_gap_origin"]["query"] == "airplane in Maine"
         assert (
             context_pack.style_guidance["retrieval_gap_origin_policy"]
@@ -2425,7 +2657,237 @@ def test_photo_memory_prompt_pair_candidates_link_photo_profile_boundary_and_emb
     repeat = client.post("/api/photo-memory-drafts/prompt-pair-candidates", params={"limit": 1, "dry_run": "false"})
     assert repeat.status_code == 200
     assert repeat.json()["created_task_ids"] == []
-    assert repeat.json()["candidates"][0]["existing_task_id"] == body["created_task_ids"][0]
+    assert repeat.json()["generation_batch_id"] == body["generation_batch_id"]
+    assert repeat.json()["candidates"][0]["existing_task_id"] == body["candidates"][0]["existing_task_id"]
+
+
+def test_photo_memory_prompt_pair_candidates_can_target_one_reviewed_photo():
+    client, engine = build_client()
+    first_photo_id = _create_photo_memory(
+        client,
+        engine,
+        human_id="ASSET_RALPH_PHOTO_PAIR_TARGETED_FLOWERS",
+        title="Adam holding yellow flowers",
+        description="Adam is holding yellow flowers in a family photograph.",
+        context="Adam says the yellow flowers sparked a memory about arriving for a family visit.",
+        place="Maine",
+        event="family visit",
+        themes=["yellow flowers", "family visit"],
+    )
+    second_photo_id = _create_photo_memory(
+        client,
+        engine,
+        human_id="ASSET_RALPH_PHOTO_PAIR_TARGETED_FLUTE",
+        title="Charles with Japanese flute",
+        description="Charles is holding a Japanese flute.",
+        context="Adam says this is about Charles studying shakuhachi.",
+        place="Portland",
+        event="music practice",
+        themes=["flute", "music"],
+    )
+
+    response = client.post(
+        "/api/photo-memory-drafts/prompt-pair-candidates",
+        params={"limit": 5, "dry_run": "false", "asset_id": first_photo_id},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["asset_id"] == first_photo_id
+    assert body["metadata_profile_id"] is None
+    assert body["generation_batch_id"].startswith("PHOTO_PAIR_BATCH_")
+    assert body["generation_batch_ids"] == [body["generation_batch_id"]]
+    assert body["created_count"] == 5
+    task_ids = body["created_task_ids"] or [candidate["existing_task_id"] for candidate in body["candidates"]]
+    assert len(task_ids) == 5
+    assert {candidate["asset_id"] for candidate in body["candidates"]} == {first_photo_id}
+    assert {candidate["photo_pair_generation_batch_id"] for candidate in body["candidates"]} == {body["generation_batch_id"]}
+    assert {candidate["variant_key"] for candidate in body["candidates"]} == {
+        "direct_memory",
+        "first_look",
+        "surrounding_day",
+        "relationship_thread",
+        "photographer_eye",
+    }
+    assert len({candidate["prompt"] for candidate in body["candidates"]}) == 5
+
+    with Session(engine) as session:
+        tasks = [session.get(Task, task_id) for task_id in task_ids]
+        assert all(task is not None for task in tasks)
+        payloads = [task.input_payload for task in tasks if task is not None]
+        assert {payload["source_photo_id"] for payload in payloads} == {first_photo_id}
+        assert {payload["grounding_asset_id"] for payload in payloads} == {first_photo_id}
+        assert {payload["photo_pair_generation_batch_id"] for payload in payloads} == {body["generation_batch_id"]}
+        assert {payload["photo_pair_variant_key"] for payload in payloads} == {
+            "direct_memory",
+            "first_look",
+            "surrounding_day",
+            "relationship_thread",
+            "photographer_eye",
+        }
+        assert len({payload["prompt"] for payload in payloads}) == 5
+        assert all(second_photo_id not in payload["embedding_input_text"] for payload in payloads)
+
+    repeat = client.post(
+        "/api/photo-memory-drafts/prompt-pair-candidates",
+        params={"limit": 5, "dry_run": "false", "asset_id": first_photo_id},
+    )
+    assert repeat.status_code == 200
+    assert repeat.json()["created_task_ids"] == []
+    assert repeat.json()["generation_batch_id"] == body["generation_batch_id"]
+    assert {candidate["existing_task_id"] for candidate in repeat.json()["candidates"]} == set(task_ids)
+
+
+def test_prompt_pair_candidate_delete_is_audited_and_removed_from_ready_queue():
+    client, engine = build_client()
+    photo_id = _create_photo_memory(
+        client,
+        engine,
+        human_id="ASSET_RALPH_PHOTO_PAIR_DELETE",
+        title="Adam holding yellow flowers",
+        description="Adam is holding yellow flowers in a family photograph.",
+        context="Adam says the yellow flowers sparked a memory about arriving for a family visit.",
+        place="Maine",
+        event="family visit",
+        themes=["yellow flowers", "family visit"],
+    )
+    created = client.post(
+        "/api/photo-memory-drafts/prompt-pair-candidates",
+        params={"limit": 5, "dry_run": "false", "asset_id": photo_id},
+    )
+    assert created.status_code == 200
+    created_body = created.json()
+    task_id = created_body["created_task_ids"][0] if created_body["created_task_ids"] else created_body["candidates"][0]["existing_task_id"]
+    assert task_id
+
+    with Session(engine) as session:
+        session.add(TaskDraft(task_id=task_id, user_id="adam", decisions={"prompt": "rough"}, notes="working"))
+        session.commit()
+
+    response = client.post(
+        f"/api/tasks/{task_id}/delete-candidate",
+        json={"reason": "Not the strongest generated option", "notes": "Keeping better flower candidates."},
+    )
+    assert response.status_code == 200
+    annotation_body = response.json()
+    assert annotation_body["annotation_type"] == "prompt_pair_candidate_deleted"
+    assert annotation_body["decisions"]["hard_deleted"] is False
+    assert annotation_body["decisions"]["audit_record_preserved"] is True
+    assert annotation_body["decisions"]["source_photo_id"] == photo_id
+    assert annotation_body["creates_or_updates"]["new_status"] == "rejected_candidate"
+
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        assert task is not None
+        assert task.status == "rejected_candidate"
+        assert task.input_payload["candidate_rejection_reason"] == "Not the strongest generated option"
+        assert task.input_payload["candidate_rejection_annotation_type"] == "prompt_pair_candidate_deleted"
+        assert session.get(Annotation, annotation_body["id"]) is not None
+        assert session.exec(select(TaskDraft).where(TaskDraft.task_id == task_id)).first() is None
+
+
+def test_operator_assistant_asks_next_photo_review_question_without_secret_leakage():
+    client, engine = build_client()
+    with Session(engine) as session:
+        photo = Asset(
+            human_id="ASSET_OPERATOR_ASSISTANT_PHOTO",
+            asset_type="photo",
+            title="Cathryn by the window",
+            original_filename="cathryn-window.jpg",
+            mime_type="image/jpeg",
+        )
+        session.add(photo)
+        session.flush()
+        task = Task(
+            human_id="TASK_OPERATOR_ASSISTANT_PHOTO",
+            task_type="photo_context",
+            target_type="asset",
+            target_id=photo.id,
+            queue="photo_assets_needing_context",
+            input_payload={"asset_id": photo.id, "asset_title": photo.title, "asset_type": "photo"},
+            created_by="test",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    first = client.post(f"/api/tasks/{task_id}/operator-assistant", json={"decisions": {}})
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["assistant_type"] == "neutral_operator_assistant"
+    assert first_body["status"] == "deterministic_no_model_call"
+    assert first_body["live_model_call_used"] is False
+    assert first_body["target_decision_key"] == "visual_description_correction"
+    assert first_body["safety_policy"]["not_charles_voice"] is True
+    assert first_body["safety_policy"]["no_secret_values_returned"] is True
+    assert "api" not in str(first_body).lower()
+
+    second = client.post(
+        f"/api/tasks/{task_id}/operator-assistant",
+        json={
+            "decisions": {
+                "visual_description_correction": "Cathryn is standing by a window in soft interior light.",
+            }
+        },
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["target_decision_key"] == "adam_context_note"
+    assert "memory" in second_body["next_question"].lower()
+
+    parsed = client.post(
+        f"/api/tasks/{task_id}/operator-assistant",
+        json={
+            "decisions": {
+                "visual_description_correction": "Cathryn is standing by a window in soft interior light.",
+            },
+            "operator_answer": "It brings back the feeling of visiting Cathryn in that apartment, the quiet by the windows.",
+        },
+    )
+    assert parsed.status_code == 200
+    parsed_body = parsed.json()
+    assert parsed_body["field_updates"]["adam_context_note"].startswith("It brings back")
+    assert parsed_body["submit_recommendation"]["requested"] is False
+    assert parsed_body["safety_policy"]["does_not_mutate_source"] is True
+
+
+def test_operator_assistant_guides_photo_generated_prompt_pair_triage():
+    client, engine = build_client()
+    photo_id = _create_photo_memory(
+        client,
+        engine,
+        human_id="ASSET_OPERATOR_ASSISTANT_PAIR",
+        title="Adam holding yellow flowers",
+        description="Adam is holding yellow flowers in a family photograph.",
+        context="Adam says the yellow flowers sparked a memory about arriving for a family visit.",
+        place="Maine",
+        event="family visit",
+        themes=["yellow flowers", "family visit"],
+    )
+    created = client.post(
+        "/api/photo-memory-drafts/prompt-pair-candidates",
+        params={"limit": 5, "dry_run": "false", "asset_id": photo_id},
+    )
+    assert created.status_code == 200
+    created_body = created.json()
+    task_id = created_body["created_task_ids"][0] if created_body["created_task_ids"] else created_body["candidates"][0]["existing_task_id"]
+    assert task_id
+
+    response = client.post(f"/api/tasks/{task_id}/operator-assistant", json={"decisions": {}})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assistant_type"] == "neutral_operator_assistant"
+    assert body["target_decision_key"] == "context"
+    assert body["target_label"] == "Keep/edit/delete note"
+    assert "delete" in body["next_question"].lower()
+    assert body["safety_policy"]["not_charles_voice"] is True
+
+    delete_parse = client.post(
+        f"/api/tasks/{task_id}/operator-assistant",
+        json={"decisions": {}, "operator_answer": "Delete this candidate; it feels too generic."},
+    )
+    assert delete_parse.status_code == 200
+    delete_body = delete_parse.json()
+    assert delete_body["field_updates"]["context"].startswith("Delete this candidate")
 
 
 def test_machine_photo_memory_drafts_create_profiles_memories_embeddings_and_retrieval():
@@ -2684,6 +3146,47 @@ def test_machine_photo_memory_drafts_create_profiles_memories_embeddings_and_ret
     )
 
 
+def test_machine_photo_memory_drafts_reopen_ready_task_if_prior_review_task_closed():
+    client, engine = build_client()
+    with Session(engine) as session:
+        photo = Asset(
+            human_id="ASSET_REOPEN_FLUTE_REVIEW",
+            asset_type="photo",
+            title="Rotmil and Japanese Flute II.jpg",
+            original_filename="Rotmil and Japanese Flute II.jpg",
+            mime_type="image/jpeg",
+            import_status="mirrored",
+            processing_status="vision_reviewed",
+        )
+        session.add(photo)
+        session.commit()
+
+    first = client.post("/api/photo-memory-drafts", params={"limit": 1, "dry_run": "false"})
+    assert first.status_code == 200
+    first_task_id = first.json()["review_task_ids"][0]
+
+    with Session(engine) as session:
+        task = session.get(Task, first_task_id)
+        assert task is not None
+        task.status = "submitted"
+        session.add(task)
+        session.commit()
+
+    repeat = client.post("/api/photo-memory-drafts", params={"limit": 1, "dry_run": "false"})
+    assert repeat.status_code == 200
+    body = repeat.json()
+    assert len(body["review_task_ids"]) == 1
+    assert body["review_task_ids"][0] != first_task_id
+    assert body["candidates"][0]["review_task_id"] == body["review_task_ids"][0]
+
+    with Session(engine) as session:
+        reopened = session.get(Task, body["review_task_ids"][0])
+        assert reopened is not None
+        assert reopened.status == "ready"
+        assert reopened.input_payload["previous_review_task_id"] == first_task_id
+        assert reopened.input_payload["previous_review_task_status"] == "submitted"
+
+
 def test_machine_photo_memory_review_promotes_adam_context_over_system_inference():
     client, engine = build_client()
     with Session(engine) as session:
@@ -2738,9 +3241,27 @@ def test_machine_photo_memory_review_promotes_adam_context_over_system_inference
     assert created["vector_handoff_record_id"] == created["memory_embedding_record_id"]
     assert created["removed_machine_draft_gallery_item_id"]
     assert "default reviewed-only vector handoff" in created["vector_handoff_reason"]
+    assert created["photo_prompt_pair_generation"]["created_count"] == 5
+    assert len(created["photo_prompt_pair_generation"]["created_task_ids"]) == 5
+    assert created["photo_prompt_pair_task_ids"] == created["photo_prompt_pair_generation"]["created_task_ids"]
+    assert created["photo_prompt_pair_generation_batch_id"].startswith("PHOTO_PAIR_BATCH_")
     assert created["receipt"]["vector_handoff_status"] == "eligible_reviewed_record"
     assert created["receipt"]["vector_handoff_record_id"] == created["memory_embedding_record_id"]
     assert any(outcome["label"] == "Vector handoff record" for outcome in created["receipt"]["outcomes"])
+
+    with Session(engine) as session:
+        reopened_pair_handoff = _attach_photo_prompt_pair_candidates(
+            session=session,
+            creates_or_updates={
+                "metadata_profile_id": created["metadata_profile_id"],
+                "boundary_id": created["boundary_id"],
+                "vector_handoff_status": created["vector_handoff_status"],
+            },
+        )
+    assert reopened_pair_handoff["photo_prompt_pair_generation"]["created_task_ids"] == []
+    assert len(reopened_pair_handoff["photo_prompt_pair_task_ids"]) == 5
+    assert set(reopened_pair_handoff["photo_prompt_pair_task_ids"]) == set(created["photo_prompt_pair_task_ids"])
+    assert reopened_pair_handoff["photo_prompt_pair_generation_batch_id"] == created["photo_prompt_pair_generation_batch_id"]
 
     with Session(engine) as session:
         profile = session.get(MetadataProfile, created["metadata_profile_id"])
@@ -2787,8 +3308,10 @@ def test_machine_photo_memory_review_promotes_adam_context_over_system_inference
 
     corpus = client.get("/api/retrieval/photo-memory-corpus", params={"scope": "family_private", "limit": 5})
     assert corpus.status_code == 200
-    assert corpus.json()["records"][0]["source_photo_id"] == photo_id
-    assert corpus.json()["records"][0]["truth_status"] == "adam_memory"
+    corpus_body = corpus.json()
+    assert corpus_body["records"][0]["source_photo_id"] == photo_id
+    assert corpus_body["records"][0]["truth_status"] == "adam_memory"
+    assert photo_id not in {item["source_photo_id"] for item in corpus_body["excluded"]}
 
     gallery = client.get("/api/gallery/reviewed-photos", params={"scope": "family_private", "include_drafts": "true"})
     assert gallery.status_code == 200
@@ -2805,15 +3328,17 @@ def test_machine_photo_memory_review_promotes_adam_context_over_system_inference
     assert pair_seed.status_code == 200
     pair_body = pair_seed.json()
     assert pair_body["created_count"] == 1
-    task_id = pair_body["created_task_ids"][0]
+    assert pair_body["created_task_ids"] == []
+    task_id = pair_body["candidates"][0]["existing_task_id"]
     with Session(engine) as session:
         task = session.get(Task, task_id)
         assert task is not None
         payload = task.input_payload
         assert payload["source_photo_id"] == photo_id
         assert payload["source_profile_status"] == "adam_reviewed"
-        assert payload["truth_status"] == "adam_memory"
+        assert payload["truth_status"] == "interpretive_synthesis"
         assert payload["source_truth_status"] == "adam_memory"
+        assert payload["candidate_response_truth_status"] == "interpretive_synthesis"
         assert payload["content"].startswith("i remember this...")
         assert "practice ritual with the Japanese flute" in payload["embedding_input_text"]
 
@@ -2863,6 +3388,7 @@ def test_sealed_photo_review_receipt_reports_boundary_exclusion_from_vector_hand
     assert created["vector_handoff_status"] == "excluded_by_boundary"
     assert created["vector_handoff_record_id"] is None
     assert created["removed_machine_draft_gallery_item_id"]
+    assert "photo_prompt_pair_generation" not in created
     assert created["receipt"]["vector_handoff_status"] == "excluded_by_boundary"
     assert "not eligible" in created["receipt"]["vector_handoff_reason"]
 
@@ -2882,6 +3408,70 @@ def test_sealed_photo_review_receipt_reports_boundary_exclusion_from_vector_hand
     gallery = client.get("/api/gallery/reviewed-photos", params={"scope": "family_private", "include_drafts": "true"})
     assert gallery.status_code == 200
     assert [item for item in gallery.json()["items"] if item["source_photo_id"] == photo_id] == []
+
+
+def test_photo_review_later_boundary_hold_is_not_masked_by_machine_draft():
+    client, engine = build_client()
+    with Session(engine) as session:
+        photo = Asset(
+            human_id="ASSET_REVIEWED_LATER_ADAM_FLOWERS",
+            asset_type="photo",
+            title="Rotmil_Scan_15_2-2018 - Adam with flowers.jpg",
+            original_filename="Rotmil_Scan_15_2-2018 - Adam with flowers.jpg",
+            mime_type="image/jpeg",
+            import_status="mirrored",
+            processing_status="image_preview_ready",
+        )
+        session.add(photo)
+        session.commit()
+        photo_id = photo.id
+
+    draft = client.post("/api/photo-memory-drafts", params={"limit": 1, "dry_run": "false"})
+    assert draft.status_code == 200
+    review_task_id = draft.json()["review_task_ids"][0]
+
+    review = client.post(
+        f"/api/tasks/{review_task_id}/submit",
+        json={
+            "decisions": {
+                "vision_accuracy": "minor_issues",
+                "accepted_visual_description": "A young Adam stands outside holding yellow flowers.",
+                "people": ["Adam Rotmil"],
+                "places": ["Sheepscot, Maine"],
+                "themes": ["flowers", "father and son memory"],
+                "concrete_objects": ["yellow flowers"],
+                "question_answers": {
+                    "why_this_photo_matters": "This photo brings back Adam gathering flowers at Charles's place.",
+                    "what_should_be_corrected": "The exact age and location still need refinement.",
+                    "downstream_boundary": "Hold this until I decide the downstream boundary.",
+                },
+                "adam_context_note": "Adam reviewed the photo, but chose to decide downstream use later.",
+                "privacy_level": "public_safe",
+                "privacy_notes": "Boundary not cleared for retrieval yet.",
+                "ready_for_downstream": "later",
+                "truth_status": "adam_memory",
+                "ocr_review_status": "not_present",
+            }
+        },
+    )
+    assert review.status_code == 200
+    created = review.json()["creates_or_updates"]
+    assert created["vector_handoff_status"] == "held_pending_downstream_clearance"
+    assert created["photo_prompt_pair_generation"]["created_count"] == 5
+    assert len(created["photo_prompt_pair_generation"]["created_task_ids"]) == 5
+    assert created["receipt"]["blocked_reasons"] == ["no_downstream_use_enabled"]
+
+    vector_export = client.get("/api/retrieval/photo-memory-corpus/export", params={"scope": "family_private", "limit": 5})
+    assert vector_export.status_code == 200
+    body = vector_export.json()
+    assert body["manifest"]["record_count"] == 0
+    assert body["manifest"]["held_for_adam_review_count"] == 0
+    assert body["manifest"]["boundary_excluded_count"] == 1
+    assert body["excluded"][0]["source_photo_id"] == photo_id
+    assert body["excluded"][0]["review_status"] == "excluded_by_boundary"
+    assert body["excluded"][0]["metadata_source"] == "photo_memory_review"
+    assert body["excluded"][0]["boundary_reviewed_by"] == "adam"
+    assert body["next_review_actions"][0]["review_status"] == "excluded_by_boundary"
 
 
 def test_machine_photo_memory_drafts_do_not_overwrite_adam_reviewed_photo_profiles():
@@ -2999,7 +3589,11 @@ def test_photo_memory_embedding_export_is_stable_jsonl_with_manifest_and_boundar
     assert body["manifest"]["preview_only"] is False
     assert body["manifest"]["not_for_downstream_vector_store"] is False
     assert body["manifest"]["content_sha256"]
-    assert body["manifest"]["boundary_policy_snapshot"]["excluded_privacy_levels"] == ["sealed"]
+    assert body["manifest"]["boundary_policy_snapshot"]["excluded_privacy_levels"] == [
+        "private_sensitive",
+        "sealed",
+        "sensitive_living_people",
+    ]
     assert body["manifest"]["next_review_actions"] == [
         {
             "source_photo_id": sealed_photo_id,
@@ -3249,8 +3843,15 @@ def test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_cla
     body = fastest.json()
     assert body["summary_type"] == "photo_review_priority"
     assert body["review_policy"] == "prioritization_only_no_memory_claim_until_submit"
+    assert body["throughput_policy"] == "rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff"
     assert body["does_not_mutate_state"] is True
+    assert body["does_not_create_memory_claim"] is True
     assert body["no_live_model_call"] is True
+    assert body["no_live_embedding_call"] is True
+    assert body["completion_signal"] == "open_top_photo_task_and_reduce_missing_adam_fields_or_submit_ready_count_increases"
+    assert body["content_sha256"]
+    assert "photo_review_priority:" in body["export_preview_yaml"]
+    assert body["export_preview_sha256"]
     assert body["reported_count"] == 3
     assert [item["task_human_id"] for item in body["items"]] == [
         "TASK_PRIORITY_DRAFT",
@@ -3264,9 +3865,18 @@ def test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_cla
     ]
 
     first = body["items"][0]
+    assert first["sequence_number"] == 1
     assert first["source_photo_title"] == "Charles with Japanese flute"
     assert first["truth_status_before_review"] == "system_inference_requires_adam_review"
+    assert first["preview_ready"] is True
     assert first["not_memory_claim"] is True
+    assert first["missing_adam_field_count"] == 3
+    assert first["downstream_payoff_score"] > body["items"][2]["downstream_payoff_score"]
+    assert first["next_action"] == "open_review_task"
+    assert first["completion_signal"] == body["completion_signal"]
+    assert first["ranking_inputs"]["path_rank"] == 0
+    assert first["ranking_inputs"]["preview_ready"] is True
+    assert first["ranking_inputs"]["missing_adam_field_count"] == 3
     assert first["submit_outcome_badge"] == "On submit: vector-safe memory"
     assert first["submit_outcome_label"] == "Creates vector-safe memory after Adam review"
     assert first["vector_handoff_preview_status"] == "held_until_adam_context"
@@ -3280,6 +3890,10 @@ def test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_cla
 
     second = body["items"][1]
     assert second["retrieval_query"] == "airplane in Maine"
+    assert second["preview_ready"] is True
+    assert second["missing_adam_field_count"] == 4
+    assert second["ranking_inputs"]["has_retrieval_query"] is True
+    assert second["downstream_payoff_score"] > 0
     assert second["truth_status_before_review"] == "no_claim"
     assert second["submit_outcome_badge"] == "On submit: closes retrieval gap"
     assert second["submit_outcome_label"] == "Creates reviewed context for this retrieval gap"
@@ -3302,6 +3916,16 @@ def test_photo_review_priority_summary_orders_fastest_paths_and_preserves_no_cla
         "TASK_PRIORITY_CONTEXT",
         "TASK_PRIORITY_SLOW_DRAFT",
     ]
+
+    priority_yaml = client.get("/api/assets/photo-review-priority/yaml", params={"focus": "fastest_vector", "limit": 10})
+    assert priority_yaml.status_code == 200
+    assert "photo_review_priority:" in priority_yaml.text
+    assert "throughput_policy: rank_by_fastest_review_path_then_missing_adam_fields_then_downstream_payoff" in priority_yaml.text
+
+    contract = client.get("/api/runtime-contract").json()
+    assert "/api/assets/photo-review-priority" in contract["required_response_fields"]
+    for field in ["throughput_policy", "completion_signal", "content_sha256", "export_preview_yaml"]:
+        assert field in contract["required_response_fields"]["/api/assets/photo-review-priority"]
 
     with Session(engine) as session:
         assert len(session.exec(select(Task)).all()) == before_task_count

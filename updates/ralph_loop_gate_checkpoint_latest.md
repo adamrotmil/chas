@@ -1,26 +1,31 @@
 # CharlesOps Ralph Loop Gate Checkpoint
 
-Generated: `2026-04-29T20:01:10.593145Z`
+Generated: `2026-04-30T13:12:50.675850Z`
 Status: `pass`
-Checks: `48` passed / `0` failed / `48` total
+Checks: `54` passed / `0` failed / `54` total
 
 ## Check Summary
 
 - `PASS` API health is reachable: GET /health returned ok
 - `PASS` API runtime contract matches checked-out source: running API reports the current checked-out runtime contract
 - `PASS` Source Review pair generation preview is contract-checked: source-review Generate Pairs dry-run exposes required fields without mutating tasks
+- `PASS` Production slice stabilization regressions are protected: focused contract tests passed
 - `PASS` Web app is reachable: GET http://localhost:3003/ returned 200
 - `PASS` Web workbench typechecks: focused contract tests passed
 - `PASS` Web readiness UI exposes demo gate, photo review, and retrieval actions: focused contract tests passed
+- `PASS` Prompt Pairs working surface has a fresh visual checkpoint: Prompt Pairs screenshot and sidecar match the live queue counts from this gate run
+- `PASS` Photo Context workbench has a fresh visual checkpoint: Photo Context screenshot and sidecar match live review seed, progress, and field hashes
 - `PASS` Downstream bottleneck queue is API-verifiable: API ranks the next operator actions with policy, counts, and machine-verifiable ordering
 - `PASS` Downstream artifact manifest lists inspectable outputs: artifact manifest lists downstream outputs with hashes, formats, endpoints, and eligibility policy
 - `PASS` Downstream artifact hash audit verifies manifest outputs: artifact audit recomputes declared artifact hashes and finds no mismatches
+- `PASS` Photo context-pack readiness audit is machine-checkable: reviewed photo context-pack audit exposes boundary, truth-status, and leak checks
 - `PASS` Morning handoff summarizes current loop state: handoff names top bottlenecks, artifact hash status, and safety boundaries
 - `PASS` Prompt-pair audit has broad inspectable proof set: prompt-pair audit meets live milestone threshold
 - `PASS` Held prompt-pair review pack is actionable: held prompt-pair candidates expose blockers, worklists, previews, and open-ticket actions without export promotion
 - `PASS` Prompt-pair review progress is machine-checkable: review-progress endpoint mirrors audit counts and preserves candidate-only policy
 - `PASS` Prompt-pair top blocker slice is inspectable: top prompt-pair blocker exposes task previews, YAML, preflight blockers, and completion criteria
 - `PASS` Prompt-pair top blocker session plan is actionable: top prompt-pair blocker session plan batches existing tickets without export promotion
+- `PASS` Prompt-pair source-boundary blocker slice is directly addressable: source-boundary prompt-pair blockers can be selected even when they are not the largest worklist
 - `PASS` DPO rejected-reason repair packet is actionable: DPO repair packet exposes rejected-side reason gaps with YAML, blockers, and open-ticket actions
 - `PASS` 200-pair human audit pack is available: large human audit pack exposes exact prompt/response/export previews without final-authenticity claims
 - `PASS` Prompt-pair voice reference pack feeds generation context: prompt-pair tickets compile into a stable reference corpus for future model drafting
@@ -29,6 +34,7 @@ Checks: `48` passed / `0` failed / `48` total
 - `PASS` Prompt-pair submit receipts explain export artifact status: focused contract tests passed
 - `PASS` Text generation model configuration is visible and gated: text-generation status exposes model, reasoning, and live-call gate
 - `PASS` Model demo generation is honestly gated: demo generation exposes held-out prompts and credentials/live-call blocker without creating training truth
+- `PASS` Model demo request preview is exact and non-mutating: demo generation has inspectable no-live Responses API request bodies before credentials are enabled
 - `PASS` Model demo generations stay model-generated and outside training truth: focused contract tests passed
 - `PASS` Natural text intake creates singleton Prompt Pair tickets: focused contract tests passed
 - `PASS` Source-review fallback pair generation records model/no-live metadata: focused contract tests passed

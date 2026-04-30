@@ -5,13 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db.session import get_session
+from app.config import Settings, get_settings
 from app.models import Annotation, Task, TaskDraft
 from app.schemas import TaskDraftUpsert, TaskStatusUpdate, TaskSubmit
 from app.services.asset_triage import upsert_asset_triage_artifacts
 from app.services.gold_voice import upsert_gold_voice_artifacts
 from app.services.pair_generation import create_make_gold_tasks_from_review, preview_make_gold_tasks_from_review
+from app.services.operator_assistant import operator_assistant_suggestion
 from app.services.photo_context_projection import build_photo_context_submit_projection
 from app.services.photo_memory import upsert_photo_context_artifacts
+from app.services.photo_memory_drafts import create_photo_prompt_pair_candidates
 from app.services.prompt_pairs import create_prompt_pair_review_task
 from app.services.source_spans import create_source_span_annotations
 from app.services.source_review import upsert_segment_boundary_review_artifacts, upsert_source_review_artifacts
@@ -57,6 +60,48 @@ def _receipt_safe_submit_projection(projection: dict) -> dict:
         "does_not_mutate_state": projection.get("does_not_mutate_state") is True,
         "no_live_embedding_call": projection.get("no_live_embedding_call") is True,
         "ordinary_db_vector_storage": projection.get("ordinary_db_vector_storage") is True,
+    }
+
+
+def _attach_photo_prompt_pair_candidates(
+    *,
+    session: Session,
+    creates_or_updates: dict,
+) -> dict:
+    metadata_profile_id = creates_or_updates.get("metadata_profile_id")
+    boundary_id = creates_or_updates.get("boundary_id")
+    vector_handoff_status = creates_or_updates.get("vector_handoff_status")
+    if not isinstance(metadata_profile_id, str) or not metadata_profile_id:
+        return creates_or_updates
+    if not isinstance(boundary_id, str) or not boundary_id:
+        return creates_or_updates
+    if vector_handoff_status == "excluded_by_boundary":
+        return creates_or_updates
+
+    pair_generation = create_photo_prompt_pair_candidates(
+        session=session,
+        limit=5,
+        dry_run=False,
+        metadata_profile_id=metadata_profile_id,
+        commit=False,
+    )
+    task_ids: List[str] = []
+    for value in pair_generation.get("created_task_ids", []):
+        if isinstance(value, str) and value and value not in task_ids:
+            task_ids.append(value)
+    for candidate in pair_generation.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        for key in ("created_task_id", "existing_task_id"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value and value not in task_ids:
+                task_ids.append(value)
+    return {
+        **creates_or_updates,
+        "photo_prompt_pair_generation": pair_generation,
+        "photo_prompt_pair_task_ids": task_ids,
+        "photo_prompt_pair_generation_batch_id": pair_generation.get("generation_batch_id"),
+        "photo_prompt_pair_generation_batch_ids": pair_generation.get("generation_batch_ids", []),
     }
 
 
@@ -137,6 +182,22 @@ def preview_photo_context_submit(
     )
 
 
+@router.post("/{task_id}/operator-assistant")
+def get_operator_assistant_suggestion(
+    task_id: str,
+    payload: TaskSubmit,
+    session: Session = Depends(get_session),
+    app_settings: Settings = Depends(get_settings),
+) -> dict:
+    task = _task_or_404(session, task_id)
+    return operator_assistant_suggestion(
+        task=task,
+        decisions=payload.decisions,
+        latest_user_answer=payload.operator_answer,
+        app_settings=app_settings,
+    )
+
+
 @router.post("/{task_id}/pair-generation/preview")
 def preview_source_review_pair_generation(
     task_id: str,
@@ -174,6 +235,8 @@ def submit_task(
     session: Session = Depends(get_session),
 ) -> Annotation:
     task = _task_or_404(session, task_id)
+    if task.status != "ready":
+        raise HTTPException(status_code=409, detail="Task is not ready for submit")
     annotation = Annotation(
         task_id=task.id,
         target_type=task.target_type,
@@ -233,6 +296,10 @@ def submit_task(
             decisions=payload.decisions,
             annotation_id=annotation.id,
         )
+        creates_or_updates = _attach_photo_prompt_pair_candidates(
+            session=session,
+            creates_or_updates=creates_or_updates,
+        )
         annotation.creates_or_updates = creates_or_updates
     elif task.task_type == "photo_context":
         submit_projection = _receipt_safe_submit_projection(
@@ -254,6 +321,10 @@ def submit_task(
                 "submit_projection": submit_projection,
                 "submit_projection_content_sha256": submit_projection.get("content_sha256"),
             }
+        creates_or_updates = _attach_photo_prompt_pair_candidates(
+            session=session,
+            creates_or_updates=creates_or_updates,
+        )
         annotation.creates_or_updates = creates_or_updates
     elif task.task_type == "asset_triage":
         creates_or_updates = upsert_asset_triage_artifacts(
@@ -349,3 +420,65 @@ def flag_task(
     session.commit()
     session.refresh(task)
     return task
+
+
+@router.post("/{task_id}/delete-candidate", response_model=Annotation)
+def delete_prompt_pair_candidate(
+    task_id: str,
+    payload: TaskStatusUpdate,
+    session: Session = Depends(get_session),
+) -> Annotation:
+    task = _task_or_404(session, task_id)
+    if task.task_type not in {"gold_voice_edit", "grounded_prompt_pair_candidate"}:
+        raise HTTPException(status_code=400, detail="Task is not a prompt-pair candidate")
+    if task.status != "ready":
+        raise HTTPException(status_code=409, detail="Only ready prompt-pair candidates can be deleted from review")
+
+    now = datetime.now(timezone.utc)
+    reason = payload.reason or "Rejected from Prompt Pairs editor"
+    decisions = {
+        "action": "delete_prompt_pair_candidate",
+        "reason": reason,
+        "notes": payload.notes,
+        "destructive_action_confirmed": True,
+        "hard_deleted": False,
+        "audit_record_preserved": True,
+        "removed_from_active_review_queue": True,
+        "source_photo_id": (task.input_payload or {}).get("source_photo_id"),
+        "source_photo_profile_id": (task.input_payload or {}).get("source_photo_profile_id"),
+        "photo_pair_variant_key": (task.input_payload or {}).get("photo_pair_variant_key"),
+    }
+    annotation = Annotation(
+        task_id=task.id,
+        target_type=task.target_type,
+        target_id=task.target_id,
+        annotation_type="prompt_pair_candidate_deleted",
+        decisions=decisions,
+        notes=payload.notes or reason,
+        creates_or_updates={
+            "deleted_task_id": task.id,
+            "deleted_task_human_id": task.human_id,
+            "previous_status": task.status,
+            "new_status": "rejected_candidate",
+            "hard_deleted": False,
+            "audit_record_preserved": True,
+        },
+    )
+    task.status = "rejected_candidate"
+    task.completed_at = now
+    task.updated_at = now
+    task.input_payload = {
+        **(task.input_payload or {}),
+        "candidate_rejected_at": now.isoformat(),
+        "candidate_rejection_reason": reason,
+        "candidate_rejection_notes": payload.notes,
+        "candidate_rejection_annotation_type": annotation.annotation_type,
+    }
+    draft = _task_draft(session, task.id)
+    if draft:
+        session.delete(draft)
+    session.add(annotation)
+    session.add(task)
+    session.commit()
+    session.refresh(annotation)
+    return annotation

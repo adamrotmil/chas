@@ -6,8 +6,15 @@ from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session, select
 
-from app.models import Asset, Boundary, ContextPack, ContextPackItem, GoldVoiceExample, Memory, MemorySource, MetadataProfile, Segment
+from app.models import Asset, Boundary, ContextPack, ContextPackItem, GoldVoiceExample, Memory, MemorySource, MetadataProfile, Segment, Task
 from app.schemas import ContextPackBuildRequest
+from app.services.photo_constants import (
+    PHOTO_MEMORY_PROFILE_TYPE,
+    PHOTO_SENSITIVE_PRIVACY_LEVELS,
+    PHOTO_STATUS_ADAM_REVIEWED,
+    PHOTO_STATUS_MACHINE_DRAFT,
+    PHOTO_TRUTH_SYSTEM,
+)
 
 
 def _human_id(prefix: str, count: int) -> str:
@@ -65,8 +72,8 @@ def _reviewed_photo_profile(session: Session, asset_id: str) -> Optional[Metadat
         select(MetadataProfile)
         .where(MetadataProfile.target_type == "asset")
         .where(MetadataProfile.target_id == asset_id)
-        .where(MetadataProfile.profile_type == "photo_context")
-        .where(MetadataProfile.metadata_status == "reviewed")
+        .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
+        .where(MetadataProfile.metadata_status == PHOTO_STATUS_ADAM_REVIEWED)
         .order_by(MetadataProfile.updated_at.desc())
     ).first()
 
@@ -93,6 +100,77 @@ def _linked_reviewed_memories(session: Session, asset_id: str) -> List[Memory]:
         memories.append(memory)
         seen.add(memory.id)
     return memories
+
+
+def _review_task_for_photo_memory_draft(session: Session, profile_id: str) -> Optional[Task]:
+    return session.exec(
+        select(Task)
+        .where(Task.task_type == "vision_draft_review")
+        .where(Task.target_type == "metadata_profile")
+        .where(Task.target_id == profile_id)
+        .where(Task.status != "canceled")
+        .order_by(Task.created_at.asc())
+    ).first()
+
+
+def _photo_context_readiness_status(
+    *,
+    ready_count: int,
+    blocked_count: int,
+    filename_only_count: int,
+    system_inference_leak_count: int,
+    machine_draft_count: int,
+    reviewed_profile_count: int,
+) -> str:
+    if system_inference_leak_count:
+        return "blocked_system_inference_leak"
+    if ready_count > 0 and machine_draft_count > 0:
+        return "partially_ready_needs_adam_review"
+    if machine_draft_count > 0:
+        return "needs_adam_review"
+    if blocked_count or filename_only_count:
+        return "needs_boundary_or_context_fix"
+    if ready_count > 0:
+        return "ready"
+    if reviewed_profile_count > 0:
+        return "needs_boundary_or_context_fix"
+    return "needs_photo_context_review"
+
+
+def _photo_memory_draft_review_actions(
+    *,
+    session: Session,
+    profiles: List[MetadataProfile],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    for profile in profiles[:limit]:
+        asset = session.get(Asset, profile.target_id) if profile.target_type == "asset" else None
+        task = _review_task_for_photo_memory_draft(session, profile.id)
+        action_type = "open_photo_memory_review_task" if task else "create_photo_memory_review_task"
+        actions.append(
+            {
+                "action_type": action_type,
+                "reason": "promote_machine_draft_with_adam_review",
+                "review_status": "held_for_adam_review",
+                "metadata_profile_id": profile.id,
+                "metadata_status": profile.metadata_status,
+                "truth_status_before_review": profile.truth_status,
+                "source_photo_id": asset.id if asset else profile.target_id,
+                "source_photo_human_id": asset.human_id if asset else None,
+                "source_photo_title": (asset.title or asset.original_filename or asset.human_id) if asset else None,
+                "review_task_id": task.id if task else None,
+                "review_task_human_id": task.human_id if task else None,
+                "review_queue": task.queue if task else "vision_drafts_needing_review",
+                "suggested_next_action": (
+                    "Open this photo memory review task and add Adam-authored context, boundary, "
+                    "and downstream readiness before context-pack or vector use."
+                    if task
+                    else "Create a photo memory review task before this machine draft can move downstream."
+                ),
+            }
+        )
+    return actions
 
 
 def _photo_asset_fact(session: Session, asset: Asset) -> Optional[str]:
@@ -139,8 +217,15 @@ def compile_photo_context_pack_readiness_audit(
     reviewed_profiles = session.exec(
         select(MetadataProfile)
         .where(MetadataProfile.target_type == "asset")
-        .where(MetadataProfile.profile_type == "photo_context")
-        .where(MetadataProfile.metadata_status == "reviewed")
+        .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
+        .where(MetadataProfile.metadata_status == PHOTO_STATUS_ADAM_REVIEWED)
+        .order_by(MetadataProfile.updated_at.desc())
+    ).all()
+    machine_draft_profiles = session.exec(
+        select(MetadataProfile)
+        .where(MetadataProfile.target_type == "asset")
+        .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
+        .where(MetadataProfile.metadata_status == PHOTO_STATUS_MACHINE_DRAFT)
         .order_by(MetadataProfile.updated_at.desc())
     ).all()
     candidate_asset_ids: List[str] = []
@@ -169,8 +254,8 @@ def compile_photo_context_pack_readiness_audit(
             select(MetadataProfile)
             .where(MetadataProfile.target_type == "asset")
             .where(MetadataProfile.target_id == asset.id)
-            .where(MetadataProfile.profile_type == "photo_context")
-            .where(MetadataProfile.truth_status == "system_inference")
+            .where(MetadataProfile.profile_type == PHOTO_MEMORY_PROFILE_TYPE)
+            .where(MetadataProfile.truth_status == PHOTO_TRUTH_SYSTEM)
         ).all()
         leaked_system_draft_summaries = [
             str(draft.summary)
@@ -207,9 +292,23 @@ def compile_photo_context_pack_readiness_audit(
             }
         )
 
+    next_review_actions = _photo_memory_draft_review_actions(
+        session=session,
+        profiles=machine_draft_profiles,
+        limit=min(safe_limit, 25),
+    )
+    readiness_status = _photo_context_readiness_status(
+        ready_count=ready_count,
+        blocked_count=blocked_count,
+        filename_only_count=filename_only_count,
+        system_inference_leak_count=system_inference_leak_count,
+        machine_draft_count=len(machine_draft_profiles),
+        reviewed_profile_count=len(reviewed_profiles),
+    )
     payload = {
         "audit_type": "photo_context_pack_readiness_audit",
         "scope": scope,
+        "readiness_status": readiness_status,
         "review_policy": "read_only_context_pack_fact_projection",
         "does_not_mutate_state": True,
         "requires_boundary_clearance": True,
@@ -218,6 +317,8 @@ def compile_photo_context_pack_readiness_audit(
         "excludes_system_inference_drafts": True,
         "completion_signal": "reviewed_photo_context_assets_have_non_filename_context_or_are_boundary_blocked",
         "reviewed_photo_profile_count": len(reviewed_profiles),
+        "machine_draft_profile_count": len(machine_draft_profiles),
+        "held_for_adam_review_count": len(machine_draft_profiles),
         "candidate_photo_asset_count": len(candidate_asset_ids),
         "reported_item_count": len(items),
         "ready_context_pack_asset_count": ready_count,
@@ -225,6 +326,8 @@ def compile_photo_context_pack_readiness_audit(
         "filename_only_fallback_count": filename_only_count,
         "linked_reviewed_memory_count": linked_memory_count,
         "system_inference_leak_count": system_inference_leak_count,
+        "next_review_action_count": len(next_review_actions),
+        "next_review_actions": next_review_actions,
         "items": items,
     }
     payload["content_sha256"] = _stable_hash({key: value for key, value in payload.items() if key != "content_sha256"})
@@ -258,13 +361,13 @@ def _item_fact(session: Session, item_type: str, item_id: str) -> Optional[str]:
 def _boundary_check(boundary: Optional[Boundary], item_type: str, item_id: str) -> Dict[str, Any]:
     if boundary is None:
         return {
-            "included": True,
-            "warning": f"{item_type}/{item_id} has no explicit boundary yet.",
-            "reason": None,
+            "included": False,
+            "warning": None,
+            "reason": "boundary_missing",
             "snapshot": None,
         }
     snapshot = boundary.model_dump(mode="json")
-    if boundary.privacy_level in {"sealed", "private_sensitive"}:
+    if boundary.privacy_level in PHOTO_SENSITIVE_PRIVACY_LEVELS:
         return {
             "included": False,
             "warning": None,

@@ -1,4 +1,6 @@
 import hashlib
+import json
+import zipfile
 import yaml
 from pathlib import Path
 
@@ -62,6 +64,31 @@ def _mixed_yaml_fixture() -> str:
     return yaml.safe_dump(examples, allow_unicode=True, sort_keys=False)
 
 
+def _write_docx_fixture(path: Path, paragraphs: list[str]) -> None:
+    def paragraph_xml(text: str) -> str:
+        return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{''.join(paragraph_xml(paragraph) for paragraph in paragraphs)}</w:body>"
+        "</w:document>"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                "</Types>"
+            ),
+        )
+        archive.writestr("word/document.xml", document_xml)
+
+
 def test_model_status_exposes_gpt_55_xhigh_without_enabling_live_calls_or_fine_tuning():
     client, _engine = build_client()
 
@@ -75,6 +102,20 @@ def test_model_status_exposes_gpt_55_xhigh_without_enabling_live_calls_or_fine_t
     assert body["text_generation_live_ready"] is False
     assert body["fine_tuning_enabled_in_mvp"] is False
     assert "openai_api_key" not in body
+    requirements = body["credential_requirements"]
+    assert requirements["requirements_type"] == "text_generation_credentials"
+    assert requirements["api"] == "responses"
+    assert requirements["model_name"] == "gpt-5.5"
+    assert requirements["reasoning_effort"] == "xhigh"
+    required_env = {item["name"]: item for item in requirements["required_env"]}
+    assert required_env["OPENAI_API_KEY"]["configured"] is False
+    assert required_env["OPENAI_API_KEY"]["secret"] is True
+    assert required_env["TEXT_GENERATION_LIVE_CALLS_ENABLED"]["required_value"] == "true"
+    assert requirements["env_file_policy"]["secret_env_files_ignored"] is True
+    assert requirements["env_file_policy"]["ignored_patterns"] == [".env", ".env.*"]
+    assert requirements["env_file_policy"]["tracked_template"] == ".env.example"
+    assert requirements["env_file_policy"]["never_return_secret_values"] is True
+    assert requirements["safety_policy"]["fine_tuning_api_calls_allowed"] is False
 
 
 def test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_blocker():
@@ -127,6 +168,7 @@ def test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_
     assert plan["api"] == "responses"
     assert plan["model_name"] == "gpt-5.5"
     assert plan["reasoning_effort"] == "xhigh"
+    assert plan["credential_requirements"]["required_env"][0]["name"] == "OPENAI_API_KEY"
     assert plan["store"] is False
     assert plan["live_generation_ready"] is False
     assert plan["live_generation_blockers"] == body["blockers"]
@@ -136,9 +178,126 @@ def test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_
     assert plan["held_out_prompt_count"] == 5
     assert [item["prompt"] for item in plan["held_out_prompts"]] == [f"Held out prompt {index}?" for index in range(1, 6)]
     assert all(item["excluded_from_training_export"] is True for item in plan["held_out_prompts"])
+    requirements = body["credential_requirements"]
+    assert requirements["required_env"][0]["configured"] is False
+    assert requirements["required_env"][1]["name"] == "TEXT_GENERATION_LIVE_CALLS_ENABLED"
+    assert requirements["safety_policy"]["fine_tuning_api_calls_allowed"] is False
 
     with Session(engine) as session:
         assert session.exec(select(Generation)).all() == []
+
+
+def test_demo_generation_request_preview_exposes_exact_no_live_payload_without_leaking_answers():
+    client, engine = build_client()
+    with Session(engine) as session:
+        session.add(
+            Task(
+                human_id="TASK_DEMO_REQUEST_PREVIEW_SFT",
+                task_type="gold_voice_edit",
+                target_type="prompt_pair",
+                target_id="prompt_pair_preview_sft",
+                queue="prompt_pairs_needing_gold_edits",
+                input_payload={
+                    "artifact_mode": "sft",
+                    "system_prompt": "You are Charles Rotmil.",
+                    "prompt": "How was the light in Portland?",
+                    "content": "HELD OUT ANSWER SHOULD NOT BE IN REQUEST",
+                    "voice_mode": "photography_reflection",
+                    "conversation_family": "father_to_adam",
+                    "truth_status": "adam_expert_reconstruction",
+                    "synthetic": True,
+                    "source_title": "preview fixture",
+                    "source_excerpt": "The harbor light was sharp and cold.",
+                    "context": "Adam wants a model draft for later gold editing.",
+                },
+                created_by="test",
+            )
+        )
+        session.add(
+            Task(
+                human_id="TASK_DEMO_REQUEST_PREVIEW_DPO",
+                task_type="gold_voice_edit",
+                target_type="prompt_pair",
+                target_id="prompt_pair_preview_dpo",
+                queue="prompt_pairs_needing_gold_edits",
+                input_payload={
+                    "artifact_mode": "dpo",
+                    "system_prompt": "You are Charles Rotmil.",
+                    "prompt": "How was the soup?",
+                    "chosen": "CHOSEN HELD OUT ANSWER SHOULD NOT BE IN REQUEST",
+                    "rejected": "REJECTED ANSWER SHOULD NOT BE IN REQUEST",
+                    "voice_mode": "comic_observation",
+                    "conversation_family": "verbatim_email_reply",
+                    "truth_status": "adam_expert_reconstruction",
+                    "synthetic": True,
+                    "source_title": "soup fixture",
+                    "source_excerpt": "The dinner had oily chicken soup.",
+                    "context": "Use only as grounding, not as the answer.",
+                },
+                created_by="test",
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/model-status/demo-generation-request-preview", params={"limit": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["preview_type"] == "charles_voice_model_demo_generation_request_preview"
+    assert body["review_policy"] == "dry_run_only_no_live_model_call_no_generation_created"
+    assert body["does_not_mutate_state"] is True
+    assert body["no_live_model_call"] is True
+    assert body["no_generation_created"] is True
+    assert body["does_not_promote_to_training_export"] is True
+    assert body["api"] == "responses"
+    assert body["model_name"] == "gpt-5.5"
+    assert body["reasoning_effort"] == "xhigh"
+    assert body["store"] is False
+    assert body["request_count"] == 2
+    assert len(body["content_sha256"]) == 64
+    assert hashlib.sha256(body["export_preview_yaml"].encode("utf-8")).hexdigest() == body["export_preview_sha256"]
+    assert body["export_preview_yaml"].startswith("demo_generation_request_preview:")
+    assert "request_body_json: |-" in body["export_preview_yaml"]
+    assert "HELD OUT ANSWER SHOULD NOT BE IN REQUEST" not in body["export_preview_yaml"]
+    assert "REJECTED ANSWER SHOULD NOT BE IN REQUEST" not in body["export_preview_yaml"]
+
+    first = body["requests"][0]
+    first_request_body = first["request_body"]
+    assert first_request_body["model"] == "gpt-5.5"
+    assert first_request_body["reasoning"] == {"effort": "xhigh"}
+    assert first_request_body["store"] is False
+    assert first_request_body["max_output_tokens"] == 1800
+    assert [message["role"] for message in first_request_body["input"]] == ["developer", "user"]
+    assert "How was the light in Portland?" in first_request_body["input"][1]["content"]
+    assert "The harbor light was sharp and cold." in first_request_body["input"][1]["content"]
+    assert "HELD OUT ANSWER SHOULD NOT BE IN REQUEST" not in first["request_body_json"]
+    assert first["safety_checks"]["held_out_answer_excluded_from_request"] is True
+    assert first["safety_checks"]["no_live_model_call"] is True
+    assert first["safety_checks"]["store_false"] is True
+    compact_request_body = json.dumps(first_request_body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(compact_request_body.encode("utf-8")).hexdigest() == first["request_body_sha256"]
+    assert "_held_out_response_text" not in first
+
+    second = body["requests"][1]
+    assert second["artifact_mode"] == "dpo"
+    assert second["safety_checks"]["held_out_answer_excluded_from_request"] is True
+    assert second["safety_checks"]["rejected_response_excluded_from_request"] is True
+    assert "CHOSEN HELD OUT ANSWER SHOULD NOT BE IN REQUEST" not in second["request_body_json"]
+    assert "REJECTED ANSWER SHOULD NOT BE IN REQUEST" not in second["request_body_json"]
+
+    yaml_response = client.get("/api/model-status/demo-generation-request-preview/yaml", params={"limit": 2})
+    assert yaml_response.status_code == 200
+    assert yaml_response.headers["content-type"].startswith("text/yaml")
+    assert yaml_response.text == body["export_preview_yaml"]
+
+    contract = client.get("/api/runtime-contract").json()
+    assert "/api/model-status/demo-generation-request-preview" in contract["required_response_fields"]
+
+    with Session(engine) as session:
+        assert session.exec(select(Generation)).all() == []
+        assert session.exec(select(PromptSpec)).all() == []
+        assert session.exec(select(ContextPack)).all() == []
+        assert session.exec(select(GoldVoiceExample)).all() == []
 
 
 def test_demo_generation_endpoint_stores_model_generated_outputs_without_training_truth(monkeypatch):
@@ -210,6 +369,8 @@ def test_demo_generation_endpoint_stores_model_generated_outputs_without_trainin
     assert body["demo_type"] == "charles_voice_model_demo_generation_batch"
     assert body["status"] == "created_model_generated_demo_outputs"
     assert body["created_count"] == 2
+    assert body["credential_requirements"]["required_env"][0]["configured"] is True
+    assert body["credential_requirements"]["required_env"][1]["configured"] is True
     assert body["safety_policy"]["outputs_truth_status"] == "model_generated"
     assert body["safety_policy"]["never_training_truth_without_review"] is True
     assert len(captured["requests"]) == 2
@@ -260,17 +421,117 @@ def test_plain_text_extraction_prefers_natural_sections_over_single_arbitrary_ch
     assert result.metadata["chunking_strategy"] == "natural_section"
     assert result.metadata["structured_chunk_count"] == 8
     assert len(result.structured_chunks) == 8
+    previous_end = -1
     for index, chunk in enumerate(result.structured_chunks, start=1):
         assert chunk.locator["kind"] == "natural_section"
         assert chunk.locator["chunk_index"] == index
         assert chunk.locator["char_start"] == result.text.index(sections[index - 1])
         assert result.text[chunk.locator["char_start"] : chunk.locator["char_end"]] == chunk.text
         assert chunk.text == sections[index - 1]
+        assert chunk.text[:40] == sections[index - 1][:40]
+        assert chunk.text[-40:] == sections[index - 1][-40:]
+        assert chunk.locator["char_start"] > previous_end
+        previous_end = chunk.locator["char_end"]
         assert chunk.metadata["chunking_strategy"] == "natural_section"
         assert chunk.metadata["natural_boundary"] is True
 
     assert "Memoir 1:" not in result.structured_chunks[0].text
     assert result.structured_chunks[-1].metadata["section_review_hint"] == "needs_context"
+
+
+def test_docx_extraction_uses_natural_sections_with_exact_locators(tmp_path: Path):
+    paragraphs = [
+        "Email 1:",
+        "Hi Tom. How the hell are you? No word in a while.",
+        "I sent the story treatment and I am waiting to hear. Charles.",
+        "Memoir 1:",
+        "Winter in Maine. Old Orchard. Waves a mile high.",
+        "The car held up. Miracle. Another survival episode.",
+        "Note 1:",
+        "Airport is about 15 minutes from my house.",
+        "We can decide then what to do when he gets here.",
+    ]
+    path = tmp_path / "charles_sections.docx"
+    _write_docx_fixture(path, paragraphs)
+
+    result = extract_text_from_file(
+        path,
+        filename="charles_sections.docx",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        asset_type="document",
+    )
+
+    expected_sections = [
+        "\n\n".join(paragraphs[0:3]),
+        "\n\n".join(paragraphs[3:6]),
+        "\n\n".join(paragraphs[6:9]),
+    ]
+    assert result.status == "extracted"
+    assert result.parser == "docx"
+    assert result.metadata["chunking_strategy"] == "natural_section"
+    assert result.metadata["structured_chunk_count"] == 3
+    assert [chunk.text for chunk in result.structured_chunks] == expected_sections
+    for index, chunk in enumerate(result.structured_chunks, start=1):
+        expected = expected_sections[index - 1]
+        assert chunk.locator["kind"] == "natural_section"
+        assert chunk.locator["chunk_index"] == index
+        assert result.text[chunk.locator["char_start"] : chunk.locator["char_end"]] == expected
+        assert chunk.metadata["natural_boundary"] is True
+        assert chunk.metadata["section_review_hint"] == "complete_thought"
+    assert "Memoir 1:" not in result.structured_chunks[0].text
+    assert "Note 1:" not in result.structured_chunks[1].text
+
+
+def test_eml_extraction_uses_body_natural_sections_not_headers(tmp_path: Path):
+    body_sections = [
+        (
+            "Email 1:\n"
+            "Hi Adam\n"
+            "The house is too quiet now after your visit.\n"
+            "I keep looking around like something is still moving.\n"
+            "Charles"
+        ),
+        (
+            "Email 2:\n"
+            "Hi Dad\n"
+            "I made it home and the train was almost on time.\n"
+            "The visit stayed with me the whole way back.\n"
+            "Adam"
+        ),
+    ]
+    source_email = (
+        b"From: Charles <charles@example.com>\n"
+        b"To: Adam <adam@example.com>\n"
+        b"Subject: Re: visit\n"
+        b"Date: Thu, 2 Apr 2026 10:00:00 -0400\n"
+        b"Content-Type: text/plain; charset=utf-8\n"
+        b"\n"
+        + "\n\n".join(body_sections).encode("utf-8")
+    )
+    path = tmp_path / "thread.eml"
+    path.write_bytes(source_email)
+
+    result = extract_text_from_file(path, filename="thread.eml", content_type="message/rfc822", asset_type="document")
+
+    assert result.status == "extracted"
+    assert result.parser == "eml"
+    assert result.metadata["email_headers"]["subject"] == "Re: visit"
+    assert result.metadata["chunking_strategy"] == "natural_section"
+    assert result.metadata["structured_chunk_count"] == 2
+    assert [chunk.text for chunk in result.structured_chunks] == body_sections
+    assert "Subject: Re: visit" in result.text
+    assert all("Subject: Re: visit" not in chunk.text for chunk in result.structured_chunks)
+    previous_end = result.text.index(body_sections[0]) - 1
+    for index, chunk in enumerate(result.structured_chunks, start=1):
+        expected = body_sections[index - 1]
+        assert chunk.locator["kind"] == "natural_section"
+        assert chunk.locator["chunk_index"] == index
+        assert chunk.locator["char_start"] == result.text.index(expected)
+        assert result.text[chunk.locator["char_start"] : chunk.locator["char_end"]] == expected
+        assert chunk.locator["char_start"] > previous_end
+        previous_end = chunk.locator["char_end"]
+        assert chunk.metadata["natural_boundary"] is True
+        assert chunk.metadata["section_review_hint"] == "complete_thought"
 
 
 def test_source_review_generate_pairs_from_natural_sections_creates_singleton_prompt_pair_tasks():
@@ -396,6 +657,144 @@ def test_source_review_generate_pairs_from_natural_sections_creates_singleton_pr
         assert "Tell me about mixed_notes.txt" not in "\n".join(task.input_payload["prompt"] for task in tasks)
         assert "section_review_hint: needs_context" in tasks[2].input_payload["context"]
         assert tasks[0].input_payload["source_excerpt"] == sections[0]
+
+
+def test_natural_section_generation_holds_split_sections_and_blocks_contextless_export():
+    client, engine = build_client()
+    sections = [
+        "Email 1:\nHi Tom\nHow the hell are you?\nNo word in a while.\nCharles",
+        "Memoir 1:\nWinter in Maine.\n" + "\n".join(f"Scene line {index}." for index in range(1, 12)),
+        "Note 1:\nchess?",
+    ]
+    source_text = "\n\n".join(sections)
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_NATURAL_SECTION_GATES",
+            asset_type="text",
+            title="natural section gates.txt",
+            original_filename="natural_section_gates.txt",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        preview = Segment(
+            human_id="SEG_NATURAL_SECTION_GATES_PREVIEW",
+            asset_id=asset.id,
+            segment_type="text_preview",
+            title="Natural section gates preview",
+            text_content=source_text,
+            metadata_json={"chunking_strategy": "natural_section", "chunk_count": len(sections)},
+        )
+        session.add(preview)
+        session.flush()
+        chunks = []
+        cursor = 0
+        hints = ["complete_thought", "needs_split", "needs_context"]
+        for index, section in enumerate(sections, start=1):
+            start = source_text.index(section, cursor)
+            end = start + len(section)
+            cursor = end
+            chunks.append(
+                Segment(
+                    human_id=f"SEG_NATURAL_SECTION_GATE_{index:03d}",
+                    asset_id=asset.id,
+                    segment_type="text_chunk",
+                    title=section.split("\n", 1)[0].rstrip(":"),
+                    text_content=section,
+                    locator={"kind": "natural_section", "chunk_index": index, "char_start": start, "char_end": end},
+                    metadata_json={
+                        "chunking_strategy": "natural_section",
+                        "natural_boundary": True,
+                        "chunk_index": index,
+                        "section_review_hint": hints[index - 1],
+                    },
+                )
+            )
+        session.add_all(chunks)
+        session.flush()
+        task = Task(
+            human_id="TASK_NATURAL_SECTION_GATES_REVIEW",
+            task_type="text_segment_review",
+            target_type="segment",
+            target_id=preview.id,
+            queue="text_segments_needing_review",
+            input_payload={
+                "asset_id": asset.id,
+                "source_filename": "natural_section_gates.txt",
+                "preview_text": source_text,
+                "chunk_count": len(sections),
+                "chunking_strategy": "natural_section",
+            },
+            created_by="text_extraction",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    response = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "source_review_status": "reviewed",
+                "generate_pairs_on_submit": "yes",
+                "voice_mode": "father_to_adam",
+                "synthetic": True,
+                "context": "Natural section gates fixture.",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    run = body["creates_or_updates"]["pair_generation_run"]
+    assert body["creates_or_updates"]["generated_pair_count"] == 2
+    assert run["candidate_pair_count"] == 2
+    assert run["created_pair_count"] == 2
+    assert run["source_section_count"] == 3
+    assert run["held_source_section_count"] == 1
+    assert run["held_source_sections"][0]["chunk_index"] == 2
+    assert run["held_source_sections"][0]["section_review_hint"] == "needs_split"
+    assert run["held_source_sections"][0]["reason"] == "source_section_needs_split"
+
+    with Session(engine) as session:
+        tickets = session.exec(
+            select(Task).where(Task.task_type == "gold_voice_edit").order_by(Task.created_at.asc())
+        ).all()
+        assert len(tickets) == 2
+        assert [ticket.input_payload["source_chunk_index"] for ticket in tickets] == [1, 3]
+        contextless_payload = tickets[1].input_payload
+        assert contextless_payload["source_section_review_hint"] == "needs_context"
+        assert contextless_payload["pair_generation_metadata"]["source_section_review_hint"] == "needs_context"
+        contextless_task_id = tickets[1].id
+
+    clean_rubric = {
+        "response_b": {
+            "privacy_export_safety": {"status": "no_issues", "notes": "", "issue_tags": []},
+            "voice_authenticity": {"status": "no_issues", "notes": "", "issue_tags": []},
+            "grounding_truth": {"status": "no_issues", "notes": "", "issue_tags": []},
+            "restraint": {"status": "no_issues", "notes": "", "issue_tags": []},
+            "concrete_detail": {"status": "no_issues", "notes": "", "issue_tags": []},
+            "prompt_fit": {"status": "no_issues", "notes": "", "issue_tags": []},
+        }
+    }
+    blocked_submit = client.post(
+        f"/api/tasks/{contextless_task_id}/submit",
+        json={
+            "decisions": {
+                **contextless_payload,
+                "response_rubric": clean_rubric,
+                "rubric_summary": {"sft_ready": True},
+            }
+        },
+    )
+    assert blocked_submit.status_code == 200
+
+    with Session(engine) as session:
+        sft = session.exec(select(SFTCandidate)).one()
+        assert sft.export_status == "candidate"
+        assert sft.quality_gate["export_ready"] is False
+        assert "source_section_needs_context" in sft.quality_gate["export_blockers"]
 
 
 def test_source_review_pair_generation_preview_is_non_mutating_and_matches_natural_sections():

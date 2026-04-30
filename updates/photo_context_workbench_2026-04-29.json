@@ -1,0 +1,33 @@
+{
+  "checkpoint_type": "photo_context_workbench_visual_checkpoint",
+  "captured_at": "2026-04-30T14:17:45.407Z",
+  "screenshot_path": "updates/photo_context_workbench_2026-04-29.png",
+  "source_query": "Old Orchard beach",
+  "session_plan_content_sha256": "f3ae0f6723fa78b6e5c882520634a7b501cfaf6ed8e53ba1e6a09a30ee910963",
+  "session_progress_content_sha256": "46ed71c306987317d77bd3aa8e0d5a22e0a99f3e92d67ef449fd42676267f3fb",
+  "top_slice_content_sha256": "4b08ee7353925831b9f61f7aa7c349606c0dfccaac63e02f86bcd33ff9ee4487",
+  "selected_count": 5,
+  "candidate_count": 21,
+  "reported_task_count": 3,
+  "submit_ready_count": 0,
+  "retrieval_gap_task_count": 3,
+  "review_session_task_count": 2,
+  "top_slice_candidate_count": 21,
+  "top_slice_reported_candidate_count": 5,
+  "selected_task_title": "Rotmil 2021 III.jpg",
+  "first_session_title": "Rotmil 2021 III.jpg",
+  "first_session_asset_id": "28abb4a5-7968-4ac2-b944-ae38576a167b",
+  "first_session_task_id": "b1d443f8-cb43-458c-a745-6d40487cc7b2",
+  "first_session_human_id": "TASK_PHOTO_CONTEXT_000738",
+  "first_session_action_type": "open_existing_photo_context_task",
+  "ui_assertions": [
+    "photo_preview_visible",
+    "review_seed_visible_as_workflow_provenance",
+    "completion_payoff_visible",
+    "required_adam_fields_visible",
+    "ready_submit_checklist_visible",
+    "optional_search_note_not_required",
+    "downstream_memory_preview_visible",
+    "adam_review_prompt_says_photo_sparks_memories"
+  ]
+}

@@ -16,6 +16,8 @@ LATEST_CHECKPOINT = ROOT / "updates" / "ralph_loop_gate_checkpoint_latest.json"
 LATEST_CHECKPOINT_MD = ROOT / "updates" / "ralph_loop_gate_checkpoint_latest.md"
 PHASE_REPORT = ROOT / "updates" / "ralph_loop_2026-04-29_phase_report.md"
 VISUAL_CHECKPOINT = ROOT / "updates" / "exports_readiness_operator_handoff_2026-04-29.png"
+PROMPT_PAIRS_VISUAL_CHECKPOINT = ROOT / "updates" / "prompt_pairs_work_queue_2026-04-29.png"
+PHOTO_CONTEXT_VISUAL_CHECKPOINT = ROOT / "updates" / "photo_context_workbench_2026-04-29.png"
 API_BASE = "http://localhost:8000/api"
 
 
@@ -43,7 +45,7 @@ def checkpoint_summary() -> dict[str, Any]:
     }
 
 
-def write_status(output: Path) -> None:
+def write_status(output: Path, retrieval_gap_query: str = "Old Orchard beach") -> None:
     handoff = fetch_json(
         "/downstream-readiness/morning-handoff",
         {
@@ -51,7 +53,7 @@ def write_status(output: Path) -> None:
             "prompt_sample_limit": 200,
             "vector_limit": 20,
             "bottleneck_limit": 4,
-            "retrieval_gap_query": "airplane in Maine",
+            "retrieval_gap_query": retrieval_gap_query,
         },
     )
     bottlenecks = fetch_json("/downstream-readiness/bottlenecks")
@@ -82,7 +84,9 @@ def write_status(output: Path) -> None:
             f"- Checkpoint generated: `{checkpoint.get('generated_at') or 'unknown'}`",
             f"- Checks passed: {checkpoint['passed']} / {checkpoint['total']}",
             f"- Phase report: `{PHASE_REPORT.relative_to(ROOT)}`",
-            f"- Visual checkpoint: `{VISUAL_CHECKPOINT.relative_to(ROOT)}`" if VISUAL_CHECKPOINT.exists() else "- Visual checkpoint: `not captured yet`",
+            f"- Exports visual checkpoint: `{VISUAL_CHECKPOINT.relative_to(ROOT)}`" if VISUAL_CHECKPOINT.exists() else "- Exports visual checkpoint: `not captured yet`",
+            f"- Prompt Pairs visual checkpoint: `{PROMPT_PAIRS_VISUAL_CHECKPOINT.relative_to(ROOT)}`" if PROMPT_PAIRS_VISUAL_CHECKPOINT.exists() else "- Prompt Pairs visual checkpoint: `not captured yet`",
+            f"- Photo Context visual checkpoint: `{PHOTO_CONTEXT_VISUAL_CHECKPOINT.relative_to(ROOT)}`" if PHOTO_CONTEXT_VISUAL_CHECKPOINT.exists() else "- Photo Context visual checkpoint: `not captured yet`",
             "",
         "## Bottleneck Order",
         "",
@@ -128,7 +132,8 @@ def write_status(output: Path) -> None:
             "",
             "## Downstream Artifacts",
             "",
-            f"- Artifact count: {artifact_summary.get('artifact_count', 0)}",
+            f"- Artifact count: {artifact_summary.get('full_manifest_artifact_count', artifact_summary.get('artifact_count', 0))}",
+            f"- Handoff count note: {artifact_summary.get('count_note', 'not specified')}",
             f"- Hash mismatches: {artifact_summary.get('mismatch_count', 'unknown')}",
             f"- Manifest hash: `{artifact_summary.get('manifest_content_sha256', 'missing')}`",
             f"- Audit hash: `{artifact_summary.get('audit_content_sha256', 'missing')}`",
@@ -167,8 +172,9 @@ def write_status(output: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Write a compact Ralph-loop morning status handoff.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--retrieval-gap-query", default="Old Orchard beach")
     args = parser.parse_args()
-    write_status(args.output)
+    write_status(args.output, retrieval_gap_query=args.retrieval_gap_query)
     print(args.output)
 
 

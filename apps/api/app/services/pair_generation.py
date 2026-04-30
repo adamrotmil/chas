@@ -272,6 +272,8 @@ def _pairs_from_natural_section_chunks(
             continue
         heading = section_text.split("\n", 1)[0].strip()
         review_hint = _string(metadata.get("section_review_hint"))
+        if review_hint == "needs_split":
+            continue
         context_parts = [
             _string(decisions.get("context")),
             f"Natural source section: {heading.rstrip(':')}.",
@@ -288,6 +290,7 @@ def _pairs_from_natural_section_chunks(
                 "context": "\n".join(part for part in context_parts if part.strip()),
                 "source_segment_id": chunk.id,
                 "source_chunk_index": metadata.get("chunk_index") or locator.get("chunk_index") or index,
+                "source_section_review_hint": review_hint,
                 "source_excerpt": section_text,
                 "source_item_index": index,
                 "pair_generation_strategy": "natural_section",
@@ -475,6 +478,7 @@ def _pair_generation_metadata(
         "source_text_char_count": len(source_text_normalized),
         "source_text_preview": source_text_normalized[:1200],
         "source_spans_supplied": isinstance(decisions.get("source_spans"), list) and bool(decisions.get("source_spans")),
+        "source_section_review_hint": raw_pair.get("source_section_review_hint"),
         "voice_mode": compiled.get("voice_mode"),
         "artifact_mode": compiled.get("artifact_mode"),
         "truth_status": compiled.get("truth_status"),
@@ -573,6 +577,7 @@ def preview_make_gold_tasks_from_review(
             "source_segment_id": raw_pair.get("source_segment_id"),
             "source_chunk_index": raw_pair.get("source_chunk_index"),
             "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
+            "source_section_review_hint": raw_pair.get("source_section_review_hint"),
         }
         if hold_reason:
             held_pairs.append({**preview_item, "reason": hold_reason})
@@ -587,7 +592,7 @@ def preview_make_gold_tasks_from_review(
     held_source_sections = [
         {
             **section,
-            "reason": "no_prompt_pair_created_from_this_section",
+            "reason": _held_source_section_reason(section),
         }
         for section in source_sections
         if section["source_segment_id"] not in creatable_source_segment_ids
@@ -661,9 +666,16 @@ def _source_sections_for_receipt(session: Session, task: Task, decisions: Dict[s
                 "title": chunk.title or chunk.human_id,
                 "chunk_index": metadata.get("chunk_index") or locator.get("chunk_index") or fallback_index,
                 "chunking_strategy": metadata.get("chunking_strategy") or locator.get("kind") or "unknown",
+                "section_review_hint": metadata.get("section_review_hint"),
             }
         )
     return sections
+
+
+def _held_source_section_reason(section: Dict[str, Any]) -> str:
+    if _string(section.get("section_review_hint")) == "needs_split":
+        return "source_section_needs_split"
+    return "no_prompt_pair_created_from_this_section"
 
 
 def _pair_generation_run_receipt(
@@ -688,7 +700,7 @@ def _pair_generation_run_receipt(
     held_source_sections = [
         {
             **section,
-            "reason": "no_prompt_pair_created_from_this_section",
+            "reason": _held_source_section_reason(section),
         }
         for section in source_sections
         if section["source_segment_id"] not in created_source_segment_ids
@@ -821,6 +833,7 @@ def create_make_gold_tasks_from_review(
                 "source_segment_id": raw_pair.get("source_segment_id"),
                 "source_chunk_index": raw_pair.get("source_chunk_index"),
                 "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
+                "source_section_review_hint": raw_pair.get("source_section_review_hint"),
                 "pair_generation_metadata": generation_metadata,
             },
         )
@@ -895,6 +908,7 @@ def create_make_gold_tasks_from_review(
             "source_segment_id": raw_pair.get("source_segment_id"),
             "source_chunk_index": raw_pair.get("source_chunk_index"),
             "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
+            "source_section_review_hint": raw_pair.get("source_section_review_hint"),
         }
         review_task = Task(
             human_id=_human_id("TASK_MAKE_GOLD", _count(session, Task)),
@@ -929,6 +943,7 @@ def create_make_gold_tasks_from_review(
                 "source_segment_id": raw_pair.get("source_segment_id"),
                 "source_chunk_index": raw_pair.get("source_chunk_index"),
                 "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
+                "source_section_review_hint": raw_pair.get("source_section_review_hint"),
                 "pair_generation_metadata": generation_metadata,
             }
         )

@@ -442,10 +442,10 @@ NATURAL_SECTION_START_PATTERN = re.compile(
     r"^(?:"
     r"(?:Email|Memoir|Note|Fragment|Story|Scene|Letter|Message|Conversation|Example|Pair|Prompt|Response)"
     r"(?:\s+[\w.-]+)?"
-    r"|From|Subject"
     r")\s*:",
     re.IGNORECASE,
 )
+SOURCE_HEADER_PATTERN = re.compile(r"^(?:From|To|Cc|Bcc|Subject|Date|Reply-To|Message-ID)\s*:", re.IGNORECASE)
 
 
 def _paragraph_spans(text: str) -> List[tuple[int, int, str]]:
@@ -464,6 +464,13 @@ def _looks_like_natural_section_start(paragraph: str) -> bool:
     if not first_line or len(first_line) > 120:
         return False
     return bool(NATURAL_SECTION_START_PATTERN.match(first_line))
+
+
+def _looks_like_source_header_block(paragraph: str) -> bool:
+    lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return all(SOURCE_HEADER_PATTERN.match(line) for line in lines)
 
 
 def _natural_section_review_hint(section_text: str) -> str:
@@ -486,8 +493,13 @@ def _extract_natural_section_chunks(text: str) -> List[StructuredTextChunk]:
         for paragraph_index, (_start, _end, paragraph) in enumerate(paragraphs)
         if _looks_like_natural_section_start(paragraph)
     ]
-    if len(section_start_indexes) < 2 or section_start_indexes[0] != 0:
+    if len(section_start_indexes) < 2:
         return []
+
+    if section_start_indexes[0] != 0:
+        leading_paragraphs = [paragraph for _start, _end, paragraph in paragraphs[: section_start_indexes[0]]]
+        if not leading_paragraphs or not all(_looks_like_source_header_block(paragraph) for paragraph in leading_paragraphs):
+            return []
 
     chunks: List[StructuredTextChunk] = []
     for ordinal, paragraph_index in enumerate(section_start_indexes[:MAX_CHUNKS], start=1):

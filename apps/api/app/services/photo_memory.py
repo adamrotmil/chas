@@ -6,6 +6,12 @@ from sqlmodel import Session, select
 
 from app.models import Asset, Boundary, Gallery, GalleryItem, GraphEdge, Memory, MemorySource, MetadataProfile, Segment, Task, utcnow
 from app.services.embeddings import boundary_embedding_text, upsert_embedding_record, upsert_profile_embedding
+from app.services.photo_constants import (
+    PHOTO_MEMORY_PROFILE_TYPE,
+    PHOTO_SENSITIVE_PRIVACY_LEVELS,
+    PHOTO_STATUS_ADAM_REVIEWED,
+    PHOTO_TRUTH_ADAM_MEMORY,
+)
 
 
 def _count(session: Session, model: Any) -> int:
@@ -161,19 +167,19 @@ def _find_or_create_asset_boundary(session: Session, asset_id: str) -> Boundary:
 
 
 def _apply_photo_boundary(boundary: Boundary, *, privacy_level: str, ready_for_downstream: bool, notes: str) -> Boundary:
-    redaction_required = privacy_level in {"sealed", "private_sensitive", "sensitive_living_people"} or "redact" in notes.lower()
+    redaction_required = privacy_level in PHOTO_SENSITIVE_PRIVACY_LEVELS or "redact" in notes.lower()
     boundary.privacy_level = privacy_level
     boundary.searchable = ready_for_downstream and privacy_level != "sealed"
-    boundary.retrievable_in_chat = ready_for_downstream and privacy_level not in {"sealed", "private_sensitive", "sensitive_living_people"}
+    boundary.retrievable_in_chat = ready_for_downstream and privacy_level not in PHOTO_SENSITIVE_PRIVACY_LEVELS
     boundary.quotable = False
     boundary.summarizable = ready_for_downstream
-    boundary.usable_for_voice_context = ready_for_downstream and privacy_level not in {"sealed", "private_sensitive", "sensitive_living_people"}
+    boundary.usable_for_voice_context = ready_for_downstream and privacy_level not in PHOTO_SENSITIVE_PRIVACY_LEVELS
     boundary.usable_for_sft = False
     boundary.usable_for_dpo = False
     boundary.usable_for_eval = ready_for_downstream and privacy_level != "sealed"
     boundary.usable_for_gallery_public = ready_for_downstream and privacy_level == "public_candidate" and not redaction_required
     boundary.usable_for_gallery_family = ready_for_downstream and privacy_level in {"family_private", "public_candidate"}
-    boundary.usable_for_simulation = ready_for_downstream and privacy_level not in {"sealed", "private_sensitive", "sensitive_living_people"}
+    boundary.usable_for_simulation = ready_for_downstream and privacy_level not in PHOTO_SENSITIVE_PRIVACY_LEVELS
     boundary.contains_living_person_sensitive_material = privacy_level in {"sensitive_living_people", "private_sensitive"}
     boundary.redaction_required = redaction_required
     boundary.notes = notes or "Photo memory boundary generated from Adam review."
@@ -200,9 +206,9 @@ def _upsert_photo_profile_from_context(
     annotation_id: str,
 ) -> MetadataProfile:
     asset_id = asset.id if asset else task.target_id
-    profile = _existing_photo_profile(session, asset_id, "photo_memory")
+    profile = _existing_photo_profile(session, asset_id, PHOTO_MEMORY_PROFILE_TYPE)
     if profile is None:
-        profile = MetadataProfile(target_type="asset", target_id=asset_id, profile_type="photo_memory")
+        profile = MetadataProfile(target_type="asset", target_id=asset_id, profile_type=PHOTO_MEMORY_PROFILE_TYPE)
     visible_people = _string_list(decisions.get("visible_people"))
     absent_people = _string_list(decisions.get("absent_but_relevant_people"))
     place = _string(decisions.get("place"), "unknown")
@@ -227,12 +233,12 @@ def _upsert_photo_profile_from_context(
     )
     event = _string(decisions.get("event"), "unknown")
     profile.profile_version = "v1"
-    profile.metadata_status = "adam_reviewed"
+    profile.metadata_status = PHOTO_STATUS_ADAM_REVIEWED
     profile.title = _asset_title(asset, _string(task.input_payload.get("title"), "Photo"))
     profile.summary = description
     profile.adam_context_note = adam_context
     profile.source_genre = "photo"
-    profile.truth_status = "adam_memory" if adam_context else "adam_inference"
+    profile.truth_status = PHOTO_TRUTH_ADAM_MEMORY if adam_context else "adam_inference"
     profile.date_label = _string(decisions.get("date_or_range"), "unknown")
     profile.date_confidence = _string(decisions.get("date_confidence"), "unknown")
     profile.people = [*visible_people, *[person for person in absent_people if person not in visible_people]]
@@ -318,13 +324,13 @@ def _upsert_photo_memory(
             human_id=f"MEM_PHOTO_{_count(session, Memory):06d}",
             title=profile.title or _asset_title(asset),
             summary=_memory_summary(profile),
-            truth_status="adam_memory" if profile.adam_context_note else "interpretive_synthesis",
+            truth_status=PHOTO_TRUTH_ADAM_MEMORY if profile.adam_context_note else "interpretive_synthesis",
             reliability="medium",
             maturity_level="L3_reviewed",
         )
     memory.title = profile.title or memory.title
     memory.summary = _memory_summary(profile)
-    memory.truth_status = "adam_memory" if profile.adam_context_note else "interpretive_synthesis"
+    memory.truth_status = PHOTO_TRUTH_ADAM_MEMORY if profile.adam_context_note else "interpretive_synthesis"
     memory.reliability = "medium"
     memory.maturity_level = "L3_reviewed"
     memory.themes = profile.themes
@@ -487,7 +493,7 @@ def promote_photo_profile_downstream(
     )
     gallery_item = _upsert_gallery_item(session=session, asset=asset, boundary=boundary, profile=profile)
     removed_draft_gallery_item_id = _remove_machine_draft_gallery_item(session, profile.target_id)
-    if boundary.privacy_level in {"sealed", "private_sensitive"} or boundary.redaction_required:
+    if boundary.privacy_level in PHOTO_SENSITIVE_PRIVACY_LEVELS or boundary.redaction_required:
         vector_handoff_status = "excluded_by_boundary"
         vector_handoff_reason = "Photo memory is not eligible for vector handoff under the reviewed boundary."
     elif memory_embedding:

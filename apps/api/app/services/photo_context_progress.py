@@ -47,6 +47,54 @@ def _sorted_query_counts(counts: Dict[str, int]) -> List[Dict[str, Any]]:
     ]
 
 
+FIELD_GUIDANCE: Dict[str, Dict[str, str]] = {
+    "visual_description_correction": {
+        "label": "Reviewed visible facts",
+        "why_required": "Grounds the record in what is actually visible before any memory context is added.",
+        "adam_prompt": "Correct or confirm the visual description in plain language.",
+        "unlocks": "A reviewed visual anchor for semantic search and gallery display.",
+    },
+    "retrieval_query_relevance": {
+        "label": "Search seed connection",
+        "why_required": "Optional unless the photo genuinely surfaced from search evidence; backlog-only review seeds are not memory questions.",
+        "adam_prompt": "If the photo actually connects to the search seed, say how. Otherwise leave this blank and write the memory the photo itself brings up.",
+        "unlocks": "Better ranking for future searches while preserving weak search seeds as provenance rather than memory evidence.",
+    },
+    "invisible_context_note": {
+        "label": "Adam memory context",
+        "why_required": "Captures meaning, relationships, or event context that is not visible in the image itself.",
+        "adam_prompt": "Add the remembered story, relationship, event, or uncertainty behind the image.",
+        "unlocks": "Embedding text that can support memory-like retrieval after Adam review.",
+    },
+    "open_questions": {
+        "label": "Open questions",
+        "why_required": "Keeps uncertainty explicit instead of letting the system fill gaps with inference.",
+        "adam_prompt": "List what remains unknown: date, place, people, photographer, or event.",
+        "unlocks": "A no-claim record that remains useful while preserving uncertainty.",
+    },
+    "privacy_level": {
+        "label": "Boundary and permission",
+        "why_required": "Determines whether the reviewed context can be searched, retrieved, shown, or exported.",
+        "adam_prompt": "Choose the privacy level and any usage limits for this photo context.",
+        "unlocks": "Boundary-cleared handoff to gallery, vector, voice-context, or review-only queues.",
+    },
+}
+
+
+def _field_guidance_for_keys(field_keys: List[str]) -> List[Dict[str, str]]:
+    guidance = []
+    for field_key in sorted(set(field_keys)):
+        defaults = {
+            "label": field_key.replace("_", " ").title(),
+            "why_required": "Documents why this field is needed before downstream use.",
+            "adam_prompt": "Add Adam-authored context or mark the field not applicable.",
+            "unlocks": "A more complete reviewed photo-context record.",
+        }
+        item = {**defaults, **FIELD_GUIDANCE.get(field_key, {})}
+        guidance.append({"field_key": field_key, **item})
+    return guidance
+
+
 def _task_asset(session: Session, task: Task) -> Optional[Asset]:
     return session.get(Asset, task.target_id) if task.target_type == "asset" else None
 
@@ -87,6 +135,13 @@ def _task_retrieval_origin(task: Task) -> Optional[Dict[str, Any]]:
     return origin if isinstance(origin, dict) and origin.get("query") else None
 
 
+def _task_review_session_origin(task: Task) -> Optional[Dict[str, Any]]:
+    origin = (task.input_payload or {}).get("review_session_origin")
+    if not isinstance(origin, dict):
+        return None
+    return origin if origin.get("session_type") == "photo_context_review_session" else None
+
+
 def _task_retrieval_review(task: Task) -> Dict[str, Any]:
     review = (task.input_payload or {}).get("retrieval_gap_review")
     return review if isinstance(review, dict) else {}
@@ -96,6 +151,8 @@ def _missing_retrieval_fields(*, task: Task, projection: Optional[Dict[str, Any]
     origin = _task_retrieval_origin(task)
     if not origin:
         return []
+    candidate_match_quality = str(origin.get("candidate_match_quality") or "")
+    optional_field_keys = {"retrieval_query_relevance"} if candidate_match_quality == "backlog_only" else set()
     if projection:
         requirements = projection.get("field_requirements", [])
         if isinstance(requirements, list):
@@ -103,18 +160,24 @@ def _missing_retrieval_fields(*, task: Task, projection: Optional[Dict[str, Any]
                 str(item.get("field_key"))
                 for item in requirements
                 if isinstance(item, dict) and item.get("field_key") and item.get("status") != "complete"
+                and str(item.get("field_key")) not in optional_field_keys
             ]
     review = _task_retrieval_review(task)
     fields = review.get("required_fields", [])
     if isinstance(fields, list) and fields:
-        return [str(item.get("field_key")) for item in fields if isinstance(item, dict) and item.get("field_key")]
-    return [
+        return [
+            str(item.get("field_key"))
+            for item in fields
+            if isinstance(item, dict) and item.get("field_key") and str(item.get("field_key")) not in optional_field_keys
+        ]
+    default_fields = [
         "visual_description_correction",
         "retrieval_query_relevance",
         "invisible_context_note",
         "open_questions",
         "privacy_level",
     ]
+    return [field for field in default_fields if field not in optional_field_keys]
 
 
 def build_photo_context_session_progress(
@@ -137,11 +200,13 @@ def build_photo_context_session_progress(
     draft_count = 0
     submit_ready_count = 0
     retrieval_gap_task_count = 0
+    review_session_task_count = 0
 
     for task in capped_tasks:
         draft = _draft_for_task(session, task.id, user_id)
         projection = None
         retrieval_origin = _task_retrieval_origin(task)
+        review_session_origin = _task_review_session_origin(task)
         retrieval_review = _task_retrieval_review(task)
         if draft is not None:
             draft_count += 1
@@ -161,6 +226,20 @@ def build_photo_context_session_progress(
             retrieval_gap_task_count += 1
             for field in missing_retrieval_fields:
                 retrieval_gap_missing_field_counts[field] += 1
+        if review_session_origin:
+            review_session_task_count += 1
+        provenance_boundary = {
+            "retrieval_origin_truth_status": retrieval_origin.get("truth_status") if retrieval_origin else None,
+            "retrieval_origin_not_memory_claim": bool(retrieval_origin and retrieval_origin.get("not_memory_claim") is True),
+            "review_session_origin_not_memory_claim": bool(
+                review_session_origin and review_session_origin.get("not_memory_claim") is True
+            ),
+            "query_is_context_prioritization_only": bool(
+                retrieval_origin is not None
+                or (review_session_origin or {}).get("query_is_context_prioritization_only") is True
+            ),
+            "vector_ready_requires_submit": True,
+        }
         items.append(
             {
                 "task_id": task.id,
@@ -179,6 +258,8 @@ def build_photo_context_session_progress(
                 "gallery_scope_after": projection.get("gallery", {}).get("scope_after") if projection else None,
                 "projection": projection,
                 "retrieval_gap_origin": retrieval_origin,
+                "review_session_origin": review_session_origin,
+                "provenance_boundary": provenance_boundary,
                 "retrieval_gap_review_policy": retrieval_review.get("review_policy"),
                 "retrieval_gap_completion_signal": retrieval_review.get("completion_signal"),
                 "retrieval_gap_missing_fields": missing_retrieval_fields,
@@ -201,6 +282,9 @@ def build_photo_context_session_progress(
             "has_draft": item["has_draft"],
             "blocked_reasons": item["blocked_reasons"],
             "vector_handoff_status": item["vector_handoff_status"],
+            "retrieval_gap_origin": item["retrieval_gap_origin"],
+            "review_session_origin": item["review_session_origin"],
+            "provenance_boundary": item["provenance_boundary"],
             "retrieval_gap_missing_fields": item["retrieval_gap_missing_fields"],
         }
         for item in items
@@ -221,6 +305,7 @@ def build_photo_context_session_progress(
         "draft_count": draft_count,
         "submit_ready_count": submit_ready_count,
         "retrieval_gap_task_count": retrieval_gap_task_count,
+        "review_session_task_count": review_session_task_count,
         "retrieval_gap_missing_field_counts": dict(sorted(retrieval_gap_missing_field_counts.items())),
         "status_counts": dict(sorted(status_counts.items())),
         "blocked_reason_counts": dict(sorted(blocked_reason_counts.items())),
@@ -243,6 +328,13 @@ def build_photo_context_session_progress(
         "submit_ready_count": submit_ready_count,
         "blocked_count": draft_count - submit_ready_count,
         "retrieval_gap_task_count": retrieval_gap_task_count,
+        "review_session_task_count": review_session_task_count,
+        "provenance_policy": {
+            "retrieval_gap_origin_is_not_memory_claim": True,
+            "review_session_origin_is_not_memory_claim": True,
+            "query_is_context_prioritization_only": True,
+            "vector_ready_requires_submit": True,
+        },
         "retrieval_gap_missing_field_counts": dict(retrieval_gap_missing_field_counts),
         "status_counts": dict(status_counts),
         "blocked_reason_counts": dict(blocked_reason_counts),
@@ -285,6 +377,8 @@ def build_photo_context_session_progress_artifact(
                 "blocked_reasons": item.get("blocked_reasons") if isinstance(item.get("blocked_reasons"), list) else [],
                 "vector_handoff_status": item.get("vector_handoff_status"),
                 "retrieval_gap_origin": item.get("retrieval_gap_origin"),
+                "review_session_origin": item.get("review_session_origin"),
+                "provenance_boundary": item.get("provenance_boundary"),
                 "retrieval_gap_missing_fields": (
                     item.get("retrieval_gap_missing_fields")
                     if isinstance(item.get("retrieval_gap_missing_fields"), list)
@@ -313,6 +407,8 @@ def build_photo_context_session_progress_artifact(
         "submit_ready_count": progress.get("submit_ready_count"),
         "blocked_count": progress.get("blocked_count"),
         "retrieval_gap_task_count": progress.get("retrieval_gap_task_count"),
+        "review_session_task_count": progress.get("review_session_task_count"),
+        "provenance_policy": progress.get("provenance_policy"),
         "retrieval_gap_missing_field_counts": progress.get("retrieval_gap_missing_field_counts"),
         "status_counts": progress.get("status_counts"),
         "blocked_reason_counts": progress.get("blocked_reason_counts"),
@@ -352,6 +448,23 @@ def _retrieval_gap_field_worklist_yaml(worklist: Dict[str, Any]) -> str:
                 [
                     f"    - field_key: {_yaml_scalar(item.get('field_key'))}",
                     f"      count: {_yaml_scalar(item.get('count'))}",
+                ]
+            )
+    else:
+        lines.append("    []")
+    lines.append("  field_guidance:")
+    guidance_items = worklist.get("field_guidance") if isinstance(worklist.get("field_guidance"), list) else []
+    if guidance_items:
+        for item in guidance_items:
+            if not isinstance(item, dict):
+                continue
+            lines.extend(
+                [
+                    f"    - field_key: {_yaml_scalar(item.get('field_key'))}",
+                    f"      label: {_yaml_scalar(item.get('label'))}",
+                    f"      why_required: {_yaml_scalar(item.get('why_required'))}",
+                    f"      adam_prompt: {_yaml_scalar(item.get('adam_prompt'))}",
+                    f"      unlocks: {_yaml_scalar(item.get('unlocks'))}",
                 ]
             )
     else:
@@ -477,12 +590,15 @@ def build_photo_context_retrieval_gap_field_worklist(
         if isinstance(progress.get("retrieval_gap_missing_field_counts"), dict)
         else {}
     )
+    guidance_keys = [str(key) for key in field_count_dict] or list(FIELD_GUIDANCE)
+    field_guidance = _field_guidance_for_keys(guidance_keys)
     stable_payload = {
         "scope": scope,
         "user_id": user_id,
         "retrieval_gap_task_count": progress.get("retrieval_gap_task_count"),
         "reported_item_count": len(items),
         "missing_field_counts": field_count_dict,
+        "field_guidance": field_guidance,
         "query_counts": dict(query_counter),
         "items": items,
     }
@@ -502,6 +618,7 @@ def build_photo_context_retrieval_gap_field_worklist(
         "missing_field_total": missing_field_total,
         "submit_ready_count": submit_ready_count,
         "missing_field_counts": _sorted_counts({str(key): int(value) for key, value in field_count_dict.items()}),
+        "field_guidance": field_guidance,
         "query_counts": _sorted_query_counts(dict(query_counter)),
         "completion_signal": "retrieval_gap_missing_field_counts_reach_zero_or_tasks_leave_gap_worklist",
         "items": items,
@@ -567,7 +684,7 @@ def _retrieval_gap_payoff_preview_yaml(preview: Dict[str, Any]) -> str:
 def _payoff_field_label(field_key: str) -> str:
     return {
         "visual_description_correction": "reviewed visible facts",
-        "retrieval_query_relevance": "Adam's answer about query relevance",
+        "retrieval_query_relevance": "Adam's answer about search seed connection",
         "invisible_context_note": "Adam's invisible memory context",
         "open_questions": "explicit uncertainty/open questions",
         "privacy_level": "boundary and retrieval permission",
@@ -637,9 +754,9 @@ def build_photo_context_retrieval_gap_payoff_preview(
         vector_text_template = "\n".join(
             [
                 f"Photo memory: {title}",
-                f"Retrieval query: {query}",
+                f"Search seed: {query}",
                 f"Visible facts: {_placeholder('visual_description_correction') if 'visual_description_correction' in missing_set else '[draft visible facts present]'}",
-                f"Query relevance: {_placeholder('retrieval_query_relevance') if 'retrieval_query_relevance' in missing_set else '[draft query relevance present]'}",
+                f"Search connection: {_placeholder('retrieval_query_relevance') if 'retrieval_query_relevance' in missing_set else '[draft search connection present]'}",
                 f"Adam context: {_placeholder('invisible_context_note') if 'invisible_context_note' in missing_set else '[draft Adam context present]'}",
                 f"Uncertainty: {_placeholder('open_questions') if 'open_questions' in missing_set else '[open questions reviewed]'}",
                 f"Boundary: {_placeholder('privacy_level') if 'privacy_level' in missing_set else '[boundary selected]'}",

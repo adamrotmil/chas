@@ -21,6 +21,7 @@ import type {
   DatasetExportDryRun,
   DemoGenerationBatchResponse,
   DemoGenerationReadiness,
+  DemoGenerationRequestPreview,
   DpoRejectedReasonRepairPacket,
   DpoRejectedReasonRepairProjection,
   DownstreamArtifactAudit,
@@ -39,6 +40,7 @@ import type {
   PhotoMemoryCorpusResponse,
   PhotoMemoryDraftResponse,
   ReviewedPhotoMemoryDemoReadiness,
+  OperatorAssistantSuggestion,
   PhotoMemoryVectorHandoffExport,
   PhotoPromptPairCandidateResponse,
   PromptPairAudit,
@@ -108,7 +110,7 @@ export function getPhotoContextTopSlice(
 export function getPhotoContextReviewSessionPlan(
   scope: "public" | "family_private" | "private" = "family_private",
   limit = 5,
-  sourceQuery = "airplane in Maine"
+  sourceQuery = "Old Orchard beach"
 ): Promise<PhotoContextReviewSessionPlan> {
   const params = new URLSearchParams({ scope, limit: String(limit), source_query: sourceQuery });
   return request<PhotoContextReviewSessionPlan>(`/assets/photo-context-review-pack/review-session-plan?${params.toString()}`);
@@ -117,13 +119,13 @@ export function getPhotoContextReviewSessionPlan(
 export function getPhotoContextReviewSessionPlanYamlUrl(
   scope: "public" | "family_private" | "private" = "family_private",
   limit = 5,
-  sourceQuery = "airplane in Maine"
+  sourceQuery = "Old Orchard beach"
 ): string {
   const params = new URLSearchParams({ scope, limit: String(limit), source_query: sourceQuery });
   return `${API_BASE}/assets/photo-context-review-pack/review-session-plan/yaml?${params.toString()}`;
 }
 
-export function createPhotoContextReviewSession(limit = 5, dryRun = true, sourceQuery = "airplane in Maine"): Promise<PhotoContextReviewSession> {
+export function createPhotoContextReviewSession(limit = 5, dryRun = true, sourceQuery = "Old Orchard beach"): Promise<PhotoContextReviewSession> {
   const params = new URLSearchParams({
     scope: "family_private",
     limit: String(limit),
@@ -215,6 +217,14 @@ export function getPhotoReviewPriority(
   return request<PhotoReviewPrioritySummary>(`/assets/photo-review-priority?${params.toString()}`);
 }
 
+export function getPhotoReviewPriorityYamlUrl(
+  focus: "all" | "fastest_vector" = "fastest_vector",
+  limit = 50
+): string {
+  const params = new URLSearchParams({ focus, limit: String(limit) });
+  return `${API_BASE}/assets/photo-review-priority/yaml?${params.toString()}`;
+}
+
 export function getDownstreamBottlenecks(
   scope: "public" | "family_private" | "private" = "family_private",
   limit = 4
@@ -226,12 +236,14 @@ export function getDownstreamBottlenecks(
 export function getDownstreamArtifactManifest(
   scope: "public" | "family_private" | "private" = "family_private",
   promptSampleLimit = 200,
-  vectorLimit = 20
+  vectorLimit = 20,
+  photoSessionQuery = "Old Orchard beach"
 ): Promise<DownstreamArtifactManifest> {
   const params = new URLSearchParams({
     scope,
     prompt_sample_limit: String(promptSampleLimit),
-    vector_limit: String(vectorLimit)
+    vector_limit: String(vectorLimit),
+    photo_session_query: photoSessionQuery
   });
   return request<DownstreamArtifactManifest>(`/downstream-readiness/artifact-manifest?${params.toString()}`);
 }
@@ -239,12 +251,14 @@ export function getDownstreamArtifactManifest(
 export function getDownstreamArtifactManifestUrl(
   scope: "public" | "family_private" | "private" = "family_private",
   promptSampleLimit = 200,
-  vectorLimit = 20
+  vectorLimit = 20,
+  photoSessionQuery = "Old Orchard beach"
 ): string {
   const params = new URLSearchParams({
     scope,
     prompt_sample_limit: String(promptSampleLimit),
-    vector_limit: String(vectorLimit)
+    vector_limit: String(vectorLimit),
+    photo_session_query: photoSessionQuery
   });
   return `${API_BASE}/downstream-readiness/artifact-manifest?${params.toString()}`;
 }
@@ -252,12 +266,14 @@ export function getDownstreamArtifactManifestUrl(
 export function getDownstreamArtifactAudit(
   scope: "public" | "family_private" | "private" = "family_private",
   promptSampleLimit = 200,
-  vectorLimit = 20
+  vectorLimit = 20,
+  photoSessionQuery = "Old Orchard beach"
 ): Promise<DownstreamArtifactAudit> {
   const params = new URLSearchParams({
     scope,
     prompt_sample_limit: String(promptSampleLimit),
-    vector_limit: String(vectorLimit)
+    vector_limit: String(vectorLimit),
+    photo_session_query: photoSessionQuery
   });
   return request<DownstreamArtifactAudit>(`/downstream-readiness/artifact-audit?${params.toString()}`);
 }
@@ -267,7 +283,7 @@ export function getMorningHandoff(
   promptSampleLimit = 200,
   vectorLimit = 20,
   bottleneckLimit = 4,
-  retrievalGapQuery = "airplane in Maine"
+  retrievalGapQuery = "Old Orchard beach"
 ): Promise<MorningHandoff> {
   const params = new URLSearchParams({
     scope,
@@ -284,7 +300,7 @@ export function getMorningHandoffYamlUrl(
   promptSampleLimit = 200,
   vectorLimit = 20,
   bottleneckLimit = 4,
-  retrievalGapQuery = "airplane in Maine"
+  retrievalGapQuery = "Old Orchard beach"
 ): string {
   const params = new URLSearchParams({
     scope,
@@ -436,6 +452,14 @@ export function getDemoGenerationReadiness(limit = 5): Promise<DemoGenerationRea
   return request<DemoGenerationReadiness>(`/model-status/demo-readiness?limit=${limit}`);
 }
 
+export function getDemoGenerationRequestPreview(limit = 5): Promise<DemoGenerationRequestPreview> {
+  return request<DemoGenerationRequestPreview>(`/model-status/demo-generation-request-preview?limit=${limit}`);
+}
+
+export function getDemoGenerationRequestPreviewYamlUrl(limit = 5): string {
+  return `${API_BASE}/model-status/demo-generation-request-preview/yaml?limit=${limit}`;
+}
+
 export function createDemoGenerations(limit = 5): Promise<DemoGenerationBatchResponse> {
   return request<DemoGenerationBatchResponse>("/model-status/demo-generations", {
     method: "POST",
@@ -459,12 +483,20 @@ export function getPromptPairHeldCandidates(limit = 30): Promise<PromptPairHeldC
   return request<PromptPairHeldCandidatePack>(`/prompt-pairs/held-candidates?limit=${limit}`);
 }
 
-export function getPromptPairTopBlockerSlice(limit = 5): Promise<PromptPairTopBlockerSlice> {
-  return request<PromptPairTopBlockerSlice>(`/prompt-pairs/top-blocker-slice?limit=${limit}`);
+export function getPromptPairTopBlockerSlice(limit = 5, blocker?: string): Promise<PromptPairTopBlockerSlice> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (blocker) {
+    params.set("blocker", blocker);
+  }
+  return request<PromptPairTopBlockerSlice>(`/prompt-pairs/top-blocker-slice?${params.toString()}`);
 }
 
-export function getPromptPairTopBlockerReviewSessionPlan(limit = 5): Promise<PromptPairTopBlockerReviewSessionPlan> {
-  return request<PromptPairTopBlockerReviewSessionPlan>(`/prompt-pairs/top-blocker-review-session-plan?limit=${limit}`);
+export function getPromptPairTopBlockerReviewSessionPlan(limit = 5, blocker?: string): Promise<PromptPairTopBlockerReviewSessionPlan> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (blocker) {
+    params.set("blocker", blocker);
+  }
+  return request<PromptPairTopBlockerReviewSessionPlan>(`/prompt-pairs/top-blocker-review-session-plan?${params.toString()}`);
 }
 
 export function getDpoRejectedReasonRepairPacket(limit = 25): Promise<DpoRejectedReasonRepairPacket> {
@@ -587,9 +619,23 @@ export function createPhotoMemoryDrafts(limit = 5, dryRun = true): Promise<Photo
   );
 }
 
-export function createPhotoPromptPairCandidates(limit = 5, dryRun = true): Promise<PhotoPromptPairCandidateResponse> {
+export function createPhotoPromptPairCandidates(
+  limit = 5,
+  dryRun = true,
+  options: { assetId?: string; metadataProfileId?: string } = {}
+): Promise<PhotoPromptPairCandidateResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    dry_run: String(dryRun)
+  });
+  if (options.assetId) {
+    params.set("asset_id", options.assetId);
+  }
+  if (options.metadataProfileId) {
+    params.set("metadata_profile_id", options.metadataProfileId);
+  }
   return request<PhotoPromptPairCandidateResponse>(
-    `/photo-memory-drafts/prompt-pair-candidates?limit=${limit}&dry_run=${dryRun}`,
+    `/photo-memory-drafts/prompt-pair-candidates?${params.toString()}`,
     { method: "POST" }
   );
 }
@@ -633,6 +679,18 @@ export function submitTask(
   });
 }
 
+export function getOperatorAssistantSuggestion(
+  taskId: string,
+  decisions: Record<string, unknown>,
+  operatorAnswer?: string,
+  notes?: string
+): Promise<OperatorAssistantSuggestion> {
+  return request<OperatorAssistantSuggestion>(`/tasks/${taskId}/operator-assistant`, {
+    method: "POST",
+    body: JSON.stringify({ decisions, notes, operator_answer: operatorAnswer })
+  });
+}
+
 export function getTaskDraft(taskId: string): Promise<TaskDraft | null> {
   return request<TaskDraft | null>(`/tasks/${taskId}/draft`);
 }
@@ -661,6 +719,13 @@ export function flagTask(taskId: string, reason?: string): Promise<Task> {
   return request<Task>(`/tasks/${taskId}/flag`, {
     method: "POST",
     body: JSON.stringify({ reason })
+  });
+}
+
+export function deletePromptPairCandidate(taskId: string, reason?: string, notes?: string): Promise<Annotation> {
+  return request<Annotation>(`/tasks/${taskId}/delete-candidate`, {
+    method: "POST",
+    body: JSON.stringify({ reason, notes })
   });
 }
 

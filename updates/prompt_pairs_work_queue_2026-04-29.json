@@ -1,0 +1,28 @@
+{
+  "checkpoint_type": "prompt_pairs_work_queue_visual_checkpoint",
+  "captured_at": "2026-04-30T14:17:48.787Z",
+  "screenshot_path": "updates/prompt_pairs_work_queue_2026-04-29.png",
+  "total_pairs": 434,
+  "inspectable_pair_count": 434,
+  "preflight_gate_counts": {
+    "approved": 403,
+    "candidate": 31
+  },
+  "preflight_blocker_counts": {
+    "dpo_rejected_reason_empty": 25,
+    "source_boundary_blocks_training": 6
+  },
+  "first_held_prompt_pair_task_id": "9f5afac9-3b59-4195-8fd5-c02282d100e4",
+  "first_held_prompt_pair_human_id": "TASK_DPO_CANDIDATE_000700",
+  "dpo_rejected_reason_total_candidate_count": 25,
+  "dpo_rejected_reason_reported_candidate_count": 25,
+  "first_dpo_repair_task_id": "9f5afac9-3b59-4195-8fd5-c02282d100e4",
+  "first_dpo_repair_human_id": "TASK_DPO_CANDIDATE_000700",
+  "ui_assertions": [
+    "prompt_pair_filters_visible",
+    "prompt_pair_readiness_counts_visible",
+    "dpo_rejected_reason_repair_queue_visible",
+    "prompt_pair_ticket_selected",
+    "prompt_pair_export_gate_visible"
+  ]
+}

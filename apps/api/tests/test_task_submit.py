@@ -8,6 +8,7 @@ from app.db.session import get_session
 from app.main import app
 from app.models import (
     AntiPattern,
+    Annotation,
     Asset,
     Boundary,
     ContextPack,
@@ -188,6 +189,69 @@ def test_gold_voice_submission_creates_annotation_and_training_artifacts():
     assert "preferred_output" in dpo.text
     dpo_payload = json.loads(dpo.text)
     assert dpo_payload["input"]["messages"][0] == {"role": "system", "content": "You are Charles Rotmil."}
+
+
+def test_task_submit_rejects_non_ready_resubmission_without_duplicate_artifacts():
+    client, engine = build_client()
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_RESUBMIT_GUARD",
+            asset_type="text",
+            title="Resubmit guard source",
+            import_status="mirrored",
+        )
+        session.add(asset)
+        session.flush()
+        task = Task(
+            human_id="TASK_RESUBMIT_GUARD",
+            task_type="asset_triage",
+            target_type="asset",
+            target_id=asset.id,
+            queue="asset_triage",
+            input_payload={},
+            created_by="test",
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    first = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "process_next": "yes",
+                "source_type": "personal_archive",
+                "privacy_level": "family_private",
+            }
+        },
+    )
+    assert first.status_code == 200
+
+    with Session(engine) as session:
+        annotation_count = len(session.exec(select(Annotation)).all())
+        receipt_count = len(session.exec(select(TaskReceipt)).all())
+        boundary_count = len(session.exec(select(Boundary)).all())
+        task = session.get(Task, task_id)
+        assert task is not None
+        assert task.status == "submitted"
+
+    second = client.post(
+        f"/api/tasks/{task_id}/submit",
+        json={
+            "decisions": {
+                "process_next": "yes",
+                "source_type": "personal_archive",
+                "privacy_level": "family_private",
+            }
+        },
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Task is not ready for submit"
+
+    with Session(engine) as session:
+        assert len(session.exec(select(Annotation)).all()) == annotation_count
+        assert len(session.exec(select(TaskReceipt)).all()) == receipt_count
+        assert len(session.exec(select(Boundary)).all()) == boundary_count
 
 
 def test_gold_voice_response_b_privacy_issue_blocks_export_readiness():
