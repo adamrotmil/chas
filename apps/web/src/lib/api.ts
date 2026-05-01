@@ -546,8 +546,12 @@ export function getModelStarterPackagePreview(): Promise<ModelStarterPackagePrev
   return request<ModelStarterPackagePreview>("/model-starter/preview");
 }
 
-export function getModelStarterExportZipUrl(): string {
-  return `${API_BASE}/model-starter/export.zip`;
+export function getModelStarterExportZipUrl(includeSplit = false): string {
+  if (!includeSplit) {
+    return `${API_BASE}/model-starter/export.zip`;
+  }
+  const params = new URLSearchParams({ include_split: "true", val_ratio: "0.05", seed: "42" });
+  return `${API_BASE}/model-starter/export.zip?${params.toString()}`;
 }
 
 export function getModelStatus(): Promise<ModelStatus> {

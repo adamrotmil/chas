@@ -21,6 +21,7 @@ CharlesOps must produce a package a user can take away and use as the starting p
 - Exported `split_canary_val.py` creates deterministic train/validation files without mutating the source JSONL.
 - Approved Workbench SFT/DPO rows can be imported idempotently into the model starter tables.
 - `/api/model-starter/preview` exposes the exact generated JSONL/config/script text with file-level SHA-256 checksums before download.
+- `/api/model-starter/export.zip?include_split=true` can include precomputed `charles_sft.train.jsonl` and `charles_sft.val.jsonl` for a zero-command handoff while the default zip remains the exact required tree.
 - The broader downstream artifact manifest lists the model starter package preview as a training-eligible artifact without calling any training API.
 
 ## Current Status
@@ -31,4 +32,4 @@ The API and Workbench now expose the starter package as a concrete artifact rath
 
 - Add model-provider-specific config templates once the training target is chosen.
 - Add a visible last-export receipt after download/write-to-storage.
-- Add an optional package variant that includes precomputed `charles_sft.train.jsonl` and `charles_sft.val.jsonl` for users who want a zero-command handoff.
+- Add a small provider-readiness note that explains which config values the user must fill in before launching a real training run.

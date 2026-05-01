@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlmodel import Session, select
 
 from app.db.session import get_session
@@ -295,8 +295,13 @@ def preview_starter_package(session: Session = Depends(get_session)) -> ModelSta
 
 @router.post("/export")
 @router.get("/export.zip")
-def export_starter_package(session: Session = Depends(get_session)) -> Response:
-    content = package_bytes(session)
+def export_starter_package(
+    include_split: bool = Query(False),
+    val_ratio: float = Query(0.05, ge=0, le=0.5),
+    seed: int = Query(42),
+    session: Session = Depends(get_session),
+) -> Response:
+    content = package_bytes(session, include_split=include_split, val_ratio=val_ratio, seed=seed)
     return Response(
         content=content,
         media_type="application/zip",

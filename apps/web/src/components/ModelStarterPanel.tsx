@@ -541,7 +541,11 @@ export function ModelStarterPanel() {
               </button>
               <a href={getModelStarterExportZipUrl()}>
                 <Download size={14} />
-                Download zip
+                Exact zip
+              </a>
+              <a href={getModelStarterExportZipUrl(true)}>
+                <Download size={14} />
+                With split
               </a>
             </div>
           </header>

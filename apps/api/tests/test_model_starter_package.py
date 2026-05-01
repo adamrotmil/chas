@@ -164,6 +164,24 @@ def test_model_starter_export_zip_has_exact_trainer_ready_package_and_scripts(tm
     assert (package / "data/charles_sft.val.jsonl").exists()
 
 
+def test_model_starter_export_can_include_precomputed_split_files():
+    client, _engine = build_client()
+
+    response = client.get("/api/model-starter/export.zip", params={"include_split": True, "val_ratio": 0.5, "seed": 42})
+    assert response.status_code == 200
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = set(archive.namelist())
+        assert "charles-model/data/charles_sft.train.jsonl" in names
+        assert "charles-model/data/charles_sft.val.jsonl" in names
+        train_rows = _jsonl_rows(archive.read("charles-model/data/charles_sft.train.jsonl").decode("utf-8"))
+        val_rows = _jsonl_rows(archive.read("charles-model/data/charles_sft.val.jsonl").decode("utf-8"))
+        source_rows = _jsonl_rows(archive.read("charles-model/data/charles_sft.jsonl").decode("utf-8"))
+        assert len(train_rows) == 1
+        assert len(val_rows) == 1
+        assert {row["id"] for row in train_rows + val_rows} == {row["id"] for row in source_rows}
+
+
 def test_model_starter_preview_matches_exported_package_contents():
     client, _engine = build_client()
 
