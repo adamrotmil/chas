@@ -1263,6 +1263,72 @@ export interface DatasetExportDryRun {
   excluded: DatasetDryRunRow[];
 }
 
+export interface ModelStarterSFTExample {
+  internal_id: string;
+  id: string;
+  instruction: string;
+  response: string;
+  voice?: string | null;
+  tone?: string | null;
+  provenance?: string | null;
+  consent_status?: string | null;
+  pii_tags: string[];
+  notes?: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelStarterDPOPair {
+  internal_id: string;
+  id: string;
+  prompt: string;
+  chosen: string;
+  rejected: string;
+  provenance?: string | null;
+  why_chosen?: string | null;
+  notes?: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelStarterValidationIssue {
+  artifact_type: "sft" | "dpo" | string;
+  example_id: string;
+  field: string;
+  severity: "error" | "warning" | string;
+  code: string;
+  message: string;
+}
+
+export interface ModelStarterValidation {
+  checked_sft_count: number;
+  checked_dpo_count: number;
+  error_count: number;
+  warning_count: number;
+  ready: boolean;
+  issues: ModelStarterValidationIssue[];
+}
+
+export interface ModelStarterSplit {
+  source_count: number;
+  train_count: number;
+  val_count: number;
+  train_ids: string[];
+  val_ids: string[];
+  deterministic_seed: number;
+  val_ratio: number;
+}
+
+export interface ModelStarterSummary {
+  sft_count: number;
+  dpo_count: number;
+  validation: ModelStarterValidation;
+  package_tree: string[];
+  export_filename: string;
+}
+
 export interface PromptPairAuditSample {
   task_id: string;
   pair_index?: number | string | null;

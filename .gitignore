@@ -27,6 +27,7 @@ apps/web/playwright-report/
 updates/ralph_loop_gate_checkpoint_20*.json
 updates/ralph_loop_gate_checkpoint_20*.md
 updates/charlesops_next_product_shaping_codex_package*
+charles_agent_loop_package.zip
 
 # Local storage payloads are intentionally not versioned.
 storage/raw/*

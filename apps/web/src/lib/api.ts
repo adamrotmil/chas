@@ -34,6 +34,11 @@ import type {
   EntityCreate,
   GoldVoiceExample,
   Memory,
+  ModelStarterDPOPair,
+  ModelStarterSFTExample,
+  ModelStarterSplit,
+  ModelStarterSummary,
+  ModelStarterValidation,
   ModelStatus,
   MorningHandoff,
   PhotoContextTaskCreateResponse,
@@ -442,6 +447,97 @@ export function buildDatasetExport(exportType: "sft" | "dpo", version = "v0", sp
 
 export function getDatasetJsonlUrl(exportType: "sft" | "dpo"): string {
   return `${API_BASE}/dataset-exports/jsonl?export_type=${encodeURIComponent(exportType)}`;
+}
+
+export function getModelStarterSummary(): Promise<ModelStarterSummary> {
+  return request<ModelStarterSummary>("/model-starter/summary");
+}
+
+export function getModelStarterSFTExamples(): Promise<ModelStarterSFTExample[]> {
+  return request<ModelStarterSFTExample[]>("/model-starter/sft");
+}
+
+export function createModelStarterSFTExample(payload: {
+  id: string;
+  instruction: string;
+  response: string;
+  voice?: string | null;
+  tone?: string | null;
+  provenance?: string | null;
+  consent_status?: string | null;
+  pii_tags?: string[];
+  notes?: string | null;
+}): Promise<ModelStarterSFTExample> {
+  return request<ModelStarterSFTExample>("/model-starter/sft", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateModelStarterSFTExample(
+  id: string,
+  payload: Partial<Omit<ModelStarterSFTExample, "internal_id" | "created_at" | "updated_at">>
+): Promise<ModelStarterSFTExample> {
+  return request<ModelStarterSFTExample>(`/model-starter/sft/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deleteModelStarterSFTExample(id: string): Promise<void> {
+  await request<{ deleted: boolean }>(`/model-starter/sft/${encodeURIComponent(id)}`, {
+    method: "DELETE"
+  });
+}
+
+export function getModelStarterDPOPairs(): Promise<ModelStarterDPOPair[]> {
+  return request<ModelStarterDPOPair[]>("/model-starter/dpo");
+}
+
+export function createModelStarterDPOPair(payload: {
+  id: string;
+  prompt: string;
+  chosen: string;
+  rejected: string;
+  provenance?: string | null;
+  why_chosen?: string | null;
+  notes?: string | null;
+}): Promise<ModelStarterDPOPair> {
+  return request<ModelStarterDPOPair>("/model-starter/dpo", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateModelStarterDPOPair(
+  id: string,
+  payload: Partial<Omit<ModelStarterDPOPair, "internal_id" | "created_at" | "updated_at">>
+): Promise<ModelStarterDPOPair> {
+  return request<ModelStarterDPOPair>(`/model-starter/dpo/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deleteModelStarterDPOPair(id: string): Promise<void> {
+  await request<{ deleted: boolean }>(`/model-starter/dpo/${encodeURIComponent(id)}`, {
+    method: "DELETE"
+  });
+}
+
+export function validateModelStarter(): Promise<ModelStarterValidation> {
+  return request<ModelStarterValidation>("/model-starter/validate", { method: "POST" });
+}
+
+export function splitModelStarterSFT(valRatio = 0.05, seed = 42): Promise<ModelStarterSplit> {
+  return request<ModelStarterSplit>("/model-starter/split", {
+    method: "POST",
+    body: JSON.stringify({ val_ratio: valRatio, seed })
+  });
+}
+
+export function getModelStarterExportZipUrl(): string {
+  return `${API_BASE}/model-starter/export.zip`;
 }
 
 export function getModelStatus(): Promise<ModelStatus> {

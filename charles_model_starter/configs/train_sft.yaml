@@ -1,0 +1,11 @@
+dataset: "./data/charles_sft.jsonl"
+template: "instruction-response"
+tokenizer: "auto"
+model: "your-base-model-name"
+epochs: 3
+batch_size: 8
+learning_rate: 2e-5
+max_seq_len: 4096
+save_dir: "./checkpoints/sft"
+eval_subset: "val"
+logging_steps: 25

@@ -572,6 +572,36 @@ class DPOPair(IdMixin, table=True):
     )
 
 
+class ModelStarterSFTExample(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "model_starter_sft_examples"
+    __table_args__ = (UniqueConstraint("example_id", name="uq_model_starter_sft_example_id"),)
+
+    example_id: str = Field(index=True)
+    instruction: str = Field(sa_column=text_column(nullable=False))
+    response: str = Field(sa_column=text_column(nullable=False))
+    voice: Optional[str] = Field(default=None, index=True)
+    tone: Optional[str] = Field(default=None, index=True)
+    provenance: Optional[str] = Field(default=None, sa_column=text_column())
+    consent_status: Optional[str] = Field(default=None, index=True)
+    pii_tags: List[str] = Field(default_factory=list, sa_column=json_column())
+    notes: Optional[str] = Field(default=None, sa_column=text_column())
+    status: str = Field(default="active", index=True)
+
+
+class ModelStarterDPOPair(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "model_starter_dpo_pairs"
+    __table_args__ = (UniqueConstraint("example_id", name="uq_model_starter_dpo_example_id"),)
+
+    example_id: str = Field(index=True)
+    prompt: str = Field(sa_column=text_column(nullable=False))
+    chosen: str = Field(sa_column=text_column(nullable=False))
+    rejected: str = Field(sa_column=text_column(nullable=False))
+    provenance: Optional[str] = Field(default=None, sa_column=text_column())
+    why_chosen: Optional[str] = Field(default=None, sa_column=text_column())
+    notes: Optional[str] = Field(default=None, sa_column=text_column())
+    status: str = Field(default="active", index=True)
+
+
 class EvalCase(IdMixin, table=True):
     __tablename__ = "eval_cases"
 

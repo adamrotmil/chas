@@ -1,0 +1,6 @@
+checkpoints/
+*.ckpt
+*.pt
+*.safetensors
+__pycache__/
+.DS_Store

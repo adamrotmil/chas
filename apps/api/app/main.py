@@ -13,6 +13,7 @@ from app.routers import (
     imports,
     memories,
     metadata_profiles,
+    model_starter,
     model_status,
     prompt_pairs,
     photo_drafts,
@@ -63,6 +64,7 @@ app.include_router(gallery.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(segments.router, prefix="/api")
 app.include_router(metadata_profiles.router, prefix="/api")
+app.include_router(model_starter.router, prefix="/api")
 app.include_router(model_status.router, prefix="/api")
 app.include_router(prompt_pairs.router, prefix="/api")
 app.include_router(photo_drafts.router, prefix="/api")

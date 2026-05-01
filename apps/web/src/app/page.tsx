@@ -40,10 +40,11 @@ import type { Annotation, Asset, AssetUploadResponse, DpoRejectedReasonRepairPac
 import { ArtifactUpload } from "@/components/ArtifactUpload";
 import { ExportDryRunPanel } from "@/components/ExportDryRunPanel";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
+import { ModelStarterPanel } from "@/components/ModelStarterPanel";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
 import { assetIdForTask, readinessBadgesForTask } from "@/lib/readiness";
 
-type NavMode = "intake" | "review" | "make_gold" | "exports";
+type NavMode = "intake" | "review" | "make_gold" | "exports" | "model_starter";
 type CollectionId = "all" | "photos" | "text" | "gold" | "needs_boundary";
 type ShellColumn = "sidebar" | "queue";
 type PhotoTaskFocus = "all" | "fastest_vector";
@@ -106,6 +107,12 @@ const topNav: NavItem[] = [
     label: "Exports",
     icon: <FolderArchive size={15} />,
     tooltip: "Inspect export dry-runs and build JSONL only from boundary-cleared artifacts."
+  },
+  {
+    id: "model_starter",
+    label: "Model Starter",
+    icon: <ClipboardList size={15} />,
+    tooltip: "Edit and export the trainer-ready Charles model starter package."
   }
 ];
 
@@ -742,13 +749,15 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
       return task.task_type === "gold_voice_edit";
     case "exports":
       return task.task_type.includes("export") || task.queue.includes("export");
+    case "model_starter":
+      return false;
     default:
       return true;
   }
 }
 
 function modeUsesCollectionFilter(mode: NavMode): boolean {
-  return mode !== "exports";
+  return mode !== "exports" && mode !== "model_starter";
 }
 
 function defaultCollectionForMode(mode: NavMode): CollectionId {
@@ -2451,6 +2460,8 @@ export default function Home() {
         <section className="workbench-column" ref={workbenchColumnRef}>
           {selectedMode === "exports" ? (
             <ExportDryRunPanel onOpenReviewTask={openPhotoReviewTask} />
+          ) : selectedMode === "model_starter" ? (
+            <ModelStarterPanel />
           ) : (
             <div className={selectedMode === "make_gold" ? "workbench-stack has-utility" : "workbench-stack"}>
               <SubmitReceiptBanner annotation={lastSubmitAnnotation} />

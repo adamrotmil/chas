@@ -340,6 +340,115 @@ class DatasetBuildRequest(SQLModel):
     split: str = "train"
 
 
+class ModelStarterSFTExampleBase(SQLModel):
+    id: str
+    instruction: str
+    response: str
+    voice: Optional[str] = None
+    tone: Optional[str] = None
+    provenance: Optional[str] = None
+    consent_status: Optional[str] = None
+    pii_tags: List[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+
+
+class ModelStarterSFTExampleCreate(ModelStarterSFTExampleBase):
+    pass
+
+
+class ModelStarterSFTExampleUpdate(SQLModel):
+    id: Optional[str] = None
+    instruction: Optional[str] = None
+    response: Optional[str] = None
+    voice: Optional[str] = None
+    tone: Optional[str] = None
+    provenance: Optional[str] = None
+    consent_status: Optional[str] = None
+    pii_tags: Optional[List[str]] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ModelStarterSFTExampleRead(ModelStarterSFTExampleBase):
+    internal_id: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelStarterDPOPairBase(SQLModel):
+    id: str
+    prompt: str
+    chosen: str
+    rejected: str
+    provenance: Optional[str] = None
+    why_chosen: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ModelStarterDPOPairCreate(ModelStarterDPOPairBase):
+    pass
+
+
+class ModelStarterDPOPairUpdate(SQLModel):
+    id: Optional[str] = None
+    prompt: Optional[str] = None
+    chosen: Optional[str] = None
+    rejected: Optional[str] = None
+    provenance: Optional[str] = None
+    why_chosen: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ModelStarterDPOPairRead(ModelStarterDPOPairBase):
+    internal_id: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelStarterValidationIssue(SQLModel):
+    artifact_type: str
+    example_id: str
+    field: str
+    severity: str
+    code: str
+    message: str
+
+
+class ModelStarterValidationResponse(SQLModel):
+    checked_sft_count: int
+    checked_dpo_count: int
+    error_count: int
+    warning_count: int
+    ready: bool
+    issues: List[ModelStarterValidationIssue] = Field(default_factory=list)
+
+
+class ModelStarterSplitRequest(SQLModel):
+    val_ratio: float = 0.05
+    seed: int = 42
+
+
+class ModelStarterSplitResponse(SQLModel):
+    source_count: int
+    train_count: int
+    val_count: int
+    train_ids: List[str] = Field(default_factory=list)
+    val_ids: List[str] = Field(default_factory=list)
+    deterministic_seed: int
+    val_ratio: float
+
+
+class ModelStarterSummary(SQLModel):
+    sft_count: int
+    dpo_count: int
+    validation: ModelStarterValidationResponse
+    package_tree: List[str] = Field(default_factory=list)
+    export_filename: str = "charles-model.zip"
+
+
 class DriveFileImport(SQLModel):
     drive_file_id: str
     name: str
