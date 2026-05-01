@@ -11,6 +11,7 @@ from app.config import Settings
 from app.exports.jsonl import dpo_export_items, export_dry_run, sft_export_items, to_jsonl
 from app.models import Task, utcnow
 from app.services.demo_generation import compile_demo_generation_request_preview
+from app.services.model_starter import package_preview as compile_model_starter_package_preview
 from app.services.photo_context_progress import (
     build_photo_context_retrieval_gap_field_worklist,
     build_photo_context_retrieval_gap_payoff_preview,
@@ -293,6 +294,11 @@ def compile_downstream_artifact_manifest(
     photo_session_progress_json = _stable_json(photo_session_progress_artifact)
     photo_context_pack_audit_json = _stable_json(photo_context_pack_audit)
     source_preview_json = _stable_json(source_preview)
+    model_starter_preview = compile_model_starter_package_preview(session, seed_if_empty=False)
+    model_starter_preview_json = _stable_json(model_starter_preview)
+    model_starter_validation = (
+        model_starter_preview.get("validation") if isinstance(model_starter_preview.get("validation"), dict) else {}
+    )
 
     review_only = {"training": False, "vector": False, "gallery": False, "human_review": True}
     items = [
@@ -548,6 +554,29 @@ def compile_downstream_artifact_manifest(
                 "candidate_preview_only": True,
                 "approved_training_build": False,
                 "candidate_rows_missing_blockers": dpo_dry_run.get("candidate_rows_missing_blockers"),
+            },
+        ),
+        _artifact_item(
+            artifact_key="model_starter_package_preview_json",
+            label="Trainer-ready model starter package preview",
+            artifact_family="model_starter_package",
+            format="json",
+            source_endpoint="/api/model-starter/preview",
+            download_endpoint="/api/model-starter/export.zip",
+            content_sha256=_content_hash(model_starter_preview_json),
+            record_count=int(model_starter_validation.get("checked_sft_count") or 0)
+            + int(model_starter_validation.get("checked_dpo_count") or 0),
+            preview_char_count=len(model_starter_preview_json),
+            eligibility={"training": True, "vector": False, "gallery": False, "human_review": True},
+            policy={
+                "package_content_sha256": model_starter_preview.get("content_sha256"),
+                "validation_ready": model_starter_validation.get("ready") is True,
+                "validation_error_count": model_starter_validation.get("error_count"),
+                "sft_count": model_starter_validation.get("checked_sft_count"),
+                "dpo_count": model_starter_validation.get("checked_dpo_count"),
+                "zip_download_endpoint": "/api/model-starter/export.zip",
+                "package_tree": model_starter_preview.get("package_tree"),
+                "does_not_call_training_api": True,
             },
         ),
         _artifact_item(
@@ -876,6 +905,7 @@ def compile_downstream_artifact_audit(
     vector_export = photo_memory_embedding_export(session=session, scope=scope, limit=safe_vector_limit)
     vector_manifest = vector_export.get("manifest") if isinstance(vector_export.get("manifest"), dict) else {}
     source_preview, _source_preview_endpoint = _source_review_pair_preview_payload(session)
+    model_starter_preview = compile_model_starter_package_preview(session, seed_if_empty=False)
     artifact_bodies = {
         "prompt_pair_audit_markdown": audit_pack.get("markdown") or "",
         "prompt_pair_review_progress_json": _stable_json(prompt_review_progress),
@@ -890,6 +920,7 @@ def compile_downstream_artifact_audit(
         "dataset_dpo_approved_jsonl": to_jsonl(dpo_export_items(session)),
         "dataset_sft_candidate_dry_run": _stable_json(export_dry_run(session, "sft", include_candidates=True)),
         "dataset_dpo_candidate_dry_run": _stable_json(export_dry_run(session, "dpo", include_candidates=True)),
+        "model_starter_package_preview_json": _stable_json(model_starter_preview),
         "photo_context_pack_readiness_json": _stable_json(photo_context_pack_audit),
         "photo_context_review_pack_yaml_preview": photo_pack.get("export_preview_yaml") or "",
         "photo_context_review_session_plan_yaml": photo_session_plan.get("export_preview_yaml") or "",

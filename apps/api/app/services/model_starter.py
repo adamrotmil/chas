@@ -444,8 +444,10 @@ def package_file_contents(
     include_split: bool = False,
     val_ratio: float = 0.05,
     seed: int = 42,
+    seed_if_empty: bool = True,
 ) -> List[tuple[str, str]]:
-    ensure_seed_data(session)
+    if seed_if_empty:
+        ensure_seed_data(session)
     sft_rows = [sft_row(example) for example in _active_sft(session)]
     dpo_rows = [dpo_row(pair) for pair in _active_dpo(session)]
     split = split_sft_ids(sft_rows, val_ratio=val_ratio, seed=seed)
@@ -473,8 +475,8 @@ def package_file_contents(
     return files
 
 
-def package_preview(session: Session) -> Dict[str, Any]:
-    files = package_file_contents(session)
+def package_preview(session: Session, *, seed_if_empty: bool = True) -> Dict[str, Any]:
+    files = package_file_contents(session, seed_if_empty=seed_if_empty)
     file_summaries = []
     content_digest = hashlib.sha256()
     by_path = dict(files)
@@ -508,7 +510,12 @@ def package_preview(session: Session) -> Dict[str, Any]:
 def package_bytes(session: Session, *, include_split: bool = False, val_ratio: float = 0.05, seed: int = 42) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path, text in package_file_contents(session, include_split=include_split, val_ratio=val_ratio, seed=seed):
+        for path, text in package_file_contents(
+            session,
+            include_split=include_split,
+            val_ratio=val_ratio,
+            seed=seed,
+        ):
             archive.writestr(path, text)
     return buffer.getvalue()
 

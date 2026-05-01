@@ -168,6 +168,7 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
         "dataset_dpo_approved_jsonl",
         "dataset_sft_candidate_dry_run",
         "dataset_dpo_candidate_dry_run",
+        "model_starter_package_preview_json",
         "photo_context_pack_readiness_json",
         "photo_context_review_pack_yaml_preview",
         "photo_context_review_session_plan_yaml",
@@ -215,6 +216,14 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
     assert items["prompt_pair_reference_jsonl"]["eligibility"]["vector"] is True
     assert items["dataset_sft_approved_jsonl"]["eligibility"]["training"] is True
     assert items["dataset_sft_candidate_dry_run"]["eligibility"]["training"] is False
+    assert items["model_starter_package_preview_json"]["artifact_family"] == "model_starter_package"
+    assert items["model_starter_package_preview_json"]["format"] == "json"
+    assert items["model_starter_package_preview_json"]["source_endpoint"] == "/api/model-starter/preview"
+    assert items["model_starter_package_preview_json"]["download_endpoint"] == "/api/model-starter/export.zip"
+    assert items["model_starter_package_preview_json"]["eligibility"]["training"] is True
+    assert items["model_starter_package_preview_json"]["policy"]["does_not_call_training_api"] is True
+    assert len(items["model_starter_package_preview_json"]["policy"]["package_content_sha256"]) == 64
+    assert "charles-model/data/charles_sft.jsonl" in items["model_starter_package_preview_json"]["policy"]["package_tree"]
     assert items["photo_context_pack_readiness_json"]["artifact_family"] == "photo_context_review"
     assert items["photo_context_pack_readiness_json"]["format"] == "json"
     assert items["photo_context_pack_readiness_json"]["source_endpoint"].startswith(
@@ -355,7 +364,7 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
     assert audit["no_live_model_call"] is True
     assert audit["no_live_embedding_call"] is True
     assert audit["no_fine_tuning_api_calls_in_mvp"] is True
-    assert audit["checked_count"] == 23
+    assert audit["checked_count"] == 24
     assert audit["mismatch_count"] == 0
     assert audit["all_hashes_match"] is True
     assert len(audit["manifest_content_sha256"]) == 64
@@ -372,6 +381,9 @@ def test_downstream_artifact_audit_recomputes_manifest_hashes():
     assert checked["prompt_pair_top_blocker_session_plan_yaml"]["policy"]["projected_task_delta"]["raw_sources_mutated"] is False
     assert checked["prompt_pair_reference_jsonl"]["hash_matches"] is True
     assert checked["dataset_sft_candidate_dry_run"]["hash_matches"] is True
+    assert checked["model_starter_package_preview_json"]["hash_matches"] is True
+    assert checked["model_starter_package_preview_json"]["format"] == "json"
+    assert checked["model_starter_package_preview_json"]["policy"]["does_not_call_training_api"] is True
     assert checked["photo_context_pack_readiness_json"]["hash_matches"] is True
     assert checked["photo_context_pack_readiness_json"]["format"] == "json"
     assert checked["photo_context_pack_readiness_json"]["policy"]["uses_reviewed_photo_context"] is True
