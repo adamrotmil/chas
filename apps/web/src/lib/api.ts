@@ -35,6 +35,7 @@ import type {
   GoldVoiceExample,
   Memory,
   ModelStarterDPOPair,
+  ModelStarterImportApproved,
   ModelStarterSFTExample,
   ModelStarterSplit,
   ModelStarterSummary,
@@ -534,6 +535,10 @@ export function splitModelStarterSFT(valRatio = 0.05, seed = 42): Promise<ModelS
     method: "POST",
     body: JSON.stringify({ val_ratio: valRatio, seed })
   });
+}
+
+export function importApprovedWorkbenchRowsIntoModelStarter(): Promise<ModelStarterImportApproved> {
+  return request<ModelStarterImportApproved>("/model-starter/import-approved", { method: "POST" });
 }
 
 export function getModelStarterExportZipUrl(): string {

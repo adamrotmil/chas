@@ -449,6 +449,15 @@ class ModelStarterSummary(SQLModel):
     export_filename: str = "charles-model.zip"
 
 
+class ModelStarterImportApprovedResponse(SQLModel):
+    imported_sft_count: int
+    imported_dpo_count: int
+    skipped_existing_count: int
+    created_sft_ids: List[str] = Field(default_factory=list)
+    created_dpo_ids: List[str] = Field(default_factory=list)
+    skipped_existing_ids: List[str] = Field(default_factory=list)
+
+
 class DriveFileImport(SQLModel):
     drive_file_id: str
     name: str

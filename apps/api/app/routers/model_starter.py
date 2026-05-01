@@ -9,6 +9,7 @@ from app.schemas import (
     ModelStarterDPOPairCreate,
     ModelStarterDPOPairRead,
     ModelStarterDPOPairUpdate,
+    ModelStarterImportApprovedResponse,
     ModelStarterSFTExampleCreate,
     ModelStarterSFTExampleRead,
     ModelStarterSFTExampleUpdate,
@@ -21,6 +22,7 @@ from app.services.model_starter import (
     PACKAGE_TREE,
     dpo_row,
     ensure_seed_data,
+    import_approved_workbench_exports,
     package_bytes,
     sft_row,
     split_sft_ids,
@@ -277,6 +279,11 @@ def split_starter_sft(
         deterministic_seed=split["deterministic_seed"],
         val_ratio=split["val_ratio"],
     )
+
+
+@router.post("/import-approved", response_model=ModelStarterImportApprovedResponse)
+def import_approved_workbench_rows(session: Session = Depends(get_session)) -> ModelStarterImportApprovedResponse:
+    return ModelStarterImportApprovedResponse(**import_approved_workbench_exports(session))
 
 
 @router.post("/export")

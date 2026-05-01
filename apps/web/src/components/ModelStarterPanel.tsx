@@ -11,6 +11,7 @@ import {
   getModelStarterExportZipUrl,
   getModelStarterSFTExamples,
   getModelStarterSummary,
+  importApprovedWorkbenchRowsIntoModelStarter,
   splitModelStarterSFT,
   updateModelStarterDPOPair,
   updateModelStarterSFTExample,
@@ -274,6 +275,22 @@ export function ModelStarterPanel() {
     }
   }
 
+  async function importApprovedRows() {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await importApprovedWorkbenchRowsIntoModelStarter();
+      setNotice(
+        `Imported ${result.imported_sft_count} SFT and ${result.imported_dpo_count} DPO approved Workbench row(s); ${result.skipped_existing_count} already present.`
+      );
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to import approved Workbench rows.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <section className="model-starter-workbench" aria-label="Model starter package">
       <header className="model-starter-hero">
@@ -291,6 +308,10 @@ export function ModelStarterPanel() {
           <button type="button" onClick={() => void load()} disabled={loading}>
             <RefreshCw size={14} />
             Refresh
+          </button>
+          <button type="button" onClick={() => void importApprovedRows()} disabled={loading}>
+            <Plus size={14} />
+            Import approved
           </button>
           <a href={getModelStarterExportZipUrl()} aria-disabled={!canExport}>
             <Download size={14} />

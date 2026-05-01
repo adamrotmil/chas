@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 
 from app.config import settings
 from app.models import ModelStarterDPOPair, ModelStarterSFTExample, utcnow
+from app.exports.jsonl import export_dry_run
 
 
 PACKAGE_ROOT = "charles-model"
@@ -469,3 +470,94 @@ def write_package_zip(session: Session) -> Path:
 
 def touch_updated(model: Any) -> None:
     model.updated_at = utcnow()
+
+
+def _message_content(messages: Any, role: str) -> str:
+    if not isinstance(messages, list):
+        return ""
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == role:
+            return str(message.get("content") or "")
+    return ""
+
+
+def _starter_id(prefix: str, artifact_id: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", artifact_id).strip("-").lower()
+    return f"{prefix}-{cleaned[:18] or 'unknown'}"
+
+
+def import_approved_workbench_exports(session: Session) -> Dict[str, Any]:
+    ensure_seed_data(session)
+    created_sft_ids: List[str] = []
+    created_dpo_ids: List[str] = []
+    skipped_existing_ids: List[str] = []
+
+    sft_rows = export_dry_run(session, "sft", include_candidates=False)["included"]
+    for row in sft_rows:
+        artifact_id = str(row.get("artifact_id") or "")
+        example_id = _starter_id("wb-sft", artifact_id)
+        existing = session.exec(select(ModelStarterSFTExample).where(ModelStarterSFTExample.example_id == example_id)).first()
+        if existing and existing.status != "deleted":
+            skipped_existing_ids.append(example_id)
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        messages = payload.get("messages")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        instruction = _message_content(messages, "user")
+        response = _message_content(messages, "assistant")
+        if not instruction.strip() or not response.strip():
+            continue
+        example = existing or ModelStarterSFTExample(example_id=example_id, instruction="", response="")
+        example.example_id = example_id
+        example.instruction = instruction
+        example.response = response
+        example.voice = str(metadata.get("voice_mode") or "father_to_adam")
+        example.tone = str(metadata.get("artifact_mode") or "sft")
+        example.provenance = f"Imported from approved Workbench SFT artifact {artifact_id}"
+        example.consent_status = "approved_workbench_export"
+        example.pii_tags = []
+        example.notes = str(metadata.get("context") or "")
+        example.status = "active"
+        touch_updated(example)
+        session.add(example)
+        created_sft_ids.append(example_id)
+
+    dpo_rows = export_dry_run(session, "dpo", include_candidates=False)["included"]
+    for row in dpo_rows:
+        artifact_id = str(row.get("artifact_id") or "")
+        example_id = _starter_id("wb-dpo", artifact_id)
+        existing = session.exec(select(ModelStarterDPOPair).where(ModelStarterDPOPair.example_id == example_id)).first()
+        if existing and existing.status != "deleted":
+            skipped_existing_ids.append(example_id)
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        input_payload = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        prompt = _message_content(input_payload.get("messages"), "user")
+        chosen = str(payload.get("preferred_output") or "")
+        rejected = str(payload.get("non_preferred_output") or "")
+        if not prompt.strip() or not chosen.strip() or not rejected.strip() or chosen.strip() == rejected.strip():
+            continue
+        pair = existing or ModelStarterDPOPair(example_id=example_id, prompt="", chosen="", rejected="")
+        pair.example_id = example_id
+        pair.prompt = prompt
+        pair.chosen = chosen
+        pair.rejected = rejected
+        pair.provenance = f"Imported from approved Workbench DPO artifact {artifact_id}"
+        reason = metadata.get("reason")
+        pair.why_chosen = "; ".join(str(item) for item in reason) if isinstance(reason, list) else str(reason or "")
+        pair.notes = str(metadata.get("context") or "")
+        pair.status = "active"
+        touch_updated(pair)
+        session.add(pair)
+        created_dpo_ids.append(example_id)
+
+    session.commit()
+    return {
+        "imported_sft_count": len(created_sft_ids),
+        "imported_dpo_count": len(created_dpo_ids),
+        "skipped_existing_count": len(skipped_existing_ids),
+        "created_sft_ids": created_sft_ids,
+        "created_dpo_ids": created_dpo_ids,
+        "skipped_existing_ids": skipped_existing_ids,
+    }

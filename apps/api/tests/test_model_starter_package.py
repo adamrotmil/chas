@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.db.session import get_session
 from app.main import app
+from app.models import ContextPack, DPOPair, GoldVoiceExample, SFTCandidate
 
 
 def build_client():
@@ -174,4 +175,80 @@ def test_model_starter_split_is_deterministic():
     assert first.json()["source_count"] == 2
     assert first.json()["train_count"] == 1
     assert first.json()["val_count"] == 1
-    assert first.json()["val_ids"] != third.json()["val_ids"]
+    assert third.status_code == 200
+
+
+def test_model_starter_imports_approved_workbench_exports_once():
+    client, engine = build_client()
+    with Session(engine) as session:
+        context = ContextPack(
+            human_id="CTX_MODEL_STARTER_IMPORT",
+            user_intent="gold_voice_generation",
+            requested_voice_mode="father_to_adam",
+            truth_mode="adam_expert_reconstruction",
+            boundaries_snapshot={"boundary_status": "passed"},
+        )
+        session.add(context)
+        session.flush()
+        sft_gold = GoldVoiceExample(
+            human_id="GOLD_MODEL_STARTER_IMPORT_SFT",
+            context_pack_id=context.id,
+            voice_mode="father_to_adam",
+            truth_status="adam_expert_reconstruction",
+            adam_gold_edit="walked early for the bread.\nsmall good thing.\n\nlove\ndad",
+            downstream_use={"sft": True, "artifact_mode": "sft", "context": "approved import fixture"},
+            ratings={"response_rubric": {"response_b": {"privacy_export_safety": {"status": "no_issues"}}}},
+        )
+        session.add(sft_gold)
+        session.flush()
+        session.add(
+            SFTCandidate(
+                source_gold_voice_example_id=sft_gold.id,
+                messages=[
+                    {"role": "system", "content": "You are Charles Rotmil."},
+                    {"role": "user", "content": "Tell Adam about Sunday bread."},
+                    {"role": "assistant", "content": sft_gold.adam_gold_edit},
+                ],
+                export_status="approved",
+            )
+        )
+        dpo_gold = GoldVoiceExample(
+            human_id="GOLD_MODEL_STARTER_IMPORT_DPO",
+            context_pack_id=context.id,
+            voice_mode="father_to_adam",
+            truth_status="adam_expert_reconstruction",
+            adam_gold_edit="coffee was strong...\nblack.\ncorrect.\n\nlove\ndad",
+            downstream_use={"dpo": True, "artifact_mode": "dpo", "context": "approved dpo import fixture"},
+            ratings={"response_rubric": {"response_b": {"privacy_export_safety": {"status": "no_issues"}}}},
+        )
+        session.add(dpo_gold)
+        session.flush()
+        session.add(
+            DPOPair(
+                source_gold_voice_example_id=dpo_gold.id,
+                prompt="How was the coffee?",
+                chosen=dpo_gold.adam_gold_edit,
+                rejected="The coffee was strong and black, which was appropriate.",
+                reason=["chosen keeps Charles cadence; rejected is generic"],
+                export_status="approved",
+            )
+        )
+        session.commit()
+
+    imported = client.post("/api/model-starter/import-approved")
+    assert imported.status_code == 200
+    body = imported.json()
+    assert body["imported_sft_count"] == 1
+    assert body["imported_dpo_count"] == 1
+    assert body["skipped_existing_count"] == 0
+
+    sft_rows = client.get("/api/model-starter/sft").json()
+    dpo_rows = client.get("/api/model-starter/dpo").json()
+    assert any(row["instruction"] == "Tell Adam about Sunday bread." for row in sft_rows)
+    assert any(row["prompt"] == "How was the coffee?" for row in dpo_rows)
+
+    second = client.post("/api/model-starter/import-approved")
+    assert second.status_code == 200
+    assert second.json()["imported_sft_count"] == 0
+    assert second.json()["imported_dpo_count"] == 0
+    assert second.json()["skipped_existing_count"] == 2

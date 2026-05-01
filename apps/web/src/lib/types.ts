@@ -1321,6 +1321,15 @@ export interface ModelStarterSplit {
   val_ratio: number;
 }
 
+export interface ModelStarterImportApproved {
+  imported_sft_count: number;
+  imported_dpo_count: number;
+  skipped_existing_count: number;
+  created_sft_ids: string[];
+  created_dpo_ids: string[];
+  skipped_existing_ids: string[];
+}
+
 export interface ModelStarterSummary {
   sft_count: number;
   dpo_count: number;
