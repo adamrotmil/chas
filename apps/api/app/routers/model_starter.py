@@ -10,6 +10,7 @@ from app.schemas import (
     ModelStarterDPOPairRead,
     ModelStarterDPOPairUpdate,
     ModelStarterImportApprovedResponse,
+    ModelStarterPackagePreview,
     ModelStarterSFTExampleCreate,
     ModelStarterSFTExampleRead,
     ModelStarterSFTExampleUpdate,
@@ -24,6 +25,7 @@ from app.services.model_starter import (
     ensure_seed_data,
     import_approved_workbench_exports,
     package_bytes,
+    package_preview,
     sft_row,
     split_sft_ids,
     touch_updated,
@@ -284,6 +286,11 @@ def split_starter_sft(
 @router.post("/import-approved", response_model=ModelStarterImportApprovedResponse)
 def import_approved_workbench_rows(session: Session = Depends(get_session)) -> ModelStarterImportApprovedResponse:
     return ModelStarterImportApprovedResponse(**import_approved_workbench_exports(session))
+
+
+@router.get("/preview", response_model=ModelStarterPackagePreview)
+def preview_starter_package(session: Session = Depends(get_session)) -> ModelStarterPackagePreview:
+    return ModelStarterPackagePreview(**package_preview(session))
 
 
 @router.post("/export")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import math
 import random
@@ -437,24 +438,78 @@ def split_sft_ids(rows: Sequence[Dict[str, Any]], val_ratio: float = 0.05, seed:
     }
 
 
-def package_bytes(session: Session, *, include_split: bool = False, val_ratio: float = 0.05, seed: int = 42) -> bytes:
+def package_file_contents(
+    session: Session,
+    *,
+    include_split: bool = False,
+    val_ratio: float = 0.05,
+    seed: int = 42,
+) -> List[tuple[str, str]]:
     ensure_seed_data(session)
     sft_rows = [sft_row(example) for example in _active_sft(session)]
     dpo_rows = [dpo_row(pair) for pair in _active_dpo(session)]
     split = split_sft_ids(sft_rows, val_ratio=val_ratio, seed=seed)
 
+    files = [
+        (f"{PACKAGE_ROOT}/data/charles_sft.jsonl", to_jsonl(sft_rows)),
+        (f"{PACKAGE_ROOT}/data/charles_dpo.jsonl", to_jsonl(dpo_rows)),
+    ]
+    if include_split:
+        files.extend(
+            [
+                (f"{PACKAGE_ROOT}/data/charles_sft.train.jsonl", to_jsonl(split["train_rows"])),
+                (f"{PACKAGE_ROOT}/data/charles_sft.val.jsonl", to_jsonl(split["val_rows"])),
+            ]
+        )
+    files.extend(
+        [
+            (f"{PACKAGE_ROOT}/data/README.md", DATA_README),
+            (f"{PACKAGE_ROOT}/configs/train_sft.yaml", TRAIN_CONFIG),
+            (f"{PACKAGE_ROOT}/scripts/check_jsonl.py", CHECK_JSONL_SCRIPT + "\n"),
+            (f"{PACKAGE_ROOT}/scripts/split_canary_val.py", SPLIT_SCRIPT + "\n"),
+            (f"{PACKAGE_ROOT}/.gitignore", PACKAGE_GITIGNORE),
+        ]
+    )
+    return files
+
+
+def package_preview(session: Session) -> Dict[str, Any]:
+    files = package_file_contents(session)
+    file_summaries = []
+    content_digest = hashlib.sha256()
+    by_path = dict(files)
+    for path, text in files:
+        encoded = text.encode("utf-8")
+        content_digest.update(path.encode("utf-8"))
+        content_digest.update(b"\0")
+        content_digest.update(encoded)
+        file_summaries.append(
+            {
+                "path": path,
+                "byte_count": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            }
+        )
+    validation = validate_model_starter(_active_sft(session), _active_dpo(session))
+    return {
+        "package_tree": [path for path, _text in files],
+        "file_summaries": file_summaries,
+        "content_sha256": content_digest.hexdigest(),
+        "sft_jsonl": by_path[f"{PACKAGE_ROOT}/data/charles_sft.jsonl"],
+        "dpo_jsonl": by_path[f"{PACKAGE_ROOT}/data/charles_dpo.jsonl"],
+        "train_config": by_path[f"{PACKAGE_ROOT}/configs/train_sft.yaml"],
+        "readme": by_path[f"{PACKAGE_ROOT}/data/README.md"],
+        "check_jsonl_script": by_path[f"{PACKAGE_ROOT}/scripts/check_jsonl.py"],
+        "split_script": by_path[f"{PACKAGE_ROOT}/scripts/split_canary_val.py"],
+        "validation": validation,
+    }
+
+
+def package_bytes(session: Session, *, include_split: bool = False, val_ratio: float = 0.05, seed: int = 42) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{PACKAGE_ROOT}/data/charles_sft.jsonl", to_jsonl(sft_rows))
-        archive.writestr(f"{PACKAGE_ROOT}/data/charles_dpo.jsonl", to_jsonl(dpo_rows))
-        if include_split:
-            archive.writestr(f"{PACKAGE_ROOT}/data/charles_sft.train.jsonl", to_jsonl(split["train_rows"]))
-            archive.writestr(f"{PACKAGE_ROOT}/data/charles_sft.val.jsonl", to_jsonl(split["val_rows"]))
-        archive.writestr(f"{PACKAGE_ROOT}/data/README.md", DATA_README)
-        archive.writestr(f"{PACKAGE_ROOT}/configs/train_sft.yaml", TRAIN_CONFIG)
-        archive.writestr(f"{PACKAGE_ROOT}/scripts/check_jsonl.py", CHECK_JSONL_SCRIPT + "\n")
-        archive.writestr(f"{PACKAGE_ROOT}/scripts/split_canary_val.py", SPLIT_SCRIPT + "\n")
-        archive.writestr(f"{PACKAGE_ROOT}/.gitignore", PACKAGE_GITIGNORE)
+        for path, text in package_file_contents(session, include_split=include_split, val_ratio=val_ratio, seed=seed):
+            archive.writestr(path, text)
     return buffer.getvalue()
 
 

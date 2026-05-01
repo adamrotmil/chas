@@ -9,6 +9,7 @@ import {
   deleteModelStarterSFTExample,
   getModelStarterDPOPairs,
   getModelStarterExportZipUrl,
+  getModelStarterPackagePreview,
   getModelStarterSFTExamples,
   getModelStarterSummary,
   importApprovedWorkbenchRowsIntoModelStarter,
@@ -19,6 +20,7 @@ import {
 } from "@/lib/api";
 import type {
   ModelStarterDPOPair,
+  ModelStarterPackagePreview,
   ModelStarterSFTExample,
   ModelStarterSplit,
   ModelStarterSummary,
@@ -26,6 +28,7 @@ import type {
 } from "@/lib/types";
 
 type StarterTab = "sft" | "dpo" | "validate" | "export";
+type ExportPreviewTab = "tree" | "sft" | "dpo" | "config" | "scripts";
 
 const emptySft: ModelStarterSFTExample = {
   internal_id: "",
@@ -73,41 +76,15 @@ function tagsText(tags: string[]): string {
   return tags.join(", ");
 }
 
-function exportPreview(sft: ModelStarterSFTExample[], dpo: ModelStarterDPOPair[]): string {
-  return [
-    "charles-model/",
-    "  data/",
-    `    charles_sft.jsonl (${sft.length} rows)`,
-    `    charles_dpo.jsonl (${dpo.length} rows)`,
-    "    README.md",
-    "  configs/",
-    "    train_sft.yaml",
-    "  scripts/",
-    "    check_jsonl.py",
-    "    split_canary_val.py",
-    "  .gitignore"
-  ].join("\n");
-}
-
-function configPreview(): string {
-  return [
-    'dataset: "./data/charles_sft.jsonl"',
-    'template: "instruction-response"',
-    'tokenizer: "auto"',
-    'model: "your-base-model-name"',
-    "epochs: 3",
-    "batch_size: 8",
-    "learning_rate: 2e-5",
-    "max_seq_len: 4096",
-    'save_dir: "./checkpoints/sft"',
-    'eval_subset: "val"',
-    "logging_steps: 25"
-  ].join("\n");
+function localExportPreview(sft: ModelStarterSFTExample[], dpo: ModelStarterDPOPair[]): string {
+  return `charles-model/data/charles_sft.jsonl (${sft.length} rows)\ncharles-model/data/charles_dpo.jsonl (${dpo.length} rows)\ncharles-model/configs/train_sft.yaml\ncharles-model/scripts/check_jsonl.py\ncharles-model/scripts/split_canary_val.py\ncharles-model/.gitignore`;
 }
 
 export function ModelStarterPanel() {
   const [tab, setTab] = useState<StarterTab>("sft");
   const [summary, setSummary] = useState<ModelStarterSummary | null>(null);
+  const [packagePreview, setPackagePreview] = useState<ModelStarterPackagePreview | null>(null);
+  const [exportPreviewTab, setExportPreviewTab] = useState<ExportPreviewTab>("tree");
   const [sftRows, setSftRows] = useState<ModelStarterSFTExample[]>([]);
   const [dpoRows, setDpoRows] = useState<ModelStarterDPOPair[]>([]);
   const [selectedSftId, setSelectedSftId] = useState<string | null>(null);
@@ -130,7 +107,9 @@ export function ModelStarterPanel() {
         getModelStarterSFTExamples(),
         getModelStarterDPOPairs()
       ]);
+      const previewData = await getModelStarterPackagePreview();
       setSummary(summaryData);
+      setPackagePreview(previewData);
       setValidation(summaryData.validation);
       setSftRows(sftData);
       setDpoRows(dpoData);
@@ -154,6 +133,26 @@ export function ModelStarterPanel() {
   const activeSft = useMemo(() => sftRows.find((row) => row.id === selectedSftId) ?? null, [selectedSftId, sftRows]);
   const activeDpo = useMemo(() => dpoRows.find((row) => row.id === selectedDpoId) ?? null, [selectedDpoId, dpoRows]);
   const canExport = (validation ?? summary?.validation)?.ready ?? false;
+  const packageTreePreview = packagePreview
+    ? packagePreview.file_summaries
+        .map((file) => `${file.path}  ${file.byte_count} bytes  sha256:${file.sha256.slice(0, 12)}`)
+        .join("\n")
+    : localExportPreview(sftRows, dpoRows);
+  const activeExportPreview =
+    exportPreviewTab === "tree"
+      ? packageTreePreview
+      : exportPreviewTab === "sft"
+        ? packagePreview?.sft_jsonl ?? ""
+        : exportPreviewTab === "dpo"
+          ? packagePreview?.dpo_jsonl ?? ""
+          : exportPreviewTab === "config"
+            ? packagePreview?.train_config ?? ""
+            : [
+                "# scripts/check_jsonl.py",
+                packagePreview?.check_jsonl_script ?? "",
+                "# scripts/split_canary_val.py",
+                packagePreview?.split_script ?? ""
+              ].join("\n\n");
 
   function selectSft(row: ModelStarterSFTExample) {
     setSelectedSftId(row.id);
@@ -534,6 +533,7 @@ export function ModelStarterPanel() {
             <div>
               <span>Exact package preview</span>
               <strong>What the Export zip button generates</strong>
+              <p>Content fingerprint: {packagePreview?.content_sha256.slice(0, 16) ?? "loading"}</p>
             </div>
             <div>
               <button type="button" onClick={() => void runSplit()} disabled={loading}>
@@ -545,9 +545,33 @@ export function ModelStarterPanel() {
               </a>
             </div>
           </header>
-          <div className="starter-export-grid">
-            <pre>{exportPreview(sftRows, dpoRows)}</pre>
-            <pre>{configPreview()}</pre>
+          <div className="starter-export-subtabs" aria-label="Export preview files">
+            {([
+              ["tree", "Tree"],
+              ["sft", "SFT JSONL"],
+              ["dpo", "DPO JSONL"],
+              ["config", "Config"],
+              ["scripts", "Scripts"]
+            ] as Array<[ExportPreviewTab, string]>).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={exportPreviewTab === id ? "active" : ""}
+                onClick={() => setExportPreviewTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <pre className="starter-export-preview">{activeExportPreview}</pre>
+          <div className="starter-file-proof">
+            {packagePreview?.file_summaries.map((file) => (
+              <article key={file.path}>
+                <strong>{file.path}</strong>
+                <span>{file.byte_count} bytes</span>
+                <code>{file.sha256}</code>
+              </article>
+            ))}
           </div>
           {split ? (
             <div className="starter-split-proof">

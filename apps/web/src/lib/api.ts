@@ -36,6 +36,7 @@ import type {
   Memory,
   ModelStarterDPOPair,
   ModelStarterImportApproved,
+  ModelStarterPackagePreview,
   ModelStarterSFTExample,
   ModelStarterSplit,
   ModelStarterSummary,
@@ -539,6 +540,10 @@ export function splitModelStarterSFT(valRatio = 0.05, seed = 42): Promise<ModelS
 
 export function importApprovedWorkbenchRowsIntoModelStarter(): Promise<ModelStarterImportApproved> {
   return request<ModelStarterImportApproved>("/model-starter/import-approved", { method: "POST" });
+}
+
+export function getModelStarterPackagePreview(): Promise<ModelStarterPackagePreview> {
+  return request<ModelStarterPackagePreview>("/model-starter/preview");
 }
 
 export function getModelStarterExportZipUrl(): string {

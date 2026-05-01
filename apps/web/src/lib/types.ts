@@ -1330,6 +1330,25 @@ export interface ModelStarterImportApproved {
   skipped_existing_ids: string[];
 }
 
+export interface ModelStarterPackageFileSummary {
+  path: string;
+  byte_count: number;
+  sha256: string;
+}
+
+export interface ModelStarterPackagePreview {
+  package_tree: string[];
+  file_summaries: ModelStarterPackageFileSummary[];
+  content_sha256: string;
+  sft_jsonl: string;
+  dpo_jsonl: string;
+  train_config: string;
+  readme: string;
+  check_jsonl_script: string;
+  split_script: string;
+  validation: ModelStarterValidation;
+}
+
 export interface ModelStarterSummary {
   sft_count: number;
   dpo_count: number;

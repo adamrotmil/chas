@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import subprocess
 import sys
@@ -161,6 +162,38 @@ def test_model_starter_export_zip_has_exact_trainer_ready_package_and_scripts(tm
     assert split.returncode == 0, split.stdout + split.stderr
     assert (package / "data/charles_sft.train.jsonl").exists()
     assert (package / "data/charles_sft.val.jsonl").exists()
+
+
+def test_model_starter_preview_matches_exported_package_contents():
+    client, _engine = build_client()
+
+    preview = client.get("/api/model-starter/preview")
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["validation"]["ready"] is True
+    assert body["package_tree"] == [
+        "charles-model/data/charles_sft.jsonl",
+        "charles-model/data/charles_dpo.jsonl",
+        "charles-model/data/README.md",
+        "charles-model/configs/train_sft.yaml",
+        "charles-model/scripts/check_jsonl.py",
+        "charles-model/scripts/split_canary_val.py",
+        "charles-model/.gitignore",
+    ]
+    assert body["sft_jsonl"].endswith("\n")
+    assert body["dpo_jsonl"].endswith("\n")
+    summaries = {item["path"]: item for item in body["file_summaries"]}
+
+    export = client.get("/api/model-starter/export.zip")
+    assert export.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(export.content)) as archive:
+        for path in body["package_tree"]:
+            content = archive.read(path)
+            assert summaries[path]["byte_count"] == len(content)
+            assert summaries[path]["sha256"] == hashlib.sha256(content).hexdigest()
+        assert archive.read("charles-model/data/charles_sft.jsonl").decode("utf-8") == body["sft_jsonl"]
+        assert archive.read("charles-model/data/charles_dpo.jsonl").decode("utf-8") == body["dpo_jsonl"]
+        assert archive.read("charles-model/configs/train_sft.yaml").decode("utf-8") == body["train_config"]
 
 
 def test_model_starter_split_is_deterministic():

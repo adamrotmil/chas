@@ -449,6 +449,25 @@ class ModelStarterSummary(SQLModel):
     export_filename: str = "charles-model.zip"
 
 
+class ModelStarterPackageFileSummary(SQLModel):
+    path: str
+    byte_count: int
+    sha256: str
+
+
+class ModelStarterPackagePreview(SQLModel):
+    package_tree: List[str] = Field(default_factory=list)
+    file_summaries: List[ModelStarterPackageFileSummary] = Field(default_factory=list)
+    content_sha256: str
+    sft_jsonl: str
+    dpo_jsonl: str
+    train_config: str
+    readme: str
+    check_jsonl_script: str
+    split_script: str
+    validation: ModelStarterValidationResponse
+
+
 class ModelStarterImportApprovedResponse(SQLModel):
     imported_sft_count: int
     imported_dpo_count: int
