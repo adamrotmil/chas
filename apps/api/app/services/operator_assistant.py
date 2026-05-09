@@ -82,9 +82,53 @@ PROMPT_PAIR_UPDATE_KEYS = {
     "content",
     "chosen",
     "rejected",
+    "export_flags",
     "failure_modes",
     "preferred_failure_modes",
     "operator_candidate_triage_intent",
+}
+
+SOURCE_UPDATE_KEYS = {
+    "segment_boundary_good",
+    "source_genre",
+    "authorship",
+    "authorship_note",
+    "fictionality_status",
+    "truth_status",
+    "voice_presence",
+    "charles_voice_presence",
+    "voice_training_role",
+    "context_use",
+    "adam_context_note",
+    "summary",
+    "why_it_matters",
+    "ready_for_processing",
+    "privacy_level",
+    "privacy_notes",
+    "boundary_notes",
+    "boundary_rationale",
+    "usable_for_voice_context",
+    "usable_for_grounded_generation",
+    "usable_for_sft",
+    "usable_for_dpo",
+    "generate_pairs_on_submit",
+    "prompt_pair_potential",
+    "prompt_pair_decision",
+    "ready_for_prompt_pair_factory",
+    "source_section_review_hint",
+    "source_section_context_resolved",
+    "source_section_review_resolved",
+    "source_use_mode",
+    "source_use_modes",
+    "people",
+    "places",
+    "date_or_range",
+    "date_confidence",
+    "themes",
+    "concrete_objects",
+    "open_questions",
+    "retrieval_notes",
+    "training_notes",
 }
 
 GENERIC_UPDATE_KEYS = {
@@ -123,6 +167,8 @@ def _allowed_update_keys(task: Task) -> set[str]:
         return PHOTO_UPDATE_KEYS
     if task.task_type in {"gold_voice_edit", "grounded_prompt_pair_candidate"}:
         return PROMPT_PAIR_UPDATE_KEYS
+    if task.task_type in {"text_segment_review", "text_segment_boundary_review", "email_voice_sample"}:
+        return SOURCE_UPDATE_KEYS
     return GENERIC_UPDATE_KEYS
 
 

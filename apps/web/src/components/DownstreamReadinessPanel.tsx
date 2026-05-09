@@ -1210,7 +1210,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           <Sparkles size={15} />
           <span>Text model</span>
           <strong>{state?.modelStatus.text_generation_model ?? "gpt-5.5"}</strong>
-          <em>{state?.modelStatus.text_generation_reasoning_effort ?? "xhigh"} / {state?.modelStatus.text_generation_live_ready ? "live ready" : "gated"}</em>
+          <em>{state?.modelStatus.text_generation_reasoning_effort ?? "medium"} / {state?.modelStatus.text_generation_live_ready ? "live ready" : "gated"}</em>
         </article>
         <article data-tone={state?.demoReadiness.can_generate ? "good" : "warning"}>
           <Sparkles size={15} />
@@ -1593,7 +1593,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
               <strong>
                 {state?.demoReadiness.generation_input_plan
                   ? `${state.demoReadiness.generation_input_plan.model_name} / ${state.demoReadiness.generation_input_plan.reasoning_effort}`
-                  : "gpt-5.5 / xhigh"}
+                  : "gpt-5.5 / medium"}
               </strong>
             </div>
             <div>

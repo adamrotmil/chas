@@ -74,6 +74,7 @@ def _export_manifest(payload: DatasetBuildRequest, dry_run: Dict[str, Any], item
             "requires_approved_artifact_status": True,
             "response_b_major_privacy_issue_blocks_export": True,
         },
+        "evidence_corpus_snapshot": dry_run.get("evidence_corpus_snapshot", {}),
         "dry_run": {
             "included_count": dry_run["included_count"],
             "excluded_count": dry_run["excluded_count"],
@@ -150,10 +151,19 @@ def stored_export_jsonl(
     if export is None:
         raise HTTPException(status_code=404, detail="Dataset export not found")
     items = session.exec(
-        select(DatasetExportItem)
-        .where(DatasetExportItem.dataset_export_id == export_id)
-        .order_by(DatasetExportItem.source_type.asc(), DatasetExportItem.source_id.asc(), DatasetExportItem.id.asc())
+        select(DatasetExportItem).where(DatasetExportItem.dataset_export_id == export_id)
     ).all()
+    source_ids = export.manifest.get("source_ids") if isinstance(export.manifest, dict) else []
+    source_order = {str(source_id): index for index, source_id in enumerate(source_ids) if source_id}
+    items = sorted(
+        items,
+        key=lambda item: (
+            source_order.get(str(item.source_id), len(source_order)),
+            item.source_type,
+            item.source_id,
+            item.id,
+        ),
+    )
     return Response(content=to_jsonl([item.payload for item in items]), media_type="application/x-ndjson")
 
 

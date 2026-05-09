@@ -45,6 +45,113 @@ class TaskDraftUpsert(SQLModel):
     user_id: str = "adam"
 
 
+class ChatMessage(SQLModel):
+    role: str
+    content: str
+
+
+class ChatTurnRequest(SQLModel):
+    message: str
+    session_id: Optional[str] = None
+    task_id: Optional[str] = None
+    mode: str = "chat"
+    history: List[ChatMessage] = Field(default_factory=list)
+    draft_decisions: Dict[str, Any] = Field(default_factory=dict)
+    notes: Optional[str] = None
+    apply_updates: bool = True
+    confirm_action: bool = False
+    confirm_submit: bool = False
+    dismiss_action: bool = False
+    confirm_action_id: Optional[str] = None
+    user_id: str = "adam"
+
+
+class ChatTurnResponse(SQLModel):
+    assistant_type: str = "chat_operator"
+    status: str
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    context_packet_hash: Optional[str] = None
+    assistant_message: str
+    next_question: Optional[str] = None
+    model_name: str
+    reasoning_effort: str
+    model_ready: bool
+    live_model_call_used: bool
+    active_task: Dict[str, Any] = Field(default_factory=dict)
+    task_selection: Dict[str, Any] = Field(default_factory=dict)
+    work_surface: Dict[str, Any] = Field(default_factory=dict)
+    work_summary: Dict[str, Any] = Field(default_factory=dict)
+    actions: List[Dict[str, Any]] = Field(default_factory=list)
+    field_updates: Dict[str, Any] = Field(default_factory=dict)
+    field_diffs: List[Dict[str, Any]] = Field(default_factory=list)
+    draft_patch: List[Dict[str, Any]] = Field(default_factory=list)
+    patch_result: Dict[str, Any] = Field(default_factory=dict)
+    draft_decisions: Dict[str, Any] = Field(default_factory=dict)
+    draft: Optional[Dict[str, Any]] = None
+    ready_to_submit: bool = False
+    submit_payload: Optional[Dict[str, Any]] = None
+    export_build_payload: Optional[Dict[str, Any]] = None
+    review_task_creation_payload: Optional[Dict[str, Any]] = None
+    created_review_task: Optional[Dict[str, Any]] = None
+    batch_continuation: Optional[Dict[str, Any]] = None
+    built_export: Optional[Dict[str, Any]] = None
+    submitted_annotation: Optional[Dict[str, Any]] = None
+    safety_policy: Dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
+class ChatActionCommandRequest(SQLModel):
+    message: str = ""
+    session_id: Optional[str] = None
+    mode: str = "chat"
+    user_id: str = "adam"
+
+
+class ChatActionPreviewResponse(SQLModel):
+    action: Dict[str, Any] = Field(default_factory=dict)
+    preview_payload: Dict[str, Any] = Field(default_factory=dict)
+    stale_reason: Optional[str] = None
+    can_confirm: bool = False
+
+
+class ChatSessionCreate(SQLModel):
+    user_id: str = "adam"
+    mode: str = "chat"
+    active_task_id: Optional[str] = None
+    title: Optional[str] = None
+
+
+class ChatSessionResponse(SQLModel):
+    session: Dict[str, Any] = Field(default_factory=dict)
+    turns: List[Dict[str, Any]] = Field(default_factory=list)
+    actions: List[Dict[str, Any]] = Field(default_factory=list)
+    latest_response: Optional[Dict[str, Any]] = None
+
+
+class ChatSessionListResponse(SQLModel):
+    sessions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatAuditResponse(SQLModel):
+    audit_type: str = "chat_workbench_audit"
+    task_id: Optional[str] = None
+    session_id: Optional[str] = None
+    session_count: int = 0
+    turn_count: int = 0
+    action_count: int = 0
+    result_count: int = 0
+    action_status_counts: Dict[str, int] = Field(default_factory=dict)
+    latest_context_packet_hash: Optional[str] = None
+    quality_gaps: List[str] = Field(default_factory=list)
+    quality_signals: Dict[str, Any] = Field(default_factory=dict)
+    sessions: List[Dict[str, Any]] = Field(default_factory=list)
+    recent_turns: List[Dict[str, Any]] = Field(default_factory=list)
+    recent_actions: List[Dict[str, Any]] = Field(default_factory=list)
+    recent_results: List[Dict[str, Any]] = Field(default_factory=list)
+    provenance_links: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class AnnotationCreate(SQLModel):
     task_id: Optional[str] = None
     target_type: Optional[str] = None

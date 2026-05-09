@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ClipboardList,
   Copy,
+  FileText,
   Flag,
   Gauge,
   Image,
@@ -24,6 +25,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import {
   createEntity,
   createVoiceMode,
+  getEvidenceCorpus,
   getAssetPreviewUrl,
   getAssetTextChunks,
   getDpoRejectedReasonRepairProjection,
@@ -40,6 +42,7 @@ import { maturityLabel, readinessBadgesForTask } from "@/lib/readiness";
 import type {
   Asset,
   DpoRejectedReasonRepairProjection,
+  EvidenceCorpusResponse,
   Entity,
   PhotoContextSubmitProjection,
   OperatorAssistantSuggestion,
@@ -137,6 +140,7 @@ interface TaskWorkbenchProps {
   goldExamplesCount: number;
   assetsCount: number;
   assets: Asset[];
+  photoPreviewAccessToken?: string;
   onSubmit: (decisions: Decisions, notes?: string) => Promise<void>;
   onSkip: () => Promise<void>;
   onFlag: () => Promise<void>;
@@ -618,6 +622,16 @@ function recordString(record: Record<string, unknown> | undefined, key: string, 
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
+function payloadRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function payloadRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
 function recordBoolean(record: Record<string, unknown> | undefined, key: string): boolean {
   return record?.[key] === true;
 }
@@ -671,6 +685,23 @@ function segmentBoundaryDigestItems(decisions: Decisions) {
     { label: "Privacy", value: formatMetadataValue(decisions.privacy_level) },
     { label: "Redaction", value: formatMetadataValue(decisions.redaction_required) },
     { label: "Segmentation note", value: formatFreeTextValue(decisions.segmentation_notes) }
+  ];
+}
+
+function promptPairDigestItems(decisions: Decisions) {
+  const exportFlags = decisions.export_flags && typeof decisions.export_flags === "object"
+    ? Object.entries(decisions.export_flags as Record<string, unknown>)
+        .filter(([, enabled]) => enabled === true)
+        .map(([key]) => labelFromKey(key))
+    : [];
+  return [
+    { label: "Artifact", value: formatMetadataValue(decisions.artifact_mode) },
+    { label: "Editor", value: formatMetadataValue(decisions.editor_mode) },
+    { label: "Voice mode", value: formatMetadataValue(decisions.voice_mode) },
+    { label: "Truth status", value: formatMetadataValue(decisions.truth_status || decisions.truth_mode) },
+    { label: "Synthetic", value: formatMetadataValue(decisions.synthetic) },
+    { label: "Prompt", value: formatFreeTextValue(decisions.prompt) },
+    { label: "Export flags", value: formatFreeTextValue(exportFlags) }
   ];
 }
 
@@ -1295,8 +1326,8 @@ function buildPairYaml({
   ].join("\n");
 }
 
-function normalizePreviewYaml(value: string): string {
-  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+function normalizePreviewYaml(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim() : "";
 }
 
 function unquoteYamlScalar(value: string): string {
@@ -1700,6 +1731,11 @@ function SourcePairGenerationPreviewPanel({
               <small>{preview.source_spans_supplied ? "Prompt/response coding included" : "No span coding yet"}</small>
             </div>
             <div>
+              <span>Ranked evidence</span>
+              <strong>{preview.ranked_evidence_record_count ?? 0} corpus refs</strong>
+              <small>{preview.ranked_evidence_vector_query_used ? "Vector query used" : "Lexical preview"}</small>
+            </div>
+            <div>
               <span>Safety</span>
               <strong>{preview.does_not_mutate_state ? "Non-mutating dry run" : "Review mutation risk"}</strong>
               <small>{preview.no_live_model_call ? "No live model call" : "May call live model"}</small>
@@ -1733,7 +1769,87 @@ function SourcePairGenerationPreviewPanel({
   );
 }
 
-function PhotoAssetPreview({ task, asset }: { task: Task; asset?: Asset }) {
+function SourceEvidenceCorpusPanel({
+  corpus,
+  loading,
+  error,
+  selectedIds,
+  onToggle
+}: {
+  corpus: EvidenceCorpusResponse | null;
+  loading: boolean;
+  error: string | null;
+  selectedIds: string[];
+  onToggle: (embeddingRecordId: string) => void;
+}) {
+  if (!corpus && !loading && !error) {
+    return null;
+  }
+  const familyCounts = Object.entries(corpus?.corpus_family_counts ?? {})
+    .sort(([, left], [, right]) => right - left)
+    .slice(0, 4);
+  const records = corpus?.records ?? [];
+  return (
+    <section className="source-evidence-corpus" aria-label="Unified evidence corpus picker">
+      <header>
+        <div>
+          <span>
+            <FileText size={14} />
+            Evidence picker
+          </span>
+          <strong>{loading && !corpus ? "Loading reviewed corpus" : `${corpus?.record_count ?? 0} reviewed records`}</strong>
+        </div>
+        <div>
+          <em>{corpus?.excluded_count ?? 0} held</em>
+          <em>{corpus?.vector_ready_count ?? 0} vectors</em>
+          <em>{selectedIds.length} selected</em>
+        </div>
+      </header>
+      {error ? <p className="quiet">{error}</p> : null}
+      {familyCounts.length > 0 ? (
+        <div className="source-evidence-families">
+          {familyCounts.map(([family, count]) => (
+            <span key={family}>
+              {labelFromKey(family)} <strong>{count}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {records.length > 0 ? (
+        <div className="source-evidence-records">
+          {records.slice(0, 5).map((record) => {
+            const selected = selectedIds.includes(record.embedding_record_id);
+            return (
+              <button
+                type="button"
+                key={record.embedding_record_id}
+                className={selected ? "selected" : ""}
+                onClick={() => onToggle(record.embedding_record_id)}
+                aria-pressed={selected}
+              >
+                <em>{labelFromKey(record.corpus_family)}</em>
+                <strong>{record.title || record.target_id}</strong>
+                <span>{record.input_preview}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="quiet">Reviewed evidence records will appear here once available.</p>
+      )}
+    </section>
+  );
+}
+
+function PhotoAssetPreview({
+  task,
+  asset,
+  previewAccessToken
+}: {
+  task: Task;
+  asset?: Asset;
+  previewAccessToken?: string;
+}) {
   const assetId = payloadString(task.input_payload.asset_id) || (task.target_type === "asset" ? task.target_id : "");
   const [failed, setFailed] = useState(false);
   const [variant, setVariant] = useState<"display" | "thumbnail" | "original">("display");
@@ -1741,7 +1857,7 @@ function PhotoAssetPreview({ task, asset }: { task: Task; asset?: Asset }) {
   useEffect(() => {
     setFailed(false);
     setVariant("display");
-  }, [assetId, task.id]);
+  }, [assetId, task.id, previewAccessToken]);
 
   if (!assetId) {
     return null;
@@ -1814,7 +1930,7 @@ function PhotoAssetPreview({ task, asset }: { task: Task; asset?: Asset }) {
             ) : null}
           </div>
         ) : (
-          <img src={getAssetPreviewUrl(assetId, variant)} alt={title} onError={() => setFailed(true)} />
+          <img src={getAssetPreviewUrl(assetId, variant, previewAccessToken)} alt={title} onError={() => setFailed(true)} />
         )}
       </div>
     </section>
@@ -1963,13 +2079,15 @@ function PhotoGroupContextCard({ task }: { task: Task }) {
 
 function PhotoPromptPairSourceCard({
   task,
-  asset
+  asset,
+  previewAccessToken
 }: {
   task: Task;
   asset?: Asset;
+  previewAccessToken?: string;
 }) {
   const payload = task.input_payload;
-  const sourcePhotoId = payloadString(payload.source_photo_id) || payloadString(payload.grounding_asset_id);
+  const sourcePhotoId = payloadString(payload.source_photo_id);
   if (!sourcePhotoId) {
     return null;
   }
@@ -1998,7 +2116,7 @@ function PhotoPromptPairSourceCard({
   return (
     <section className="photo-pair-source-card">
       <div className="photo-pair-thumb">
-        <img src={getAssetPreviewUrl(sourcePhotoId, "thumbnail")} alt={title} />
+        <img src={getAssetPreviewUrl(sourcePhotoId, "thumbnail", previewAccessToken)} alt={title} />
       </div>
       <div className="photo-pair-source-details">
         <span>Photo grounding source</span>
@@ -4366,6 +4484,8 @@ function TextSegmentBoundaryReviewForm({
     decisionString(initialDecisions, "redaction_instructions")
   );
   const [redactionRequired, setRedactionRequired] = useState(decisionBoolean(initialDecisions, "redaction_required", false));
+  const [useForSft, setUseForSft] = useState(decisionBoolean(initialDecisions, "usable_for_sft", false));
+  const [useForDpo, setUseForDpo] = useState(decisionBoolean(initialDecisions, "usable_for_dpo", false));
 
   useEffect(() => {
     const boundaryReady = boundaryStatus === "approved_chunks";
@@ -4419,6 +4539,8 @@ function TextSegmentBoundaryReviewForm({
       usable_for_verbatim_quote: canQuote ? "yes" : "no",
       usable_for_voice_context: canUseAsContext ? "yes" : "no",
       usable_for_grounded_generation: canGround ? "yes" : "no",
+      usable_for_sft: canUseAsContext && useForSft ? "yes" : "no",
+      usable_for_dpo: canUseAsContext && useForDpo ? "yes" : "no",
       ready_for_prompt_pair_factory: shouldGeneratePromptPair ? "yes" : "no"
     });
   }, [
@@ -4437,7 +4559,9 @@ function TextSegmentBoundaryReviewForm({
     redactionInstructions,
     redactionRequired,
     segmentationNotes,
-    sourceUseModes
+    sourceUseModes,
+    useForDpo,
+    useForSft
   ]);
 
   function toggleSourceUseMode(mode: SourceUseMode) {
@@ -4540,6 +4664,8 @@ function TextSegmentBoundaryReviewForm({
       </Field>
       <div className="toggle-grid">
         <Toggle label="redaction_required" checked={redactionRequired} onChange={setRedactionRequired} />
+        <Toggle label="usable_for_sft" checked={useForSft} onChange={setUseForSft} />
+        <Toggle label="usable_for_dpo" checked={useForDpo} onChange={setUseForDpo} />
       </div>
       <Field label="What should be redacted or generalized?" hint="For example: replace a named person with a role, remove identifying details, or keep only on-background context.">
         <TextArea rows={4} value={redactionInstructions} onChange={setRedactionInstructions} />
@@ -4946,11 +5072,13 @@ function GoldVoiceEditForm({
   task,
   initialDecisions,
   assets,
+  photoPreviewAccessToken,
   onChange,
   onOperatorSubmit
 }: {
   task: Task;
   assets: Asset[];
+  photoPreviewAccessToken?: string;
   initialDecisions: Decisions;
   onChange: (value: Decisions) => void;
   onOperatorSubmit?: (decisionsOverride?: Decisions) => Promise<void>;
@@ -4961,9 +5089,12 @@ function GoldVoiceEditForm({
       ? (initialDecisions.ratings as Record<string, unknown>)
       : {};
   const defaultRatings = { ...((payload.ratings ?? {}) as Record<string, unknown>), ...initialRatings };
-  const initialMode = validArtifactMode(
-    decisionString(initialDecisions, "artifact_mode", payloadString(payload.artifact_mode, "sft"))
-  );
+  const payloadArtifactMode = validArtifactMode(payloadString(payload.artifact_mode, "sft"));
+  const initialArtifactModeSource = decisionString(initialDecisions, "artifact_mode_source");
+  const initialMode =
+    initialArtifactModeSource === "manual" || initialArtifactModeSource === "assistant"
+      ? validArtifactMode(decisionString(initialDecisions, "artifact_mode", payloadArtifactMode))
+      : payloadArtifactMode;
   const initialSystemPrompt = decisionString(
     initialDecisions,
     "system_prompt",
@@ -4986,11 +5117,16 @@ function GoldVoiceEditForm({
   const initialRejected =
     decisionString(initialDecisions, "rejected", payloadString(payload.rejected)) ||
     decisionString(initialDecisions, "model_draft", payloadString(payload.model_draft, ""));
+  const initialEditorModeSource = decisionString(initialDecisions, "editor_mode_source");
+  const initialEditorMode: PromptPairEditorMode =
+    initialEditorModeSource === "manual" || initialEditorModeSource === "assistant"
+      ? validEditorMode(decisionString(initialDecisions, "editor_mode", "yaml"))
+      : "yaml";
   const [prompt, setPrompt] = useState(decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")));
   const [artifactMode, setArtifactMode] = useState<"sft" | "dpo">(initialMode);
-  const [editorMode, setEditorMode] = useState<PromptPairEditorMode>(
-    validEditorMode(decisionString(initialDecisions, "editor_mode", payloadString(payload.editor_mode, "plain")))
-  );
+  const [artifactModeSource, setArtifactModeSource] = useState(initialArtifactModeSource || "payload");
+  const [editorMode, setEditorMode] = useState<PromptPairEditorMode>(initialEditorMode);
+  const [editorModeSource, setEditorModeSource] = useState(initialEditorModeSource || "default_yaml");
   const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", payloadString(payload.voice_mode, "father_to_adam")));
   const [voiceModes, setVoiceModes] = useState<VoiceMode[]>([]);
   const [addingVoiceMode, setAddingVoiceMode] = useState(false);
@@ -5061,6 +5197,16 @@ function GoldVoiceEditForm({
   const boundarySftBlocked = Boolean(sourcePhotoId) && boundarySnapshot.usable_for_sft === false;
   const sourceExcerpt = payloadString(payload.source_excerpt);
   const sourceExcerptTitle = payloadString(payload.source_title, "Original reviewed chunk");
+  const sourceEvidenceRefs = payloadRecords(payload.source_evidence_refs);
+  const rankedEvidencePacket = payloadRecord(payload.ranked_evidence_packet);
+  const rankedEvidenceRecords = payloadRecords(rankedEvidencePacket.records);
+  const pairGenerationMetadata = payloadRecord(payload.pair_generation_metadata);
+  const evidenceGate = payloadRecord(pairGenerationMetadata.evidence_gate);
+  const sourceEvidenceStatus = payloadString(payload.source_evidence_status, recordString(evidenceGate, "status", "unknown"));
+  const sourceExcerptHash = payloadString(payload.source_excerpt_sha256);
+  const generationStrategy = recordString(pairGenerationMetadata, "strategy", payloadString(payload.photo_pair_generation_strategy, "unknown"));
+  const generationEvidenceVisible =
+    sourceEvidenceRefs.length > 0 || rankedEvidenceRecords.length > 0 || sourceExcerptHash || Object.keys(pairGenerationMetadata).length > 0;
   const responseARubric = responseRubric.response_a;
   const responseBRubric = responseRubric.response_b;
   const rubricRatings = useMemo(() => deriveRubricRatings(responseBRubric), [responseBRubric]);
@@ -5338,7 +5484,9 @@ function GoldVoiceEditForm({
           };
     onChange({
       artifact_mode: artifactMode,
+      artifact_mode_source: artifactModeSource,
       editor_mode: editorMode,
+      editor_mode_source: editorModeSource,
       prompt,
       system_prompt: systemPrompt,
       voice_mode: voiceMode,
@@ -5375,7 +5523,7 @@ function GoldVoiceEditForm({
       export_flags: effectiveExportFlags,
       export_preview_yaml: displayExportPreviewYaml
     });
-  }, [artifactMode, chosen, content, context, displayExportPreviewYaml, editorMode, effectiveExportFlags, effectiveTruthStatus, failureModes, groundingAssetId, onChange, operatorCandidateTriageIntent, operatorMessages, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, preferredFailureModes, prompt, rejected, responseBRubric, responseRubric, rubricRatings, rubricSummary, serverExportGate, synthetic, systemPrompt, voiceMode]);
+  }, [artifactMode, artifactModeSource, chosen, content, context, displayExportPreviewYaml, editorMode, editorModeSource, effectiveExportFlags, effectiveTruthStatus, failureModes, groundingAssetId, onChange, operatorCandidateTriageIntent, operatorMessages, payload.context_pack_id, payload.generation_id, payload.prompt_spec_id, preferredFailureModes, prompt, rejected, responseBRubric, responseRubric, rubricRatings, rubricSummary, serverExportGate, synthetic, systemPrompt, voiceMode]);
 
   function updateRubricDecision(responseKey: keyof ResponseRubricState, key: GoldRubricKey, decision: RubricDecision) {
     setResponseRubric((current) => ({
@@ -5399,6 +5547,11 @@ function GoldVoiceEditForm({
     setAddingVoiceMode(false);
   }
 
+  function handleArtifactModeChange(nextMode: "sft" | "dpo") {
+    setArtifactModeSource("manual");
+    setArtifactMode(nextMode);
+  }
+
   function handleEditorModeChange(nextMode: PromptPairEditorMode) {
     if (nextMode === "yaml") {
       if (artifactMode === "sft") {
@@ -5407,6 +5560,7 @@ function GoldVoiceEditForm({
         setDpoYamlDraft(exportPreviewYaml);
       }
     }
+    setEditorModeSource("manual");
     setEditorMode(nextMode);
   }
 
@@ -5482,10 +5636,12 @@ function GoldVoiceEditForm({
 
     if (updates.artifact_mode === "sft" || updates.artifact_mode === "dpo") {
       setArtifactMode(updates.artifact_mode);
+      setArtifactModeSource("assistant");
       applied.push(promptFromDecisionKey("artifact_mode"));
     }
     if (updates.editor_mode === "plain" || updates.editor_mode === "yaml") {
       setEditorMode(updates.editor_mode);
+      setEditorModeSource("assistant");
       applied.push(promptFromDecisionKey("editor_mode"));
     }
     if (Object.prototype.hasOwnProperty.call(updates, "synthetic")) {
@@ -5560,11 +5716,120 @@ function GoldVoiceEditForm({
   }
 
   return (
-    <div className="gold-grid">
-      <FormHint title="Prompt Pair">
-        Edit one prompt-pair artifact at a time. The preview below is the exact YAML that Submit will create.
-      </FormHint>
-      <PhotoPromptPairSourceCard task={task} asset={assets.find((candidate) => candidate.id === (payloadString(payload.source_photo_id) || groundingAssetId))} />
+    <div className="gold-grid training-artifact-grid">
+      <section className="training-editor-intro" aria-label="Training artifact editor">
+        <div>
+          <span>Training artifact</span>
+          <strong>{artifactMode.toUpperCase()} gold edit</strong>
+          <p>
+            {promptPairExportReady ? "Approved-ready" : "Candidate review"} / {labelFromKey(effectiveTruthStatus)}
+          </p>
+        </div>
+        <div className="prompt-pair-mode-bar">
+          <div className="mode-control">
+            <span>Artifact</span>
+            <div className="segmented-control" aria-label="Training artifact mode">
+              <button type="button" className={artifactMode === "sft" ? "active" : ""} onClick={() => handleArtifactModeChange("sft")}>
+                SFT
+              </button>
+              <button type="button" className={artifactMode === "dpo" ? "active" : ""} onClick={() => handleArtifactModeChange("dpo")}>
+                DPO
+              </button>
+            </div>
+          </div>
+          <div className="mode-control">
+            <span>Editing</span>
+            <div className="segmented-control" aria-label="Prompt pair editing mode">
+              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => handleEditorModeChange("yaml")}>
+                YAML
+              </button>
+              <button type="button" className={editorMode === "plain" ? "active" : ""} onClick={() => handleEditorModeChange("plain")}>
+                Plain
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <PhotoPromptPairSourceCard
+        task={task}
+        asset={assets.find((candidate) => candidate.id === (payloadString(payload.source_photo_id) || groundingAssetId))}
+        previewAccessToken={photoPreviewAccessToken}
+      />
+      {sourceExcerpt ? (
+        <details className="training-support-drawer">
+          <summary>
+            <span>Source evidence</span>
+            <em>{sourceExcerptTitle}</em>
+          </summary>
+          <section className="prompt-pair-source-card">
+            <div>
+              <span>Source excerpt</span>
+              <strong>{sourceExcerptTitle}</strong>
+            </div>
+            <LinePreview text={sourceExcerpt} />
+          </section>
+        </details>
+      ) : null}
+      {generationEvidenceVisible ? (
+        <details className="training-support-drawer" open>
+          <summary>
+            <span>Generation evidence</span>
+            <em>{labelFromKey(sourceEvidenceStatus)}</em>
+          </summary>
+          <section className="prompt-pair-generation-evidence" aria-label="Generated candidate evidence quality">
+            <dl>
+              <div>
+                <dt>Evidence gate</dt>
+                <dd>{evidenceGate.passed === true ? "Passed" : labelFromKey(recordString(evidenceGate, "reason", sourceEvidenceStatus))}</dd>
+              </div>
+              <div>
+                <dt>Source refs</dt>
+                <dd>{sourceEvidenceRefs.length}</dd>
+              </div>
+              <div>
+                <dt>Ranked refs</dt>
+                <dd>
+                  {rankedEvidenceRecords.length ||
+                    (typeof rankedEvidencePacket.record_count === "number" ? rankedEvidencePacket.record_count : payloadString(rankedEvidencePacket.record_count, "0"))}
+                </dd>
+              </div>
+              <div>
+                <dt>Strategy</dt>
+                <dd>{labelFromKey(generationStrategy)}</dd>
+              </div>
+            </dl>
+            {sourceExcerptHash ? (
+              <div className="prompt-pair-evidence-hash">
+                <span>Excerpt hash</span>
+                <code>{sourceExcerptHash.slice(0, 16)}</code>
+              </div>
+            ) : null}
+            {sourceEvidenceRefs.length > 0 ? (
+              <div className="prompt-pair-evidence-list" aria-label="Source evidence references">
+                {sourceEvidenceRefs.slice(0, 4).map((ref, index) => (
+                  <span key={`${recordString(ref, "target_id", "ref")}-${index}`}>
+                    {recordString(ref, "target_type", "source")} / {recordString(ref, "target_id", `ref-${index + 1}`)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {rankedEvidenceRecords.length > 0 ? (
+              <div className="prompt-pair-evidence-list" aria-label="Ranked evidence records">
+                {rankedEvidenceRecords.slice(0, 3).map((record, index) => (
+                  <span key={`${recordString(record, "target_id", "ranked")}-${index}`}>
+                    {recordString(record, "title", recordString(record, "target_id", `ranked-${index + 1}`))}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        </details>
+      ) : null}
+      <details className="training-support-drawer training-assistant-drawer">
+        <summary>
+          <span>Review assistant</span>
+          <em>{operatorStatus}</em>
+        </summary>
       <OperatorAssistantPanel
         suggestion={operatorSuggestion}
         status={operatorStatus}
@@ -5574,39 +5839,12 @@ function GoldVoiceEditForm({
         onAnswerChange={setOperatorAnswer}
         onSend={() => void applyPromptPairOperatorAnswer()}
       />
-      {sourceExcerpt ? (
-        <section className="prompt-pair-source-card">
-          <div>
-            <span>Source excerpt</span>
-            <strong>{sourceExcerptTitle}</strong>
-          </div>
-          <LinePreview text={sourceExcerpt} />
-        </section>
-      ) : null}
-      <div className="prompt-pair-mode-bar">
-        <div className="mode-control">
-          <span>Artifact</span>
-          <div className="segmented-control" aria-label="Training artifact mode">
-            <button type="button" className={artifactMode === "sft" ? "active" : ""} onClick={() => setArtifactMode("sft")}>
-              SFT
-            </button>
-            <button type="button" className={artifactMode === "dpo" ? "active" : ""} onClick={() => setArtifactMode("dpo")}>
-              DPO
-            </button>
-          </div>
-        </div>
-        <div className="mode-control">
-          <span>Editing</span>
-          <div className="segmented-control" aria-label="Prompt pair editing mode">
-            <button type="button" className={editorMode === "plain" ? "active" : ""} onClick={() => handleEditorModeChange("plain")}>
-              Plain
-            </button>
-            <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => handleEditorModeChange("yaml")}>
-              YAML
-            </button>
-          </div>
-        </div>
-      </div>
+      </details>
+      <details className="training-support-drawer training-metadata-drawer">
+        <summary>
+          <span>Artifact metadata</span>
+          <em>{labelFromKey(voiceMode)} / {synthetic === "yes" ? "Synthetic" : "Source-authored"}</em>
+        </summary>
       <div className="prompt-grid">
         <Field label="Voice Mode">
           <select
@@ -5662,6 +5900,7 @@ function GoldVoiceEditForm({
           <TextArea value={context} onChange={setContext} rows={5} />
         </Field>
       </div>
+      </details>
       {sourceBoundaryFocusVisible ? (
         <section className="source-boundary-training-focus" aria-label="Source boundary training focus aid">
           <header>
@@ -5711,7 +5950,7 @@ function GoldVoiceEditForm({
       {artifactMode === "sft" ? (
         <>
           {editorMode === "yaml" ? (
-            <Field label="SFT YAML" hint="Advanced mode: edit the full exported message structure directly.">
+            <Field label="SFT YAML" hint="Exported message structure.">
               <LineNumberedTextArea className="prompt-pair-yaml-editor" value={sftYamlDraft} onChange={handleSftYamlDraftChange} rows={22} />
             </Field>
           ) : (
@@ -5719,32 +5958,38 @@ function GoldVoiceEditForm({
               <LineNumberedTextArea className="prompt-pair-plain-editor" value={content} onChange={setContent} rows={18} />
             </Field>
           )}
-          <FormHint title="Issue rubric">
-            Mark issues only if this SFT content still needs work before export.
-          </FormHint>
-          <section className="response-rubric-column single-rubric-column">
-            <div className="response-rubric-heading">
-              <strong>Content</strong>
-              <span>{preferredFailureModes.length === 0 ? "No issues marked" : `${preferredFailureModes.length} issue(s)`}</span>
-            </div>
-            <div className="rubric-stack">
-              {goldReviewRubric.map((criterion) => (
-                <RubricIssueCard
-                  key={criterion.key}
-                  criterion={criterion}
-                  decision={responseBRubric[criterion.key]}
-                  noteLabel="What still needs work?"
-                  noteHint="Use plain language; this stays with the draft until resolved."
-                  onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
-                />
-              ))}
-            </div>
-          </section>
+          <details className="training-review-drawer">
+            <summary>
+              <span>Issue rubric</span>
+              <em>{preferredFailureModes.length === 0 ? "No issues marked" : `${preferredFailureModes.length} issue(s)`}</em>
+            </summary>
+            <FormHint title="Issue rubric">
+              Mark issues only if this SFT content still needs work before export.
+            </FormHint>
+            <section className="response-rubric-column single-rubric-column">
+              <div className="response-rubric-heading">
+                <strong>Content</strong>
+                <span>{preferredFailureModes.length === 0 ? "No issues marked" : `${preferredFailureModes.length} issue(s)`}</span>
+              </div>
+              <div className="rubric-stack">
+                {goldReviewRubric.map((criterion) => (
+                  <RubricIssueCard
+                    key={criterion.key}
+                    criterion={criterion}
+                    decision={responseBRubric[criterion.key]}
+                    noteLabel="What still needs work?"
+                    noteHint="Use plain language; this stays with the draft until resolved."
+                    onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
+                  />
+                ))}
+              </div>
+            </section>
+          </details>
         </>
       ) : (
         <>
           {editorMode === "yaml" ? (
-            <Field label="DPO YAML" hint="Advanced mode: edit the full chosen/rejected export structure directly.">
+            <Field label="DPO YAML" hint="Exported chosen/rejected structure.">
               <LineNumberedTextArea className="prompt-pair-yaml-editor" value={dpoYamlDraft} onChange={handleDpoYamlDraftChange} rows={22} />
             </Field>
           ) : (
@@ -5757,112 +6002,121 @@ function GoldVoiceEditForm({
               </Field>
             </div>
           )}
-          {needsDpoRejectedReason ? (
-            <section className="dpo-rejected-reason-focus" aria-label="DPO rejected reason focus aid">
-              <div>
-                <span>DPO rejected reason</span>
-                <strong>Rejected side needs a concrete issue note</strong>
-                <p>
-                  Add a Minor or Major issue under the Rejected rubric. The note becomes the DPO reason; it is comparison metadata, not a new memory claim.
-                </p>
-              </div>
-              <div className="dpo-repair-inline-projection" aria-label="DPO rejected reason repair projection">
-                <span>Repair projection</span>
-                {dpoRepairProjectionStatus === "pending" ? (
-                  <strong>Loading non-mutating YAML delta</strong>
-                ) : dpoRepairProjectionStatus === "error" ? (
-                  <strong>Projection unavailable; rubric scaffold still works</strong>
-                ) : dpoRepairProjection?.found ? (
-                  <>
-                    <strong>Top rejected-side gap: {labelFromKey(dpoRepairSuggestedFailureMode || "dpo rejected reason empty")}</strong>
-                    <p>
-                      Before: {dpoRepairProjection.before.blockers.map(labelFromKey).join(", ") || "No blockers"} / After:{" "}
-                      {dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers"}.
-                      {dpoRepairProjection.target_blocker_cleared ? " Rejected-reason blocker clears." : " Rejected-reason blocker remains."}
-                    </p>
-                    {dpoRepairProjection.suggested_rejected_issue?.note ? <p>{dpoRepairProjection.suggested_rejected_issue.note}</p> : null}
-                    <small>
-                      Non-mutating projection. Adam gold review still required. Hash {dpoRepairProjection.content_sha256.slice(0, 16)}.
-                    </small>
-                    <details>
-                      <summary>YAML delta preview</summary>
-                      <pre>{dpoRepairProjection.yaml_diff_preview}</pre>
-                    </details>
-                    <div className="dpo-repair-outcome-preview" aria-label="DPO repair session outcome preview">
-                      <span>Session outcome preview</span>
-                      <dl>
-                        <div>
-                          <dt>Would clear</dt>
-                          <dd>{dpoRepairProjection.cleared_blockers.map(labelFromKey).join(", ") || "No blockers projected to clear"}</dd>
-                        </div>
-                        <div>
-                          <dt>Still remains</dt>
-                          <dd>{dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers projected"}</dd>
-                        </div>
-                        <div>
-                          <dt>Projected status</dt>
-                          <dd>{labelFromKey(dpoRepairProjection.after.export_status)}</dd>
-                        </div>
-                        <div>
-                          <dt>Dataset outcome</dt>
-                          <dd>{dpoRepairProjection.after.dataset_outcome}</dd>
-                        </div>
-                      </dl>
+          <details className="training-review-drawer" open={needsDpoRejectedReason}>
+            <summary>
+              <span>Issue rubric</span>
+              <em>
+                {failureModes.length} rejected reason{failureModes.length === 1 ? "" : "s"} / {preferredFailureModes.length} chosen issue
+                {preferredFailureModes.length === 1 ? "" : "s"}
+              </em>
+            </summary>
+            {needsDpoRejectedReason ? (
+              <section className="dpo-rejected-reason-focus" aria-label="DPO rejected reason focus aid">
+                <div>
+                  <span>DPO rejected reason</span>
+                  <strong>Rejected side needs a concrete issue note</strong>
+                  <p>
+                    Add a Minor or Major issue under the Rejected rubric. The note becomes the DPO reason; it is comparison metadata, not a new memory claim.
+                  </p>
+                </div>
+                <div className="dpo-repair-inline-projection" aria-label="DPO rejected reason repair projection">
+                  <span>Repair projection</span>
+                  {dpoRepairProjectionStatus === "pending" ? (
+                    <strong>Loading non-mutating YAML delta</strong>
+                  ) : dpoRepairProjectionStatus === "error" ? (
+                    <strong>Projection unavailable; rubric scaffold still works</strong>
+                  ) : dpoRepairProjection?.found ? (
+                    <>
+                      <strong>Top rejected-side gap: {labelFromKey(dpoRepairSuggestedFailureMode || "dpo rejected reason empty")}</strong>
                       <p>
-                        Submit would save this as review-candidate material only. No approved DPO row is created until Adam completes gold review.
+                        Before: {dpoRepairProjection.before.blockers.map(labelFromKey).join(", ") || "No blockers"} / After:{" "}
+                        {dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers"}.
+                        {dpoRepairProjection.target_blocker_cleared ? " Rejected-reason blocker clears." : " Rejected-reason blocker remains."}
                       </p>
-                    </div>
-                  </>
-                ) : (
-                  <strong>No matching backend repair projection for this ticket yet</strong>
-                )}
-              </div>
-              <button type="button" onClick={applyDpoRejectedReasonScaffold}>
-                Apply projected review-note scaffold
-              </button>
-            </section>
-          ) : null}
-          <FormHint title="Issue rubric">
-            Use the same rubric on both responses. The rejected side can carry Minor Issues or Major Issues plus context explaining why.
-          </FormHint>
-          <div className="response-rubric-grid">
-            <section className="response-rubric-column">
-              <div className="response-rubric-heading">
-                <strong>Chosen</strong>
-                <span>Preferred</span>
-              </div>
-              <div className="rubric-stack">
-                {goldReviewRubric.map((criterion) => (
-                  <RubricIssueCard
-                    key={criterion.key}
-                    criterion={criterion}
-                    decision={responseBRubric[criterion.key]}
-                    noteLabel="Any remaining issue in Chosen?"
-                    noteHint="Usually this should be No issues before submit."
-                    onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
-                  />
-                ))}
-              </div>
-            </section>
-            <section className="response-rubric-column">
-              <div className="response-rubric-heading">
-                <strong>Rejected</strong>
-                <span>Comparison target</span>
-              </div>
-              <div className="rubric-stack">
-                {goldReviewRubric.map((criterion) => (
-                  <RubricIssueCard
-                    key={criterion.key}
-                    criterion={criterion}
-                    decision={responseARubric[criterion.key]}
-                    noteLabel="What was wrong with Rejected?"
-                    noteHint="This explanatory context becomes the DPO reason."
-                    onChange={(decision) => updateRubricDecision("response_a", criterion.key, decision)}
-                  />
-                ))}
-              </div>
-            </section>
-          </div>
+                      {dpoRepairProjection.suggested_rejected_issue?.note ? <p>{dpoRepairProjection.suggested_rejected_issue.note}</p> : null}
+                      <small>
+                        Non-mutating projection. Adam gold review still required. Hash {dpoRepairProjection.content_sha256.slice(0, 16)}.
+                      </small>
+                      <details>
+                        <summary>YAML delta preview</summary>
+                        <pre>{dpoRepairProjection.yaml_diff_preview}</pre>
+                      </details>
+                      <div className="dpo-repair-outcome-preview" aria-label="DPO repair session outcome preview">
+                        <span>Session outcome preview</span>
+                        <dl>
+                          <div>
+                            <dt>Would clear</dt>
+                            <dd>{dpoRepairProjection.cleared_blockers.map(labelFromKey).join(", ") || "No blockers projected to clear"}</dd>
+                          </div>
+                          <div>
+                            <dt>Still remains</dt>
+                            <dd>{dpoRepairProjection.after.blockers.map(labelFromKey).join(", ") || "No blockers projected"}</dd>
+                          </div>
+                          <div>
+                            <dt>Projected status</dt>
+                            <dd>{labelFromKey(dpoRepairProjection.after.export_status)}</dd>
+                          </div>
+                          <div>
+                            <dt>Dataset outcome</dt>
+                            <dd>{dpoRepairProjection.after.dataset_outcome}</dd>
+                          </div>
+                        </dl>
+                        <p>
+                          Submit would save this as review-candidate material only. No approved DPO row is created until Adam completes gold review.
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <strong>No matching backend repair projection for this ticket yet</strong>
+                  )}
+                </div>
+                <button type="button" onClick={applyDpoRejectedReasonScaffold}>
+                  Apply projected review-note scaffold
+                </button>
+              </section>
+            ) : null}
+            <FormHint title="Issue rubric">
+              Use the same rubric on both responses. The rejected side can carry Minor Issues or Major Issues plus context explaining why.
+            </FormHint>
+            <div className="response-rubric-grid">
+              <section className="response-rubric-column">
+                <div className="response-rubric-heading">
+                  <strong>Chosen</strong>
+                  <span>Preferred</span>
+                </div>
+                <div className="rubric-stack">
+                  {goldReviewRubric.map((criterion) => (
+                    <RubricIssueCard
+                      key={criterion.key}
+                      criterion={criterion}
+                      decision={responseBRubric[criterion.key]}
+                      noteLabel="Any remaining issue in Chosen?"
+                      noteHint="Usually this should be No issues before submit."
+                      onChange={(decision) => updateRubricDecision("response_b", criterion.key, decision)}
+                    />
+                  ))}
+                </div>
+              </section>
+              <section className="response-rubric-column">
+                <div className="response-rubric-heading">
+                  <strong>Rejected</strong>
+                  <span>Comparison target</span>
+                </div>
+                <div className="rubric-stack">
+                  {goldReviewRubric.map((criterion) => (
+                    <RubricIssueCard
+                      key={criterion.key}
+                      criterion={criterion}
+                      decision={responseARubric[criterion.key]}
+                      noteLabel="What was wrong with Rejected?"
+                      noteHint="This explanatory context becomes the DPO reason."
+                      onChange={(decision) => updateRubricDecision("response_a", criterion.key, decision)}
+                    />
+                  ))}
+                </div>
+              </section>
+            </div>
+          </details>
         </>
       )}
       <section
@@ -5914,27 +6168,35 @@ function GoldVoiceEditForm({
         </div>
       </section>
       {!promptPairExportReady ? (
-        <section className="prompt-pair-candidate-workdown" aria-label="Prompt pair candidate workdown">
-          <header>
-            <div>
-              <span>Candidate workdown</span>
-              <strong>
-                {candidateWorkdownBlockers.length} blocker{candidateWorkdownBlockers.length === 1 ? "" : "s"}{" "}
-                {candidateWorkdownBlockers.length === 1 ? "remains" : "remain"}
-              </strong>
-            </div>
-            <em>Not approved training export</em>
-          </header>
-          <p>Submit saves review progress as candidate material. It does not create an approved SFT/DPO row until backend blockers clear.</p>
-          <ol>
-            {candidateWorkdownBlockers.map((blocker) => (
-              <li key={blocker.key}>
-                <strong>{blocker.label}</strong>
-                <span>{blocker.action}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
+        <details className="training-review-drawer prompt-pair-candidate-drawer">
+          <summary>
+            <span>Candidate workdown</span>
+            <em>
+              {candidateWorkdownBlockers.length} blocker{candidateWorkdownBlockers.length === 1 ? "" : "s"}
+            </em>
+          </summary>
+          <section className="prompt-pair-candidate-workdown" aria-label="Prompt pair candidate workdown">
+            <header>
+              <div>
+                <span>Candidate workdown</span>
+                <strong>
+                  {candidateWorkdownBlockers.length} blocker{candidateWorkdownBlockers.length === 1 ? "" : "s"}{" "}
+                  {candidateWorkdownBlockers.length === 1 ? "remains" : "remain"}
+                </strong>
+              </div>
+              <em>Not approved training export</em>
+            </header>
+            <p>Submit saves review progress as candidate material. It does not create an approved SFT/DPO row until backend blockers clear.</p>
+            <ol>
+              {candidateWorkdownBlockers.map((blocker) => (
+                <li key={blocker.key}>
+                  <strong>{blocker.label}</strong>
+                  <span>{blocker.action}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+        </details>
       ) : null}
       <section className="gold-outcome-strip" aria-label="Gold edit downstream outcomes">
         <div>
@@ -5969,20 +6231,26 @@ function GoldVoiceEditForm({
         ))}
         {privacyExportBlocked ? <span className="blocked">Privacy block active</span> : null}
       </div>
-      <section className="export-preview-card">
-        <div className="export-preview-header">
-          <span>Export Artifacts</span>
-          <strong>YAML preview</strong>
-          <em
-            className="export-preview-integrity"
-            aria-label="Export preview integrity"
-            data-status={exportPreviewIntegrity.status}
-          >
-            {exportPreviewIntegrity.label}
-          </em>
-        </div>
-        <LinePreview text={displayExportPreviewYaml} className="export-line-preview" />
-      </section>
+      <details className="training-review-drawer export-preview-drawer">
+        <summary>
+          <span>Export YAML preview</span>
+          <em>{exportPreviewIntegrity.label}</em>
+        </summary>
+        <section className="export-preview-card">
+          <div className="export-preview-header">
+            <span>Export Artifacts</span>
+            <strong>YAML preview</strong>
+            <em
+              className="export-preview-integrity"
+              aria-label="Export preview integrity"
+              data-status={exportPreviewIntegrity.status}
+            >
+              {exportPreviewIntegrity.label}
+            </em>
+          </div>
+          <LinePreview text={displayExportPreviewYaml} className="export-line-preview" />
+        </section>
+      </details>
     </div>
   );
 }
@@ -5997,6 +6265,7 @@ export function TaskWorkbench({
   goldExamplesCount,
   assetsCount,
   assets,
+  photoPreviewAccessToken,
   onSubmit,
   onSkip,
   onFlag,
@@ -6018,6 +6287,9 @@ export function TaskWorkbench({
   const [sourceSpans, setSourceSpans] = useState<SourceSpanDraft[]>([]);
   const [sourcePairPreview, setSourcePairPreview] = useState<SourcePairGenerationPreview | null>(null);
   const [sourcePairPreviewStatus, setSourcePairPreviewStatus] = useState("");
+  const [evidenceCorpus, setEvidenceCorpus] = useState<EvidenceCorpusResponse | null>(null);
+  const [evidenceCorpusLoading, setEvidenceCorpusLoading] = useState(false);
+  const [evidenceCorpusError, setEvidenceCorpusError] = useState<string | null>(null);
   const [activeChunk, setActiveChunk] = useState<Segment | undefined>();
   const [textEdits, setTextEdits] = useState<Decisions>({});
   const [notes, setNotes] = useState("");
@@ -6039,6 +6311,8 @@ export function TaskWorkbench({
     setSourceSpans([]);
     setSourcePairPreview(null);
     setSourcePairPreviewStatus("");
+    setEvidenceCorpus(null);
+    setEvidenceCorpusError(null);
     setActiveChunk(undefined);
     setTextEdits({});
     setDraftStatus("Loading draft");
@@ -6133,6 +6407,38 @@ export function TaskWorkbench({
 
   useEffect(() => {
     if (!draftLoaded || !isGeneratePairsTask(task)) {
+      setEvidenceCorpus(null);
+      setEvidenceCorpusError(null);
+      setEvidenceCorpusLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setEvidenceCorpusLoading(true);
+    setEvidenceCorpusError(null);
+    getEvidenceCorpus("family_private", 12)
+      .then((corpus) => {
+        if (!cancelled) {
+          setEvidenceCorpus(corpus);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setEvidenceCorpus(null);
+          setEvidenceCorpusError(caught instanceof Error ? caught.message : "Could not load evidence corpus.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setEvidenceCorpusLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draftLoaded, task.id, task.task_type]);
+
+  useEffect(() => {
+    if (!draftLoaded || !isGeneratePairsTask(task)) {
       setSourcePairPreview(null);
       setSourcePairPreviewStatus("");
       return;
@@ -6208,6 +6514,26 @@ export function TaskWorkbench({
 
   const handleSourceSpansChange = useCallback((nextSpans: SourceSpanDraft[]) => {
     setSourceSpans(nextSpans);
+  }, []);
+
+  const selectedEvidenceRecordIds = useMemo(
+    () =>
+      Array.isArray(decisions.supplemental_evidence_record_ids)
+        ? decisions.supplemental_evidence_record_ids.map(String).filter(Boolean)
+        : [],
+    [decisions.supplemental_evidence_record_ids]
+  );
+
+  const handleEvidenceRecordToggle = useCallback((embeddingRecordId: string) => {
+    setDecisions((current) => {
+      const currentIds = Array.isArray(current.supplemental_evidence_record_ids)
+        ? current.supplemental_evidence_record_ids.map(String).filter(Boolean)
+        : [];
+      const nextIds = currentIds.includes(embeddingRecordId)
+        ? currentIds.filter((id) => id !== embeddingRecordId)
+        : [...currentIds, embeddingRecordId];
+      return { ...current, supplemental_evidence_record_ids: nextIds };
+    });
   }, []);
 
   const handleDecisionChange = useCallback((value: Decisions) => {
@@ -6303,6 +6629,7 @@ export function TaskWorkbench({
           <GoldVoiceEditForm
             task={task}
             assets={assets}
+            photoPreviewAccessToken={photoPreviewAccessToken}
             initialDecisions={draftDecisions}
             onChange={handleDecisionChange}
             onOperatorSubmit={submitCurrentTask}
@@ -6349,12 +6676,16 @@ export function TaskWorkbench({
   ]
     .filter(Boolean)
     .join(" ");
+  const reviewGridClass = formInCanvas ? "review-grid training-review-grid" : "review-grid";
+  const effectiveInspectorWidth = formInCanvas ? Math.min(inspectorWidth, 320) : inspectorWidth;
   const draftMetadataItems = task.task_type === "vision_draft_review" || task.task_type === "photo_context"
     ? visionDigestItems(autosaveDecisions)
     : sourceReviewInCanvas
     ? sourceReviewDigestItems(autosaveDecisions)
     : segmentationInCanvas
     ? segmentBoundaryDigestItems(autosaveDecisions)
+    : formInCanvas
+    ? promptPairDigestItems(autosaveDecisions)
     : genericDecisionDigestItems(autosaveDecisions);
 
   return (
@@ -6425,17 +6756,28 @@ export function TaskWorkbench({
       </header>
 
       <div
-        className="review-grid"
-        style={{ "--inspector-width": `${inspectorWidth}px` } as React.CSSProperties}
+        className={reviewGridClass}
+        style={{ "--inspector-width": `${effectiveInspectorWidth}px` } as React.CSSProperties}
       >
         <section className={reviewCanvasClass} aria-label="Source and derived review surface">
           {formInCanvas ? <section className="canvas-form-panel">{form}</section> : null}
           {showSourceReviewCanvas ? (
             <>
-              {showPhotoPreview ? <PhotoAssetPreview task={task} asset={asset} /> : <SourcePreview task={task} />}
+              {showPhotoPreview ? (
+                <PhotoAssetPreview task={task} asset={asset} previewAccessToken={photoPreviewAccessToken} />
+              ) : (
+                <SourcePreview task={task} />
+              )}
               {showPhotoPreview ? <PhotoGroupContextCard task={task} /> : null}
               {isGeneratePairsTask(task) ? (
                 <>
+                  <SourceEvidenceCorpusPanel
+                    corpus={evidenceCorpus}
+                    loading={evidenceCorpusLoading}
+                    error={evidenceCorpusError}
+                    selectedIds={selectedEvidenceRecordIds}
+                    onToggle={handleEvidenceRecordToggle}
+                  />
                   <SourcePairGenerationPreviewPanel preview={sourcePairPreview} status={sourcePairPreviewStatus} />
                   <SourceSpanCoder task={task} spans={sourceSpans} onChange={handleSourceSpansChange} />
                 </>

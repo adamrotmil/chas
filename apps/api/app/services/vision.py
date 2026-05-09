@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from app.models import Asset, Boundary, MetadataProfile, Segment, Task, utcnow
+from app.config import Settings, settings
+from app.models import Asset, AssetSnapshot, Boundary, Derivative, MetadataProfile, ObjectFile, Segment, Task, utcnow
+from app.services.photo_constants import PHOTO_MEMORY_PROFILE_TYPE, PHOTO_STATUS_MACHINE_DRAFT
 from app.services.photo_memory import promote_photo_profile_downstream
+
+MAX_VISION_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 VISION_DRAFT_SCHEMA: Dict[str, Any] = {
@@ -61,7 +68,8 @@ VISION_DRAFT_SCHEMA: Dict[str, Any] = {
 VISION_SYSTEM_PROMPT = (
     "You are drafting metadata for CharlesOps. Describe only what is visible or legibly written. "
     "Do not identify private people unless the source context explicitly names them. "
-    "Mark uncertain observations as uncertainties. Output structured JSON only. "
+    "Mark uncertain observations as uncertainties. If the image is viewable, visual_summary must be a concrete "
+    "one-sentence description of the pixels, even when the content is unclear. Output structured JSON only. "
     "Every observation is system_inference until Adam reviews it."
 )
 
@@ -179,6 +187,87 @@ def _asset_title(asset: Asset) -> str:
     return asset.title or asset.original_filename or asset.human_id
 
 
+def _parse_json_object(text: str) -> Dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return {}
+        try:
+            parsed = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _question_list(value: Any) -> List[Dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    questions: List[Dict[str, str]] = []
+    for index, item in enumerate(value[:6], start=1):
+        if not isinstance(item, dict):
+            continue
+        question = _string(item.get("question"))
+        if not question:
+            continue
+        questions.append(
+            {
+                "id": _string(item.get("id"), f"model_question_{index}"),
+                "question": question,
+                "reason": _string(item.get("reason"), "Model-suggested follow-up for Adam review."),
+                "answer_type": _string(item.get("answer_type"), "text"),
+            }
+        )
+    return questions
+
+
+def _normalise_vision_draft(raw: Dict[str, Any]) -> Dict[str, Any]:
+    suggested_questions = _question_list(raw.get("suggested_questions"))
+    if not suggested_questions:
+        suggested_questions = BASE_REVIEW_QUESTIONS
+    return {
+        "visual_summary": _string(raw.get("visual_summary")),
+        "visible_people": _string_list(raw.get("visible_people")),
+        "places": _string_list(raw.get("places")),
+        "time_period_guess": _string(raw.get("time_period_guess")),
+        "objects": _string_list(raw.get("objects")),
+        "themes": _string_list(raw.get("themes")),
+        "ocr_text": _string(raw.get("ocr_text")),
+        "handwriting_text": _string(raw.get("handwriting_text")),
+        "uncertainties": _string_list(raw.get("uncertainties")),
+        "suggested_questions": suggested_questions,
+        "privacy_flags": _string_list(raw.get("privacy_flags")),
+        "confidence": _string(raw.get("confidence"), "unreviewed_model_inference"),
+    }
+
+
+def _vision_draft_has_observations(draft: Dict[str, Any]) -> bool:
+    return any(
+        [
+            _string(draft.get("visual_summary")),
+            _string_list(draft.get("visible_people")),
+            _string_list(draft.get("places")),
+            _string(draft.get("time_period_guess")),
+            _string_list(draft.get("objects")),
+            _string_list(draft.get("themes")),
+            _string(draft.get("ocr_text")),
+            _string(draft.get("handwriting_text")),
+            _string_list(draft.get("uncertainties")),
+            _string_list(draft.get("privacy_flags")),
+        ]
+    )
+
+
 def _vision_candidate_statement(asset_ids: List[str]):
     statement = (
         select(Asset)
@@ -191,12 +280,25 @@ def _vision_candidate_statement(asset_ids: List[str]):
 
 
 def _existing_profile(session: Session, asset: Asset, draft_type: str) -> Optional[MetadataProfile]:
-    return session.exec(
+    exact = session.exec(
         select(MetadataProfile)
         .where(MetadataProfile.target_type == "asset")
         .where(MetadataProfile.target_id == asset.id)
         .where(MetadataProfile.profile_type == draft_type)
     ).first()
+    if exact is not None:
+        return exact
+
+    candidates = session.exec(
+        select(MetadataProfile)
+        .where(MetadataProfile.target_type == "asset")
+        .where(MetadataProfile.target_id == asset.id)
+        .order_by(MetadataProfile.updated_at.desc())
+    ).all()
+    for candidate in candidates:
+        if _existing_review_task(session, candidate) is not None:
+            return candidate
+    return None
 
 
 def _existing_review_task(session: Session, profile: MetadataProfile) -> Optional[Task]:
@@ -207,6 +309,114 @@ def _existing_review_task(session: Session, profile: MetadataProfile) -> Optiona
         .where(Task.target_id == profile.id)
         .where(Task.status == "ready")
     ).first()
+
+
+def _vision_review_task_payload(
+    *,
+    asset: Asset,
+    profile: MetadataProfile,
+    draft_type: str,
+    request_plan: Dict[str, Any],
+    system_inference_draft: Dict[str, Any],
+    no_live_model_call: bool,
+    model_name: str,
+    input_detail: str,
+) -> Dict[str, Any]:
+    return {
+        "asset_id": asset.id,
+        "asset_type": asset.asset_type,
+        "asset_title": _asset_title(asset),
+        "source_filename": asset.original_filename,
+        "source_type": asset.asset_type,
+        "metadata_profile_id": profile.id,
+        "draft_type": draft_type,
+        "truth_status": "system_inference",
+        "vision_request_plan": request_plan,
+        "vision_draft": profile.raw_profile["system_inference_draft"],
+        "suggested_questions": system_inference_draft["suggested_questions"],
+        "no_live_model_call": no_live_model_call,
+        "live_model_call_used": not no_live_model_call,
+        "model_name": model_name,
+        "input_detail": input_detail,
+    }
+
+
+def _latest_image_derivative(session: Session, asset_id: str, variant: str) -> Optional[Derivative]:
+    derivatives = session.exec(
+        select(Derivative)
+        .where(Derivative.asset_id == asset_id)
+        .where(Derivative.derivative_type == "image_preview")
+        .where(Derivative.status == "ready")
+    ).all()
+    matches = [item for item in derivatives if item.metadata_json.get("variant") == variant]
+    return sorted(matches, key=lambda item: item.created_at, reverse=True)[0] if matches else None
+
+
+def _object_file_local_path(object_file: ObjectFile, app_settings: Settings) -> Optional[Path]:
+    storage_root = Path(app_settings.storage_root).resolve()
+    if object_file.storage_provider == "local":
+        path = (storage_root / object_file.object_key).resolve()
+    elif object_file.storage_provider == "gcs":
+        cache_key = object_file.metadata_json.get("local_preview_cache_key")
+        if not isinstance(cache_key, str) or not cache_key.strip():
+            cache_key = "/".join(["preview_cache/gcs", object_file.object_key])
+        path = (storage_root / cache_key).resolve()
+    else:
+        return None
+    if not path.is_relative_to(storage_root) or not path.is_file():
+        return None
+    return path
+
+
+def _image_object_file_for_asset(session: Session, asset: Asset) -> Optional[ObjectFile]:
+    object_file: Optional[ObjectFile] = None
+    for variant in ("display", "thumbnail"):
+        derivative = _latest_image_derivative(session, asset.id, variant)
+        if derivative and derivative.object_file_id:
+            object_file = session.get(ObjectFile, derivative.object_file_id)
+            if object_file:
+                break
+    if object_file is not None:
+        return object_file
+
+    snapshot = session.exec(
+        select(AssetSnapshot)
+        .where(AssetSnapshot.asset_id == asset.id)
+        .where(AssetSnapshot.snapshot_type == "source_mirror")
+        .order_by(AssetSnapshot.version.desc())
+    ).first()
+    if snapshot and snapshot.object_file_id:
+        return session.get(ObjectFile, snapshot.object_file_id)
+    return None
+
+
+def _image_data_url_for_asset(session: Session, asset: Asset, app_settings: Settings) -> Dict[str, Any]:
+    object_file = _image_object_file_for_asset(session, asset)
+    if object_file is None:
+        return {"image_data_url": "", "reason": "no_mirrored_image_file"}
+    content_type = object_file.content_type or asset.mime_type or ""
+    if not content_type.startswith("image/"):
+        return {"image_data_url": "", "object_file_id": object_file.id, "content_type": content_type, "reason": "not_an_image"}
+    path = _object_file_local_path(object_file, app_settings)
+    if path is None:
+        return {"image_data_url": "", "object_file_id": object_file.id, "content_type": content_type, "reason": "local_image_unavailable"}
+    byte_size = path.stat().st_size
+    if byte_size > MAX_VISION_IMAGE_BYTES:
+        return {
+            "image_data_url": "",
+            "object_file_id": object_file.id,
+            "content_type": content_type,
+            "byte_size": byte_size,
+            "reason": "image_too_large",
+        }
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {
+        "image_data_url": f"data:{content_type};base64,{encoded}",
+        "object_file_id": object_file.id,
+        "content_type": content_type,
+        "byte_size": byte_size,
+        "reason": "ready",
+    }
 
 
 def build_vision_request_plan(asset: Asset, *, model_name: str, input_detail: str, draft_type: str) -> Dict[str, Any]:
@@ -222,6 +432,129 @@ def build_vision_request_plan(asset: Asset, *, model_name: str, input_detail: st
     }
 
 
+def live_vision_ready(app_settings: Settings = settings) -> bool:
+    return bool(app_settings.vision_live_calls_enabled and app_settings.openai_api_key)
+
+
+def _live_vision_user_prompt(asset: Asset) -> str:
+    return (
+        "Analyze this image for CharlesOps review. Return one JSON object matching the requested schema. "
+        "Do not identify people by name unless visible text or supplied metadata explicitly names them. "
+        "Use visible_people for generic descriptions like 'older man' or 'child' when identity is uncertain. "
+        "Put all uncertainty in uncertainties. Do not leave visual_summary blank; if the image is blurry or ambiguous, "
+        "describe the uncertainty in visual_summary and uncertainties. Suggest questions Adam should answer to turn "
+        "this into reviewed memory context.\n\n"
+        f"Asset title: {_asset_title(asset)}\n"
+        f"Original filename: {asset.original_filename or ''}\n"
+        f"Asset type: {asset.asset_type}\n"
+    )
+
+
+def _call_live_vision_model(
+    *,
+    asset: Asset,
+    image_data_url: str,
+    schema: Dict[str, Any],
+    model_name: str,
+    input_detail: str,
+    app_settings: Settings,
+) -> Dict[str, Any]:
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=app_settings.openai_api_key,
+        project=app_settings.openai_project_id or None,
+        timeout=180,
+    )
+    text_format = {
+        "type": "json_schema",
+        "name": _string(schema.get("name"), "charlesops_vision_draft_v1"),
+        "schema": schema.get("schema") if isinstance(schema.get("schema"), dict) else schema,
+        "strict": True,
+    }
+    response = client.responses.create(
+        model=model_name,
+        input=[
+            {"role": "developer", "content": VISION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "\n\n".join(
+                            [
+                                _live_vision_user_prompt(asset),
+                                "Required JSON schema:\n" + json.dumps(schema, ensure_ascii=False),
+                            ]
+                        ),
+                    },
+                    {"type": "input_image", "image_url": image_data_url, "detail": input_detail},
+                ],
+            },
+        ],
+        text={"format": text_format},
+        max_output_tokens=1400,
+        store=False,
+    )
+    output_text = _string(getattr(response, "output_text", None))
+    raw = _parse_json_object(output_text)
+    if not raw:
+        raise ValueError("Vision model returned no parseable JSON object.")
+    draft = _normalise_vision_draft(raw)
+    if not _vision_draft_has_observations(draft):
+        raise ValueError("Vision model returned structured JSON with no usable image observations.")
+    return {
+        "draft": draft,
+        "raw_model_output": raw,
+        "response_id": _string(getattr(response, "id", None)),
+    }
+
+
+def analyze_photo_with_model(
+    *,
+    session: Session,
+    asset_id: str,
+    schema: Dict[str, Any] = VISION_DRAFT_SCHEMA,
+    model_name: str,
+    input_detail: str,
+    app_settings: Settings = settings,
+) -> Dict[str, Any]:
+    asset = session.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Photo asset not found")
+    if asset.asset_type not in {"photo", "scan"}:
+        raise HTTPException(status_code=400, detail="Live vision analysis requires a photo or scan asset.")
+    if not live_vision_ready(app_settings):
+        raise HTTPException(
+            status_code=400,
+            detail="Live vision calls require VISION_LIVE_CALLS_ENABLED=true and OPENAI_API_KEY.",
+        )
+    image_payload = _image_data_url_for_asset(session, asset, app_settings)
+    if not image_payload.get("image_data_url"):
+        raise HTTPException(status_code=400, detail=f"Live vision image unavailable: {image_payload.get('reason')}")
+    try:
+        live_result = _call_live_vision_model(
+            asset=asset,
+            image_data_url=str(image_payload["image_data_url"]),
+            schema=schema,
+            model_name=model_name,
+            input_detail=input_detail,
+            app_settings=app_settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "asset_id": asset.id,
+        "schema_name": _string(schema.get("name")) if isinstance(schema, dict) else "",
+        "draft": live_result["draft"],
+        "raw_model_output": live_result.get("raw_model_output"),
+        "response_id": live_result.get("response_id"),
+        "object_file_id": image_payload.get("object_file_id"),
+        "content_type": image_payload.get("content_type"),
+        "byte_size": image_payload.get("byte_size"),
+    }
+
+
 def create_vision_draft_for_asset(
     *,
     session: Session,
@@ -230,6 +563,8 @@ def create_vision_draft_for_asset(
     draft_type: str,
     model_name: str,
     input_detail: str,
+    no_live_model_call: bool = True,
+    app_settings: Settings = settings,
 ) -> Dict[str, str]:
     profile = _existing_profile(session, asset, draft_type)
     created_profile = False
@@ -241,35 +576,16 @@ def create_vision_draft_for_asset(
             profile_version="v1",
         )
         created_profile = True
+    effective_draft_type = profile.profile_type or draft_type
 
     request_plan = build_vision_request_plan(
         asset,
         model_name=model_name,
         input_detail=input_detail,
-        draft_type=draft_type,
+        draft_type=effective_draft_type,
     )
-    profile.metadata_status = "machine_draft"
-    profile.title = _asset_title(asset)
-    profile.summary = ""
-    profile.truth_status = "system_inference"
-    profile.source_genre = "photo" if asset.asset_type == "photo" else "scan"
-    profile.voice_presence = "absent"
-    profile.open_questions = [question["question"] for question in BASE_REVIEW_QUESTIONS]
-    profile.quality_signals = {
-        "vision_draft_status": "not_run",
-        "model_name": model_name,
-        "input_detail": input_detail,
-        "requires_adam_review": True,
-        "no_live_model_call": True,
-    }
-    profile.embedding_hints = {
-        "recommended_embedding_targets": ["visual_summary", "adam_context_note", "accepted_tags", "ocr_text"],
-        "modality": asset.asset_type,
-        "use_before_review": False,
-    }
-    profile.raw_profile = {
-        "vision_request_plan": request_plan,
-        "system_inference_draft": {
+    if no_live_model_call:
+        system_inference_draft = {
             "visual_summary": "",
             "visible_people": [],
             "places": [],
@@ -282,14 +598,80 @@ def create_vision_draft_for_asset(
             "suggested_questions": BASE_REVIEW_QUESTIONS,
             "privacy_flags": [],
             "confidence": "not_run",
-        },
-        "no_live_model_call": True,
+        }
+        live_metadata: Dict[str, Any] = {"no_live_model_call": True}
+        reason_created = "Vision pipeline prepared draft metadata/questions for Adam review. No live model call was made."
+    else:
+        if not live_vision_ready(app_settings):
+            raise HTTPException(
+                status_code=400,
+                detail="Live vision calls require VISION_LIVE_CALLS_ENABLED=true and OPENAI_API_KEY.",
+            )
+        live_result = analyze_photo_with_model(
+            session=session,
+            asset_id=asset.id,
+            schema=VISION_DRAFT_SCHEMA,
+            model_name=model_name,
+            input_detail=input_detail,
+            app_settings=app_settings,
+        )
+        system_inference_draft = live_result["draft"]
+        live_metadata = {
+            "no_live_model_call": False,
+            "live_model_call_used": True,
+            "live_response_id": live_result.get("response_id"),
+            "object_file_id": live_result.get("object_file_id"),
+            "content_type": live_result.get("content_type"),
+            "byte_size": live_result.get("byte_size"),
+            "schema_name": live_result.get("schema_name"),
+            "raw_model_output": live_result.get("raw_model_output"),
+        }
+        reason_created = "Live vision model drafted system-inference metadata/questions for Adam review."
+
+    raw_profile = dict(profile.raw_profile or {})
+    profile.metadata_status = PHOTO_STATUS_MACHINE_DRAFT if profile.profile_type == PHOTO_MEMORY_PROFILE_TYPE else "machine_draft"
+    profile.title = profile.title or _asset_title(asset)
+    profile.summary = system_inference_draft["visual_summary"]
+    profile.truth_status = "system_inference"
+    profile.source_genre = "photo" if asset.asset_type == "photo" else "scan"
+    profile.voice_presence = "absent"
+    profile.open_questions = [question["question"] for question in system_inference_draft["suggested_questions"]]
+    profile.quality_signals = {
+        **(profile.quality_signals or {}),
+        "vision_draft_status": "not_run" if no_live_model_call else "live_model_call",
+        "model_name": model_name,
+        "input_detail": input_detail,
+        "requires_adam_review": True,
+        **live_metadata,
     }
-    profile.created_by = "vision_pipeline"
+    profile.embedding_hints = {
+        **(profile.embedding_hints or {}),
+        "recommended_embedding_targets": ["visual_summary", "adam_context_note", "accepted_tags", "ocr_text"],
+        "modality": asset.asset_type,
+        "use_before_review": False,
+    }
+    profile.raw_profile = {
+        **raw_profile,
+        "vision_request_plan": request_plan,
+        "system_inference_draft": system_inference_draft,
+        **live_metadata,
+    }
+    if created_profile:
+        profile.created_by = "vision_pipeline"
     profile.updated_at = utcnow()
     session.add(profile)
     session.flush()
 
+    task_payload = _vision_review_task_payload(
+        asset=asset,
+        profile=profile,
+        draft_type=effective_draft_type,
+        request_plan=request_plan,
+        system_inference_draft=system_inference_draft,
+        no_live_model_call=no_live_model_call,
+        model_name=model_name,
+        input_detail=input_detail,
+    )
     review_task = _existing_review_task(session, profile)
     if review_task is None:
         review_task = Task(
@@ -299,21 +681,8 @@ def create_vision_draft_for_asset(
             target_id=profile.id,
             priority=72,
             queue=queue,
-            reason_created="Vision pipeline prepared draft metadata/questions for Adam review. No live model call was made.",
-            input_payload={
-                "asset_id": asset.id,
-                "asset_type": asset.asset_type,
-                "asset_title": _asset_title(asset),
-                "source_filename": asset.original_filename,
-                "source_type": asset.asset_type,
-                "metadata_profile_id": profile.id,
-                "draft_type": draft_type,
-                "truth_status": "system_inference",
-                "vision_request_plan": request_plan,
-                "vision_draft": profile.raw_profile["system_inference_draft"],
-                "suggested_questions": BASE_REVIEW_QUESTIONS,
-                "no_live_model_call": True,
-            },
+            reason_created=reason_created,
+            input_payload=task_payload,
             required_decisions=[
                 "vision_accuracy",
                 "accepted_visual_description",
@@ -325,6 +694,28 @@ def create_vision_draft_for_asset(
             ],
             created_by="vision_pipeline",
         )
+        session.add(review_task)
+        session.flush()
+    else:
+        review_task.queue = queue
+        review_task.reason_created = reason_created
+        review_task.input_payload = {
+            **(review_task.input_payload or {}),
+            **task_payload,
+        }
+        required = list(review_task.required_decisions or [])
+        for decision in [
+            "vision_accuracy",
+            "accepted_visual_description",
+            "question_answers",
+            "adam_context_note",
+            "privacy_level",
+            "ready_for_downstream",
+            "ocr_review_status",
+        ]:
+            if decision not in required:
+                required.append(decision)
+        review_task.required_decisions = required
         session.add(review_task)
         session.flush()
 
@@ -345,11 +736,12 @@ def create_vision_draft_batch(
     model_name: str,
     input_detail: str,
     no_live_model_call: bool,
+    app_settings: Settings = settings,
 ) -> Dict[str, Any]:
-    if not no_live_model_call:
+    if not no_live_model_call and not live_vision_ready(app_settings):
         raise HTTPException(
             status_code=400,
-            detail="Live vision calls are intentionally disabled in this scaffold. Set up the provider gate before sending private media.",
+            detail="Live vision calls require VISION_LIVE_CALLS_ENABLED=true and OPENAI_API_KEY.",
         )
 
     assets = session.exec(_vision_candidate_statement(asset_ids)).all()
@@ -370,6 +762,8 @@ def create_vision_draft_batch(
             draft_type=draft_type,
             model_name=model_name,
             input_detail=input_detail,
+            no_live_model_call=no_live_model_call,
+            app_settings=app_settings,
         )
         response["metadata_profile_ids"].append(created["metadata_profile_id"])
         if created["review_task_id"] not in response["review_task_ids"]:

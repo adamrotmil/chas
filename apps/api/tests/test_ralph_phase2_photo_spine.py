@@ -4,6 +4,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 from fastapi.testclient import TestClient
 
+from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.main import app
 from app.routers.tasks import _attach_photo_prompt_pair_candidates
@@ -40,6 +41,11 @@ def build_client():
             yield session
 
     app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        openai_api_key="",
+        text_generation_live_calls_enabled=False,
+        vision_live_calls_enabled=False,
+    )
     return TestClient(app), engine
 
 
@@ -3055,38 +3061,18 @@ def test_machine_photo_memory_drafts_create_profiles_memories_embeddings_and_ret
 
     flute = client.get("/api/retrieval/search", params={"q": "Japanese flute", "scope": "family_private", "limit": 3})
     assert flute.status_code == 200
-    assert flute.json()["results"]
-    assert "Japanese flute" in flute.json()["results"][0]["title"]
-    assert flute.json()["results"][0]["target_type"] == "memory"
-    assert flute.json()["results"][0]["review_policy"] == {
-        "requires_adam_review": True,
-        "truth_status": "system_inference",
-        "boundary_reviewed_by": "system_draft",
-        "does_not_certify_final_memory": True,
-    }
-    assert len([result["source_photo_id"] for result in flute.json()["results"]]) == len(
-        {result["source_photo_id"] for result in flute.json()["results"]}
-    )
+    assert flute.json()["results"] == []
+    assert flute.json()["retrieval_gap"]["status"] == "no_boundary_cleared_memory_result"
 
     honors = client.get("/api/retrieval/search", params={"q": "honors ceremony", "scope": "family_private", "limit": 3})
     assert honors.status_code == 200
-    assert honors.json()["results"]
-    assert "honors ceremony" in honors.json()["results"][0]["input_preview"].lower()
-    assert honors.json()["results"][0]["target_type"] == "memory"
-    assert honors.json()["results"][0]["review_policy"]["requires_adam_review"] is True
-    assert len([result["source_photo_id"] for result in honors.json()["results"]]) == len(
-        {result["source_photo_id"] for result in honors.json()["results"]}
-    )
+    assert honors.json()["results"] == []
+    assert honors.json()["retrieval_gap"]["status"] == "no_boundary_cleared_memory_result"
 
     flowers = client.get("/api/retrieval/search", params={"q": "Adam flowers", "scope": "family_private", "limit": 3})
     assert flowers.status_code == 200
-    assert flowers.json()["results"]
-    assert "Adam" in flowers.json()["results"][0]["title"]
-    assert flowers.json()["results"][0]["target_type"] == "memory"
-    assert flowers.json()["results"][0]["review_policy"]["requires_adam_review"] is True
-    assert len([result["source_photo_id"] for result in flowers.json()["results"]]) == len(
-        {result["source_photo_id"] for result in flowers.json()["results"]}
-    )
+    assert flowers.json()["results"] == []
+    assert flowers.json()["retrieval_gap"]["status"] == "no_boundary_cleared_memory_result"
 
     corpus = client.get("/api/retrieval/photo-memory-corpus", params={"scope": "family_private", "limit": 20})
     assert corpus.status_code == 200

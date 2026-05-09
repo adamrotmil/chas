@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session, select
 
+from app.config import Settings, settings
 from app.models import Asset, Boundary, EmbeddingRecord, Memory, MetadataProfile, Task
+from app.services.embeddings import embed_query_text, live_embedding_ready, load_embedding_vector
 from app.services.photo_constants import (
     PHOTO_MEMORY_PROFILE_TYPE,
     PHOTO_SENSITIVE_PRIVACY_LEVELS,
@@ -526,6 +528,17 @@ def _score(query_terms: Dict[str, int], text: str) -> tuple[int, List[str]]:
     return score, matched
 
 
+def _cosine_similarity(left: List[float], right: List[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if not left_norm or not right_norm:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
 def _photo_result_rank(item: Dict[str, Any]) -> tuple[int, int, str, str]:
     target_rank = 0 if item.get("target_type") == "memory" else 1
     return (
@@ -548,12 +561,24 @@ def _retrieval_review_policy(record: EmbeddingRecord, boundary_snapshot: Dict[st
     }
 
 
+def _default_search_allows_review_state(record: EmbeddingRecord, metadata: Dict[str, Any], boundary_snapshot: Dict[str, Any]) -> bool:
+    if record.truth_status in {"system_inference", "model_generated"}:
+        return False
+    if metadata.get("source") == "photo_memory_machine_draft":
+        return False
+    if metadata.get("source") == "photo_memory_review" and boundary_snapshot.get("reviewed_by") != "adam":
+        return False
+    return True
+
+
 def search_embedding_records(
     *,
     session: Session,
     query: str,
     scope: str = "family_private",
     limit: int = 10,
+    app_settings: Settings = settings,
+    use_live_query_embedding: bool = True,
 ) -> Dict[str, Any]:
     query_tokens = _tokens(query)
     if not query_tokens:
@@ -572,10 +597,16 @@ def search_embedding_records(
 
     records = session.exec(
         select(EmbeddingRecord)
-        .where(EmbeddingRecord.status == "ready_for_embedding")
+        .where(EmbeddingRecord.status.in_(["ready_for_embedding", "embedded"]))
         .where(EmbeddingRecord.modality == "text")
         .order_by(EmbeddingRecord.created_at.asc())
     ).all()
+    embedded_candidates_exist = any(record.status == "embedded" and record.vector_uri for record in records)
+    query_vector: List[float] = []
+    vector_query_used = False
+    if use_live_query_embedding and embedded_candidates_exist and live_embedding_ready(app_settings):
+        query_vector = embed_query_text(query=query, app_settings=app_settings)
+        vector_query_used = bool(query_vector)
 
     results: List[Dict[str, Any]] = []
     for record in records:
@@ -586,9 +617,15 @@ def search_embedding_records(
             boundary_snapshot = _asset_boundary_snapshot(session, source_photo_id)
         if source_photo_id and not _boundary_allows(boundary_snapshot, scope=scope):
             continue
+        if not _default_search_allows_review_state(record, metadata, boundary_snapshot):
+            continue
 
         score, matched = _score(query_terms, record.input_text)
-        if score <= 0:
+        vector_similarity = 0.0
+        if query_vector and record.status == "embedded" and record.vector_uri:
+            vector_similarity = _cosine_similarity(query_vector, load_embedding_vector(record, app_settings))
+        combined_score = score + int(max(vector_similarity, 0.0) * 100)
+        if combined_score <= 0:
             continue
         results.append(
             {
@@ -597,14 +634,26 @@ def search_embedding_records(
                 "target_id": record.target_id,
                 "source_photo_id": source_photo_id,
                 "title": _title_for_record(session, record, source_photo_id),
-                "score": score,
+                "score": combined_score,
+                "lexical_score": score,
+                "vector_similarity": round(vector_similarity, 6),
+                "vector_query_used": vector_query_used,
                 "matched_terms": matched,
                 "input_preview": record.input_preview or record.input_text[:280],
+                "embedding_status": record.status,
+                "embedding_model": record.model_name,
+                "vector_dims": record.vector_dims,
+                "vector_uri": record.vector_uri,
+                "provider_record_id": record.provider_record_id,
                 "truth_status": record.truth_status,
                 "retrieval_gap_origin": _retrieval_origin_metadata(metadata),
                 "boundary_snapshot": boundary_snapshot,
                 "review_policy": _retrieval_review_policy(record, boundary_snapshot),
-                "why_matched": f"Matched query terms: {', '.join(matched)}.",
+                "why_matched": (
+                    f"Vector similarity {vector_similarity:.3f}."
+                    if vector_similarity > 0 and not matched
+                    else f"Matched query terms: {', '.join(matched)}."
+                ),
             }
         )
 
@@ -628,12 +677,15 @@ def search_embedding_records(
     response = {
         "query": query,
         "scope": scope,
-        "retrieval_strategy": "boundary_filtered_lexical_semantic_expansion",
+        "retrieval_strategy": "boundary_filtered_vector_similarity_with_lexical_fallback"
+        if vector_query_used
+        else "boundary_filtered_lexical_semantic_expansion",
         "result_dedupe_policy": {
             "one_result_per_source_photo": True,
             "preferred_photo_target_order": ["memory", "metadata_profile"],
         },
         "expanded_query_terms": sorted(query_terms),
+        "vector_query_used": vector_query_used,
         "results": deduped_results[: max(1, min(limit, 50))],
     }
     if not response["results"]:
@@ -644,6 +696,367 @@ def search_embedding_records(
             expanded_query_terms=sorted(query_terms),
         )
     return response
+
+
+def _safe_boundary_summary(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: snapshot.get(key)
+        for key in (
+            "boundary_status",
+            "privacy_level",
+            "searchable",
+            "retrievable_in_chat",
+            "quotable",
+            "summarizable",
+            "usable_for_voice_context",
+            "usable_for_sft",
+            "usable_for_dpo",
+            "usable_for_eval",
+            "reviewed_by",
+        )
+        if key in snapshot
+    }
+
+
+def _source_asset_id_for_cluster(metadata: Dict[str, Any], source_photo_id: Optional[str]) -> Optional[str]:
+    if source_photo_id:
+        return source_photo_id
+    for key in ("source_asset_id", "asset_id", "source_document_id", "document_id"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _source_asset_title_for_cluster(session: Session, source_asset_id: Optional[str]) -> Optional[str]:
+    if not source_asset_id:
+        return None
+    asset = session.get(Asset, source_asset_id)
+    if not asset:
+        return None
+    return asset.title or asset.original_filename or asset.human_id
+
+
+def _cluster_family_and_key(
+    *,
+    record: EmbeddingRecord,
+    metadata: Dict[str, Any],
+    source_photo_id: Optional[str],
+) -> tuple[str, str]:
+    family = _corpus_family(record, metadata)
+    source_asset_id = _source_asset_id_for_cluster(metadata, source_photo_id)
+    if source_photo_id:
+        return "photo_memory", f"photo:{source_photo_id}"
+    if source_asset_id and family in {"source_context", "source_voice_reference", "general_retrieval"}:
+        return "source_context", f"source_asset:{source_asset_id}"
+    if family == "approved_training_voice":
+        return family, f"approved_training_voice:{record.target_id}"
+    return family, f"{record.target_type}:{record.target_id}"
+
+
+def _cluster_title_for_record(
+    *,
+    session: Session,
+    record: EmbeddingRecord,
+    result: Dict[str, Any],
+    metadata: Dict[str, Any],
+    source_photo_id: Optional[str],
+) -> str:
+    source_asset_id = _source_asset_id_for_cluster(metadata, source_photo_id)
+    source_title = _source_asset_title_for_cluster(session, source_asset_id)
+    if source_title:
+        return source_title
+    return _string_value(result.get("title")) or _title_for_record(session, record, source_photo_id)
+
+
+def _string_value(value: Any) -> str:
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _safe_ranked_evidence_record(
+    *,
+    session: Session,
+    result: Dict[str, Any],
+    rank: int,
+) -> Optional[Dict[str, Any]]:
+    record_id = _string_value(result.get("embedding_record_id"))
+    record = session.get(EmbeddingRecord, record_id) if record_id else None
+    if record is None:
+        return None
+    metadata = record.metadata_json or {}
+    source_photo_id = _string_value(result.get("source_photo_id")) or _source_photo_id(session, record)
+    source_asset_id = _source_asset_id_for_cluster(metadata, source_photo_id)
+    family, cluster_key = _cluster_family_and_key(record=record, metadata=metadata, source_photo_id=source_photo_id)
+    boundary_snapshot = result.get("boundary_snapshot") if isinstance(result.get("boundary_snapshot"), dict) else {}
+    source_segment_id = metadata.get("source_segment_id") or metadata.get("segment_id")
+    return {
+        "rank": rank,
+        "embedding_record_id": record.id,
+        "cluster_key": cluster_key,
+        "corpus_family": family,
+        "target_type": record.target_type,
+        "target_id": record.target_id,
+        "source_asset_id": source_asset_id,
+        "source_photo_id": source_photo_id,
+        "source_segment_id": source_segment_id if isinstance(source_segment_id, str) else None,
+        "title": _cluster_title_for_record(
+            session=session,
+            record=record,
+            result=result,
+            metadata=metadata,
+            source_photo_id=source_photo_id,
+        ),
+        "score": result.get("score"),
+        "lexical_score": result.get("lexical_score"),
+        "vector_similarity": result.get("vector_similarity"),
+        "vector_query_used": result.get("vector_query_used") is True,
+        "matched_terms": result.get("matched_terms") if isinstance(result.get("matched_terms"), list) else [],
+        "input_preview": result.get("input_preview"),
+        "embedding_status": result.get("embedding_status"),
+        "embedding_model": result.get("embedding_model"),
+        "vector_dims": result.get("vector_dims"),
+        "truth_status": result.get("truth_status"),
+        "metadata_source": metadata.get("source"),
+        "review_policy": result.get("review_policy") if isinstance(result.get("review_policy"), dict) else {},
+        "boundary_summary": _safe_boundary_summary(boundary_snapshot),
+        "why_matched": result.get("why_matched"),
+        "retrieval_gap_origin": result.get("retrieval_gap_origin"),
+    }
+
+
+def _cluster_planning_hint(cluster: Dict[str, Any]) -> str:
+    family = _string_value(cluster.get("cluster_family"))
+    if family == "photo_memory":
+        return "Use this as reviewed photo/memory context; ask Adam whether the active ticket connects to this memory before using it in training data."
+    if family == "source_context":
+        return "Use these source records as a document cluster; ask Adam which passage or theme should drive the next prompt-pair candidate."
+    if family == "approved_training_voice":
+        return "Use this as approved voice evidence; compare candidate responses against its cadence and constraints."
+    if family == "source_voice_reference":
+        return "Use this as source voice reference evidence and preserve provenance if it informs generated candidates."
+    return "Use this cluster only as reviewed retrieval context and keep provenance attached to any downstream candidate."
+
+
+def ranked_evidence_clusters(
+    *,
+    session: Session,
+    query: str,
+    scope: str = "family_private",
+    limit: int = 6,
+    per_cluster_limit: int = 3,
+    app_settings: Settings = settings,
+    use_live_query_embedding: bool = True,
+) -> Dict[str, Any]:
+    safe_limit = max(1, min(limit, 10))
+    safe_per_cluster_limit = max(1, min(per_cluster_limit, 5))
+    search_limit = max(safe_limit * safe_per_cluster_limit * 2, safe_limit)
+    search = search_embedding_records(
+        session=session,
+        query=query,
+        scope=scope,
+        limit=min(search_limit, 50),
+        app_settings=app_settings,
+        use_live_query_embedding=use_live_query_embedding,
+    )
+    raw_results = search.get("results") if isinstance(search.get("results"), list) else []
+    records: List[Dict[str, Any]] = []
+    for rank, result in enumerate(raw_results, start=1):
+        if not isinstance(result, dict):
+            continue
+        safe_record = _safe_ranked_evidence_record(session=session, result=result, rank=rank)
+        if safe_record:
+            records.append(safe_record)
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    cluster_order: List[str] = []
+    for record in records:
+        cluster_key = _string_value(record.get("cluster_key")) or f"{record.get('target_type')}:{record.get('target_id')}"
+        if cluster_key not in grouped:
+            cluster_id = hashlib.sha256(cluster_key.encode("utf-8")).hexdigest()[:16]
+            grouped[cluster_key] = {
+                "cluster_id": cluster_id,
+                "cluster_key": cluster_key,
+                "cluster_family": record.get("corpus_family") or "general_retrieval",
+                "display_title": record.get("title") or cluster_key,
+                "source_asset_id": record.get("source_asset_id"),
+                "source_photo_id": record.get("source_photo_id"),
+                "top_score": record.get("score") or 0,
+                "vector_query_used": record.get("vector_query_used") is True,
+                "matched_terms": [],
+                "truth_status_counts": {},
+                "metadata_source_counts": {},
+                "target_refs": [],
+                "records": [],
+            }
+            cluster_order.append(cluster_key)
+        cluster = grouped[cluster_key]
+        cluster["top_score"] = max(int(cluster.get("top_score") or 0), int(record.get("score") or 0))
+        cluster["vector_query_used"] = bool(cluster.get("vector_query_used")) or record.get("vector_query_used") is True
+        matched_terms = cluster.get("matched_terms") if isinstance(cluster.get("matched_terms"), list) else []
+        for term in record.get("matched_terms") if isinstance(record.get("matched_terms"), list) else []:
+            if term not in matched_terms:
+                matched_terms.append(term)
+        truth_status = _string_value(record.get("truth_status")) or "unknown"
+        metadata_source = _string_value(record.get("metadata_source")) or "unknown"
+        truth_counts = cluster["truth_status_counts"]
+        source_counts = cluster["metadata_source_counts"]
+        truth_counts[truth_status] = truth_counts.get(truth_status, 0) + 1
+        source_counts[metadata_source] = source_counts.get(metadata_source, 0) + 1
+        target_ref = {"target_type": record.get("target_type"), "target_id": record.get("target_id")}
+        if target_ref not in cluster["target_refs"]:
+            cluster["target_refs"].append(target_ref)
+        cluster["records"].append(record)
+
+    clusters = [grouped[key] for key in cluster_order]
+    clusters.sort(key=lambda item: (-int(item.get("top_score") or 0), str(item.get("display_title") or ""), str(item.get("cluster_key") or "")))
+    capped_clusters: List[Dict[str, Any]] = []
+    for index, cluster in enumerate(clusters[:safe_limit], start=1):
+        records_for_cluster = cluster.get("records") if isinstance(cluster.get("records"), list) else []
+        top_records = records_for_cluster[:safe_per_cluster_limit]
+        capped_clusters.append(
+            {
+                **{key: value for key, value in cluster.items() if key != "records"},
+                "rank": index,
+                "record_count": len(records_for_cluster),
+                "top_records": top_records,
+                "planning_hint": _cluster_planning_hint(cluster),
+                "review_policy": "boundary_filtered_reviewed_records_only",
+                "vector_values_included": False,
+            }
+        )
+
+    response = {
+        "plan_type": "ranked_evidence_cluster_plan",
+        "query": query,
+        "scope": scope,
+        "retrieval_strategy": search.get("retrieval_strategy"),
+        "vector_query_used": search.get("vector_query_used") is True,
+        "cluster_count": len(capped_clusters),
+        "source_result_count": len(records),
+        "cluster_limit": safe_limit,
+        "per_cluster_limit": safe_per_cluster_limit,
+        "clusters": capped_clusters,
+        "safety_boundaries": [
+            "Read-only planning payload; it does not create memories, tasks, embeddings, or training rows.",
+            "Only boundary-filtered default retrieval candidates are grouped into clusters.",
+            "Vector values, vector file URIs, and provider record identifiers are omitted from this payload.",
+            "Unreviewed machine inference can appear only through retrieval-gap workflow metadata, not as final memory truth.",
+        ],
+    }
+    if not capped_clusters and isinstance(search.get("retrieval_gap"), dict):
+        response["retrieval_gap"] = search["retrieval_gap"]
+    return response
+
+
+def _corpus_family(record: EmbeddingRecord, metadata: Dict[str, Any]) -> str:
+    source = str(metadata.get("source") or "")
+    if source.startswith("photo_memory") or record.embedding_type == "memory_text":
+        return "photo_memory"
+    if record.embedding_type == "gold_voice_text" or source == "gold_voice_edit":
+        return "approved_training_voice"
+    if record.embedding_type == "voice_reference_text":
+        return "source_voice_reference"
+    if record.target_type in {"segment", "source_span", "metadata_profile"}:
+        return "source_context"
+    return "general_retrieval"
+
+
+def _corpus_review_status(record: EmbeddingRecord, metadata: Dict[str, Any], boundary_snapshot: Dict[str, Any]) -> str:
+    if metadata.get("source") == "photo_memory_machine_draft" or record.truth_status in {"system_inference", "model_generated"}:
+        return "held_for_adam_review"
+    if boundary_snapshot.get("reviewed_by") == "adam" or metadata.get("source") in {"gold_voice_edit", "voice_reference_builder", "photo_memory_review"}:
+        return "reviewed_or_approved"
+    if boundary_snapshot.get("boundary_status") == "missing":
+        return "inspectable_boundary_missing"
+    return "inspectable_needs_boundary_review"
+
+
+def unified_evidence_corpus(
+    *,
+    session: Session,
+    scope: str = "family_private",
+    limit: int = 100,
+    include_unreviewed: bool = False,
+) -> Dict[str, Any]:
+    records = session.exec(
+        select(EmbeddingRecord)
+        .where(EmbeddingRecord.status.in_(["ready_for_embedding", "embedded"]))
+        .where(EmbeddingRecord.modality == "text")
+        .order_by(EmbeddingRecord.created_at.asc())
+    ).all()
+    rows: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []
+    family_counts: Dict[str, int] = {}
+    status_counts: Dict[str, int] = {}
+    for record in records:
+        metadata = record.metadata_json or {}
+        boundary_snapshot = record.boundary_snapshot or {}
+        source_photo_id = _source_photo_id(session, record)
+        family = _corpus_family(record, metadata)
+        review_status = _corpus_review_status(record, metadata, boundary_snapshot)
+        boundary_allowed = True
+        if source_photo_id:
+            boundary_allowed = _boundary_allows(boundary_snapshot, scope=scope)
+        elif boundary_snapshot and boundary_snapshot.get("boundary_status") != "missing" and boundary_snapshot.get("privacy_level"):
+            boundary_allowed = _boundary_allows(boundary_snapshot, scope=scope)
+        if not boundary_allowed:
+            review_status = "excluded_by_boundary"
+        family_counts[family] = family_counts.get(family, 0) + 1
+        status_counts[record.status] = status_counts.get(record.status, 0) + 1
+        is_unreviewed = review_status in {"held_for_adam_review", "inspectable_needs_boundary_review", "inspectable_boundary_missing", "excluded_by_boundary"}
+        row = {
+            "embedding_record_id": record.id,
+            "corpus_family": family,
+            "target_type": record.target_type,
+            "target_id": record.target_id,
+            "embedding_type": record.embedding_type,
+            "embedding_status": record.status,
+            "embedding_model": record.model_name,
+            "vector_dims": record.vector_dims,
+            "vector_uri": record.vector_uri,
+            "provider_record_id": record.provider_record_id,
+            "truth_status": record.truth_status,
+            "review_status": review_status,
+            "source_photo_id": source_photo_id,
+            "title": _title_for_record(session, record, source_photo_id),
+            "input_preview": record.input_preview or record.input_text[:280],
+            "metadata_source": metadata.get("source"),
+            "source_annotation_id": metadata.get("source_annotation_id"),
+            "source_segment_id": metadata.get("source_segment_id"),
+            "source_evidence_refs": metadata.get("source_evidence_refs") if isinstance(metadata.get("source_evidence_refs"), list) else [],
+            "boundary_snapshot": boundary_snapshot,
+            "index_policy": {
+                "scope": scope,
+                "include_unreviewed": include_unreviewed,
+                "default_retrieval_candidate": not is_unreviewed and boundary_allowed,
+                "vector_values_in_exports": False,
+            },
+        }
+        if is_unreviewed and not include_unreviewed:
+            excluded.append({**row, "excluded_reason": review_status})
+            continue
+        rows.append(row)
+    capped = rows[: max(1, min(limit, 1000))]
+    return {
+        "corpus_type": "unified_evidence_embedding_corpus",
+        "review_policy": "inspectable_embedding_manifest_not_training_export",
+        "scope": scope,
+        "include_unreviewed": include_unreviewed,
+        "record_count": len(capped),
+        "total_indexable_record_count": len(rows),
+        "excluded_count": len(excluded),
+        "corpus_family_counts": dict(sorted(family_counts.items())),
+        "embedding_status_counts": dict(sorted(status_counts.items())),
+        "vector_ready_count": len([record for record in records if record.status == "embedded" and record.vector_uri]),
+        "ready_for_embedding_count": len([record for record in records if record.status == "ready_for_embedding"]),
+        "safety_boundaries": [
+            "This endpoint is an inspectable manifest; it does not create embeddings or export training rows.",
+            "Vector values stay in local vector files and are not included in this payload.",
+            "Unreviewed or boundary-missing records are excluded by default but can be inspected with include_unreviewed=true.",
+        ],
+        "records": capped,
+        "excluded": excluded[: max(1, min(limit, 1000))],
+    }
 
 
 def retrieval_gap_review_slice(
@@ -817,7 +1230,7 @@ def _photo_memory_embedding_rows(
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     records = session.exec(
         select(EmbeddingRecord)
-        .where(EmbeddingRecord.status == "ready_for_embedding")
+        .where(EmbeddingRecord.status.in_(["ready_for_embedding", "embedded"]))
         .where(EmbeddingRecord.modality == "text")
         .order_by(EmbeddingRecord.created_at.asc())
     ).all()
@@ -947,6 +1360,10 @@ def _photo_memory_embedding_rows(
                 "embedding_type": record.embedding_type,
                 "model_name": record.model_name,
                 "input_checksum": record.input_checksum,
+                "embedding_status": record.status,
+                "vector_dims": record.vector_dims,
+                "vector_uri": record.vector_uri,
+                "provider_record_id": record.provider_record_id,
                 "truth_status": record.truth_status,
                 "input_text": record.input_text,
                 "input_preview": record.input_preview or record.input_text[:280],
@@ -960,6 +1377,7 @@ def _photo_memory_embedding_rows(
                 "inclusion_trace": [
                     f"metadata_source={metadata.get('source') or 'unknown'}",
                     f"truth_status={record.truth_status or 'unknown'}",
+                    f"embedding_status={record.status or 'unknown'}",
                     f"boundary_reviewed_by={boundary_snapshot.get('reviewed_by') or 'unknown'}",
                     f"scope={scope}",
                     "dedupe=one_record_per_source_photo",
@@ -1077,6 +1495,7 @@ def photo_memory_embedding_export(
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         boundary_snapshot = row.get("boundary_snapshot") if isinstance(row.get("boundary_snapshot"), dict) else {}
         retrieval_origin = row.get("retrieval_gap_origin")
+        live_embedding_call = metadata.get("live_embedding_call") is True or row.get("embedding_status") == "embedded"
         items.append(
             {
                 "id": f"photo-memory:{row['embedding_record_id']}",
@@ -1101,10 +1520,11 @@ def photo_memory_embedding_export(
                     "model_name": row["model_name"],
                     "embedding_type": row["embedding_type"],
                     "modality": "text",
-                    "live_embedding_call": False,
+                    "live_embedding_call": live_embedding_call,
                     "vector_values_included": False,
-                    "vector_uri": None,
-                    "provider_record_id": None,
+                    "vector_uri": row.get("vector_uri"),
+                    "vector_dims": row.get("vector_dims"),
+                    "provider_record_id": row.get("provider_record_id"),
                 },
                 "review_status": row.get("review_status"),
                 "inclusion_reason": row.get("inclusion_reason"),
@@ -1138,7 +1558,7 @@ def photo_memory_embedding_export(
             "item_ids": [item["id"] for item in items],
             "content_sha256": content_sha256,
             "vector_values_included": False,
-            "live_embedding_call": False,
+            "live_embedding_call": any((item.get("embedding_plan") or {}).get("live_embedding_call") is True for item in items),
             "boundary_policy_snapshot": {
                 "requires_searchable_or_retrievable": True,
                 "excluded_privacy_levels": sorted(PHOTO_SENSITIVE_PRIVACY_LEVELS),
@@ -1149,8 +1569,10 @@ def photo_memory_embedding_export(
                 "preferred_target_order": ["memory", "metadata_profile"],
             },
             "embedding_policy_snapshot": {
-                "model_status": "pending_provider_embedding",
-                "vector_storage": "external_provider_or_object_storage_pointer",
+                "model_status": "live_embedding_pointer_available"
+                if any((item.get("embedding_plan") or {}).get("live_embedding_call") is True for item in items)
+                else "pending_provider_embedding",
+                "vector_storage": "local_json_file_pointer",
                 "ordinary_db_vector_storage": False,
             },
         },

@@ -85,7 +85,7 @@ Recommended text-generation defaults:
 
 - API: OpenAI Responses API
 - model: `gpt-5.5`
-- reasoning effort: `xhigh`
+- reasoning effort: `medium`
 - output: plain text only
 - generation truth status: `model_generated`
 

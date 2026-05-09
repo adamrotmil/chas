@@ -12,6 +12,8 @@ import {
   FolderArchive,
   Image,
   Inbox,
+  KeyRound,
+  MessageCircle,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -29,6 +31,7 @@ import {
   getMemories,
   getPhotoContextSessionProgress,
   getPhotoReviewPriority,
+  getVisionSchema,
   getDpoRejectedReasonRepairPacket,
   getPromptPairAudit,
   getPromptPairReviewProgress,
@@ -36,15 +39,23 @@ import {
   skipTask,
   submitTask
 } from "@/lib/api";
-import type { Annotation, Asset, AssetUploadResponse, DpoRejectedReasonRepairPacket, GoldVoiceExample, Memory, PhotoContextSessionProgress, PhotoPromptPairCandidateResponse, PhotoReviewPriorityItem, PhotoReviewPrioritySummary, PromptPairAudit, PromptPairReviewProgress, Task } from "@/lib/types";
+import type { Annotation, Asset, AssetUploadResponse, DpoRejectedReasonRepairPacket, GoldVoiceExample, Memory, PhotoContextSessionProgress, PhotoPromptPairCandidateResponse, PhotoReviewPriorityItem, PhotoReviewPrioritySummary, PromptPairAudit, PromptPairReviewProgress, Task, VisionSchemaResponse } from "@/lib/types";
 import { ArtifactUpload } from "@/components/ArtifactUpload";
+import { AISpinePanel } from "@/components/AISpinePanel";
+import { ChatWorkbench } from "@/components/ChatWorkbench";
 import { ExportDryRunPanel } from "@/components/ExportDryRunPanel";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { ModelStarterPanel } from "@/components/ModelStarterPanel";
 import { TaskWorkbench } from "@/components/TaskWorkbench";
+import { TrainingBoard } from "@/components/TrainingBoard";
+import {
+  getStoredGoogleStoragePreviewToken,
+  hasGoogleStoragePreviewConfig,
+  requestGoogleStoragePreviewToken
+} from "@/lib/googleStoragePreview";
 import { assetIdForTask, readinessBadgesForTask } from "@/lib/readiness";
 
-type NavMode = "intake" | "review" | "make_gold" | "exports" | "model_starter";
+type NavMode = "chat" | "intake" | "review" | "make_gold" | "exports" | "model_starter";
 type CollectionId = "all" | "photos" | "text" | "gold" | "needs_boundary";
 type ShellColumn = "sidebar" | "queue";
 type PhotoTaskFocus = "all" | "fastest_vector";
@@ -89,6 +100,12 @@ type NavItem = { id: NavMode; label: string; icon: React.ReactNode; tooltip: str
 type CollectionItem = { id: CollectionId; label: string; icon: React.ReactNode; tooltip: string };
 
 const topNav: NavItem[] = [
+  {
+    id: "chat",
+    label: "Chat",
+    icon: <MessageCircle size={15} />,
+    tooltip: "Work through ready tickets conversationally with draft-first actions."
+  },
   { id: "intake", label: "Intake", icon: <Inbox size={15} />, tooltip: "Import local or Drive artifacts and start the first triage task." },
   {
     id: "review",
@@ -98,9 +115,9 @@ const topNav: NavItem[] = [
   },
   {
     id: "make_gold",
-    label: "Prompt Pairs",
+    label: "Training",
     icon: <Sparkles size={15} />,
-    tooltip: "Review each generated SFT or DPO prompt pair as a singleton downstream artifact."
+    tooltip: "Review each generated SFT or DPO artifact as a singleton downstream training item."
   },
   {
     id: "exports",
@@ -124,7 +141,7 @@ const collectionDefs: CollectionItem[] = [
   { id: "all", label: "All", icon: <Database size={15} />, tooltip: "Show every ready task in this workflow stage." },
   { id: "photos", label: "Photos", icon: <Image size={15} />, tooltip: "Photo, scan, and vision-memory review tasks." },
   { id: "text", label: "Text", icon: <FileText size={15} />, tooltip: "Documents, source text, email, OCR, and segmentation tasks." },
-  { id: "gold", label: "Pairs", icon: <Download size={15} />, tooltip: "Prompt-pair tickets waiting for review." },
+  { id: "gold", label: "Training", icon: <Download size={15} />, tooltip: "SFT and DPO tickets waiting for gold review." },
   { id: "needs_boundary", label: "Needs Boundary", icon: <ShieldCheck size={15} />, tooltip: "Anything waiting on privacy, quote, retrieval, or export clearance." }
 ];
 
@@ -730,6 +747,8 @@ function taskMatchesCollection(task: Task, collection: CollectionId): boolean {
 
 function taskMatchesMode(task: Task, mode: NavMode): boolean {
   switch (mode) {
+    case "chat":
+      return true;
     case "intake":
       return task.task_type === "asset_triage";
     case "review":
@@ -757,7 +776,7 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
 }
 
 function modeUsesCollectionFilter(mode: NavMode): boolean {
-  return mode !== "exports" && mode !== "model_starter";
+  return mode !== "chat" && mode !== "exports" && mode !== "model_starter";
 }
 
 function defaultCollectionForMode(mode: NavMode): CollectionId {
@@ -910,6 +929,80 @@ function exportArtifactStatuses(exportArtifact: Record<string, unknown> | null):
   return Object.entries(statuses as Record<string, unknown>)
     .map(([mode, status]) => `${mode.toUpperCase()}: ${queueLabel(String(status))}`)
     .join(" / ");
+}
+
+function exportArtifactRecordRows(record: Record<string, unknown> | null, key: string): { label: string; value: string }[] {
+  const value = record?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+  return Object.entries(value as Record<string, unknown>).flatMap(([label, item]) => {
+    if (typeof item === "boolean") {
+      return [{ label, value: item ? "yes" : "no" }];
+    }
+    if (typeof item === "number" && Number.isFinite(item)) {
+      return [{ label, value: String(item) }];
+    }
+    if (typeof item === "string" && item) {
+      return [{ label, value: item }];
+    }
+    return [];
+  });
+}
+
+function TrainingArtifactProofPanel({ annotation }: { annotation: Annotation | null }) {
+  const receipt = annotationReceipt(annotation);
+  const exportArtifact = receiptExportArtifact(receipt);
+  if (!receipt || !exportArtifact) {
+    return null;
+  }
+  const exportReady = exportArtifact.export_ready === true;
+  const artifactIds = exportArtifactRecordRows(exportArtifact, "artifact_ids");
+  const statusRows = exportArtifactRecordRows(exportArtifact, "statuses");
+  const checkRows = exportArtifactRecordRows(exportArtifact, "checks");
+  const blockers = receiptList(exportArtifact, "review_blockers");
+  const receiptHumanId = receiptString(receipt, "human_id");
+  const receiptId = receiptString(receipt, "id") || annotationOutputString(annotation, "task_receipt_id");
+  const createdAt = annotation?.created_at ? formatRelativeTime(annotation.created_at) : "";
+
+  return (
+    <section className="training-artifact-proof" data-ready={exportReady ? "true" : "false"} aria-label="Training artifact proof">
+      <header>
+        <div>
+          <span>Training artifact proof</span>
+          <strong>{exportReady ? "Approved export-ready artifact" : "Review artifact needs blockers resolved"}</strong>
+          <p>
+            {receiptHumanId || receiptId ? `Receipt ${receiptHumanId || receiptId.slice(0, 8)}` : "Receipt recorded"}
+            {createdAt ? ` / created ${createdAt}` : ""}
+          </p>
+        </div>
+        <em>{exportArtifactStatuses(exportArtifact) || "Gold voice recorded"}</em>
+      </header>
+      <div className="training-proof-grid" aria-label="Training artifact identifiers">
+        {[...artifactIds, ...statusRows].map((row) => (
+          <span key={`${row.label}-${row.value}`}>
+            <em>{queueLabel(row.label)}</em>
+            <strong>{row.value.length > 18 ? row.value.slice(0, 12) : queueLabel(row.value)}</strong>
+          </span>
+        ))}
+      </div>
+      {checkRows.length > 0 ? (
+        <div className="training-proof-checks" aria-label="Training artifact quality checks">
+          {checkRows.map((row) => (
+            <span key={`${row.label}-${row.value}`} data-pass={row.value === "yes" || Number(row.value) > 0 ? "true" : "false"}>
+              <em>{queueLabel(row.label)}</em>
+              <strong>{queueLabel(row.value)}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p>
+        {blockers.length > 0
+          ? `Blocked: ${blockers.map(queueLabel).join(", ")}`
+          : "No export blockers reported by the receipt. Dataset dry-run should include this artifact if the JSONL payload remains unique."}
+      </p>
+    </section>
+  );
 }
 
 function SubmitReceiptBanner({ annotation }: { annotation: Annotation | null }) {
@@ -1110,6 +1203,7 @@ function SubmittedResultPanel({
           ))}
         </div>
       ) : null}
+      <TrainingArtifactProofPanel annotation={annotation} />
       {isPhoto ? (
         <div className="submitted-next-step" aria-label="Photo submit next steps">
           <div>
@@ -1185,9 +1279,37 @@ export default function Home() {
   const [photoPairBatch, setPhotoPairBatch] = useState<PhotoPromptPairCandidateResponse | null>(null);
   const [activePhotoPairBatchId, setActivePhotoPairBatchId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [photoPreviewAccessToken, setPhotoPreviewAccessToken] = useState("");
+  const [photoPreviewAccessStatus, setPhotoPreviewAccessStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [visionBatchBusy, setVisionBatchBusy] = useState(false);
+  const [visionSchema, setVisionSchema] = useState<VisionSchemaResponse | null>(null);
   const workbenchColumnRef = useRef<HTMLElement | null>(null);
+
+  const photoPreviewUrl = useCallback(
+    (assetId: string, variant: "thumbnail" | "display" | "original" = "display") =>
+      getAssetPreviewUrl(assetId, variant, photoPreviewAccessToken),
+    [photoPreviewAccessToken]
+  );
+
+  useEffect(() => {
+    const storedToken = getStoredGoogleStoragePreviewToken();
+    if (storedToken) {
+      setPhotoPreviewAccessToken(storedToken);
+      setPhotoPreviewAccessStatus("Preview access active for this tab.");
+    }
+  }, []);
+
+  async function handleEnablePhotoPreviews() {
+    setPhotoPreviewAccessStatus("Waiting for Google authorization.");
+    try {
+      const token = await requestGoogleStoragePreviewToken();
+      setPhotoPreviewAccessToken(token);
+      setPhotoPreviewAccessStatus("Preview access active for this tab.");
+    } catch (previewError) {
+      setPhotoPreviewAccessStatus(previewError instanceof Error ? previewError.message : "Unable to authorize photo previews.");
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -1202,6 +1324,7 @@ export default function Home() {
         photoContextProgressData,
         promptPairAuditData,
         promptPairProgressData,
+        visionSchemaData,
         dpoRepairPacketData
       ] = await Promise.all([
         getAssets(),
@@ -1212,6 +1335,7 @@ export default function Home() {
         getPhotoContextSessionProgress("family_private", 100),
         getPromptPairAudit(1),
         getPromptPairReviewProgress(),
+        getVisionSchema(),
         getDpoRejectedReasonRepairPacket(25)
       ]);
       setAssets(assetData);
@@ -1222,6 +1346,7 @@ export default function Home() {
       setPhotoContextProgress(photoContextProgressData);
       setPromptPairAudit(promptPairAuditData);
       setPromptPairProgress(promptPairProgressData);
+      setVisionSchema(visionSchemaData);
       setDpoRepairPacket(dpoRepairPacketData);
       const readyTasks = taskData.filter((task) => task.status === "ready");
       if (!selectedTaskId || !readyTasks.some((task) => task.id === selectedTaskId)) {
@@ -1417,11 +1542,17 @@ export default function Home() {
   const promptPairBlockerActions =
     promptPairAudit?.blocker_review_actions?.filter((action) => action.action_type === "open_prompt_pair_blocker" && typeof action.task_id === "string") ?? [];
   const selectedCollectionDef = collectionDefs.find((collection) => collection.id === selectedCollection) ?? collectionDefs[0];
-  const queueScopeTitle = showCollectionFilters ? selectedCollectionDef.label : modeLabel(selectedMode);
+  const queueScopeTitle = selectedMode === "make_gold"
+    ? "Training queue"
+    : showCollectionFilters
+      ? selectedCollectionDef.label
+      : modeLabel(selectedMode);
   const queueScopeSubtitle = selectedMode === "make_gold" && activePhotoPairBatchId
     ? `${filteredTasks.length} items in photo batch ${activePhotoPairBatchId.slice(0, 22)}`
     : queueSearch.trim()
     ? `${filteredTasks.length} of ${modeTasks.length} items match "${queueSearch.trim()}"`
+    : selectedMode === "make_gold"
+      ? `${filteredTasks.length} editable artifacts`
     : selectedMode === "review" && selectedCollection === "photos" && photoTaskFocus === "fastest_vector"
       ? `${filteredTasks.length} fastest vector-memory tasks`
     : `${filteredTasks.length} items`;
@@ -1643,7 +1774,12 @@ export default function Home() {
     setVisionBatchBusy(true);
     setError(null);
     try {
-      await createVisionDraftBatch(10);
+      const liveVisionReady = Boolean(visionSchema?.live_ready);
+      await createVisionDraftBatch({
+        limit: liveVisionReady ? 3 : 10,
+        model_name: visionSchema?.default_model,
+        no_live_model_call: !liveVisionReady
+      });
       navigateMode("review");
       setSelectedTaskId(null);
       await load();
@@ -1779,6 +1915,8 @@ export default function Home() {
           <span>Synced</span>
         </div>
 
+        <AISpinePanel />
+
         <nav className="top-nav" aria-label="Primary workbench sections">
           {topNav.map((item) => (
             <button
@@ -1834,91 +1972,125 @@ export default function Home() {
 
           {showCollectionFilters ? (
             <div className="collection-block">
-              <span className="rail-heading">Source filters</span>
-              <nav className="collection-nav" aria-label="Source filters">
-                {collectionDefs.map((collection) => (
-                  <button
-                    key={collection.id}
-                    className={selectedCollection === collection.id ? "active" : ""}
-                    type="button"
-                    onClick={() => {
-                      setSelectedCollection(collection.id);
-                      setPromptPairFilters(defaultPromptPairFilters);
-                      setPhotoTaskFocus(defaultPhotoTaskFocus);
-                      setActivePhotoPairBatchId(null);
-                      setQueueSearch("");
-                      setSelectedTaskId(null);
-                    }}
-                    {...tooltip(collection.tooltip)}
-                  >
-                    {collection.icon}
-                    <span>{collection.label}</span>
-                    <em>{collectionCounts[collection.id]}</em>
-                  </button>
-                ))}
-              </nav>
-              {selectedMode === "make_gold" ? (
-                <div className="prompt-pair-filter-block" aria-label="Prompt pair filters">
-                  <div className="filter-heading-row">
-                    <span className="rail-heading">Pair filters</span>
-                    {activePromptPairFilterCount > 0 ? (
+              {selectedMode === "make_gold" ? null : (
+                <>
+                  <span className="rail-heading">Source filters</span>
+                  <nav className="collection-nav" aria-label="Source filters">
+                    {collectionDefs.map((collection) => (
                       <button
+                        key={collection.id}
+                        className={selectedCollection === collection.id ? "active" : ""}
                         type="button"
                         onClick={() => {
+                          setSelectedCollection(collection.id);
                           setPromptPairFilters(defaultPromptPairFilters);
+                          setPhotoTaskFocus(defaultPhotoTaskFocus);
                           setActivePhotoPairBatchId(null);
                           setQueueSearch("");
                           setSelectedTaskId(null);
                         }}
+                        {...tooltip(collection.tooltip)}
                       >
-                        Reset
+                        {collection.icon}
+                        <span>{collection.label}</span>
+                        <em>{collectionCounts[collection.id]}</em>
                       </button>
-                    ) : null}
+                    ))}
+                  </nav>
+                </>
+              )}
+              {selectedMode === "make_gold" ? (
+                <div className="prompt-pair-filter-block prompt-pair-workstream" aria-label="Training review controls">
+                  <div className="training-workstream-summary" aria-label="Training review summary">
+                    <span className="rail-heading">Training set</span>
+                    <strong>{promptPairReadinessCounts.candidate ?? 0} need gold edit</strong>
+                    <small>
+                      {promptPairReadinessCounts.approved ?? 0} approved-ready /{" "}
+                      {promptPairAudit?.inspectable_pair_count ?? promptPairBaseTasks.length} inspected
+                    </small>
                   </div>
-                  {(
-                    [
-                      ["voiceMode", "Voice mode"],
-                      ["artifactMode", "Artifact mode"],
-                      ["qualityStatus", "Quality"],
-                      ["syntheticStatus", "Synthetic"],
-                      ["sourceKind", "Source"]
-                    ] as Array<[keyof PromptPairFilters, string]>
-                  ).map(([key, label]) => (
-                    <label key={key}>
-                      <span>{label}</span>
-                      <select
-                        aria-label={`Prompt pair ${label.toLowerCase()} filter`}
-                        value={promptPairFilters[key]}
-                        onChange={(event) => {
-                          setPromptPairFilters((current) => ({ ...current, [key]: event.target.value }));
-                          setActivePhotoPairBatchId(null);
-                          setSelectedTaskId(null);
-                        }}
-                      >
-                        <option value="all">All</option>
-                        {promptPairFilterOptions[key].map((option) => (
-                          <option key={option} value={option}>
-                            {filterLabel(option)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ))}
-                  <div className="prompt-pair-readiness-summary" aria-label="Prompt pair export readiness counts">
-                    <span>
-                      <em>Approved-ready</em>
-                      <strong>{promptPairReadinessCounts.approved ?? 0}</strong>
-                    </span>
-                    <span>
-                      <em>Needs gold edit</em>
-                      <strong>{promptPairReadinessCounts.candidate ?? 0}</strong>
-                    </span>
-                    <span>
-                      <em>Total inspected</em>
-                      <strong>{promptPairAudit?.inspectable_pair_count ?? promptPairBaseTasks.length}</strong>
-                    </span>
+                  {promptPairHeldAction?.task_id ? (
+                    <button
+                      type="button"
+                      className="prompt-pair-next-action"
+                      aria-label="Open first held training candidate"
+                      onClick={() => openPromptPairReviewAction(promptPairHeldAction.task_id)}
+                    >
+                      <span>
+                        <em>Next review</em>
+                        <strong>{promptPairBlockerActionLabel(promptPairHeldAction.blockers?.[0])}</strong>
+                      </span>
+                      {promptPairHeldAction.blockers?.length ? (
+                        <small>{promptPairHeldAction.blockers.slice(0, 2).map(queueLabel).join(", ")}</small>
+                      ) : null}
+                    </button>
+                  ) : null}
+                  <details className="prompt-pair-advanced-filters">
+                    <summary>
+                      <span>Filters and blockers</span>
+                      <em>{activePromptPairFilterCount > 0 ? `${activePromptPairFilterCount} active` : "All artifacts"}</em>
+                    </summary>
+                    <div className="filter-heading-row">
+                      <span className="rail-heading">Artifact filters</span>
+                      {activePromptPairFilterCount > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPromptPairFilters(defaultPromptPairFilters);
+                            setActivePhotoPairBatchId(null);
+                            setQueueSearch("");
+                            setSelectedTaskId(null);
+                          }}
+                        >
+                          Reset
+                        </button>
+                      ) : null}
+                    </div>
+                    {(
+                      [
+                        ["voiceMode", "Voice mode"],
+                        ["artifactMode", "Artifact mode"],
+                        ["qualityStatus", "Quality"],
+                        ["syntheticStatus", "Synthetic"],
+                        ["sourceKind", "Source"]
+                      ] as Array<[keyof PromptPairFilters, string]>
+                    ).map(([key, label]) => (
+                      <label key={key}>
+                        <span>{label}</span>
+                        <select
+                          aria-label={`Training artifact ${label.toLowerCase()} filter`}
+                          value={promptPairFilters[key]}
+                          onChange={(event) => {
+                            setPromptPairFilters((current) => ({ ...current, [key]: event.target.value }));
+                            setActivePhotoPairBatchId(null);
+                            setSelectedTaskId(null);
+                          }}
+                        >
+                          <option value="all">All</option>
+                          {promptPairFilterOptions[key].map((option) => (
+                            <option key={option} value={option}>
+                              {filterLabel(option)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                    <div className="prompt-pair-readiness-summary" aria-label="Training export readiness counts">
+                      <span>
+                        <em>Approved-ready</em>
+                        <strong>{promptPairReadinessCounts.approved ?? 0}</strong>
+                      </span>
+                      <span>
+                        <em>Needs gold edit</em>
+                        <strong>{promptPairReadinessCounts.candidate ?? 0}</strong>
+                      </span>
+                      <span>
+                        <em>Total inspected</em>
+                        <strong>{promptPairAudit?.inspectable_pair_count ?? promptPairBaseTasks.length}</strong>
+                      </span>
+                    </div>
                     {promptPairProgress ? (
-                      <div className="prompt-pair-progress-proof" aria-label="Prompt pair review progress proof">
+                      <div className="prompt-pair-progress-proof" aria-label="Training review progress proof">
                         <span>Review progress proof</span>
                         <strong>
                           {promptPairProgress.candidate_count} candidate / {promptPairProgress.approved_count} approved
@@ -1967,28 +2139,12 @@ export default function Home() {
                         </ol>
                       </div>
                     ) : null}
-                    {promptPairHeldAction?.task_id ? (
-                      <button
-                        type="button"
-                        className="prompt-pair-next-action"
-                        aria-label="Open first held prompt pair candidate"
-                        onClick={() => openPromptPairReviewAction(promptPairHeldAction.task_id)}
-                      >
-                        <span>
-                          <em>Next review</em>
-                          <strong>{promptPairBlockerActionLabel(promptPairHeldAction.blockers?.[0])}</strong>
-                        </span>
-                        {promptPairHeldAction.blockers?.length ? (
-                          <small>{promptPairHeldAction.blockers.slice(0, 2).map(queueLabel).join(", ")}</small>
-                        ) : null}
-                      </button>
-                    ) : null}
                     {promptPairBlockerActions.slice(0, 2).map((action) => (
                       <button
                         key={`${action.blocker ?? "blocker"}-${action.task_id}`}
                         type="button"
                         className="prompt-pair-next-action compact"
-                        aria-label={`Open prompt pair blocker ${queueLabel(action.blocker ?? "review blocker")}`}
+                        aria-label={`Open training blocker ${queueLabel(action.blocker ?? "review blocker")}`}
                         onClick={() => openPromptPairReviewAction(action.task_id)}
                       >
                         <span>
@@ -1998,7 +2154,7 @@ export default function Home() {
                         <small>{promptPairBlockerActionLabel(action.blocker)}</small>
                       </button>
                     ))}
-                  </div>
+                  </details>
                 </div>
               ) : null}
               {selectedMode === "review" && selectedCollection === "photos" ? (
@@ -2122,12 +2278,20 @@ export default function Home() {
                   className="wide-tool"
                   type="button"
                   onClick={() => void handleCreateVisionDraftBatch()}
-                  aria-label="Create no-call vision draft review tasks from photo assets"
+                  aria-label={
+                    visionSchema?.live_ready
+                      ? "Create live vision draft review tasks from photo assets"
+                      : "Create no-call vision draft review tasks from photo assets"
+                  }
                   disabled={visionBatchBusy}
-                  {...tooltip("Built as a safe stub: create no-call vision review tasks. Live vision model calls remain gated.")}
+                  {...tooltip(
+                    visionSchema?.live_ready
+                      ? "Built: run the configured live vision model on up to 3 preview-ready photos and create review tasks labeled as system inference."
+                      : "Built: create no-call vision review tasks. Enable VISION_LIVE_CALLS_ENABLED and restart the API to run live photo analysis."
+                  )}
                 >
                   <Image size={15} />
-                  <span>{visionBatchBusy ? "Creating" : "Create drafts"}</span>
+                  <span>{visionBatchBusy ? "Creating" : visionSchema?.live_ready ? "Analyze photos" : "Create drafts"}</span>
                 </button>
               ) : null}
             </div>
@@ -2217,7 +2381,15 @@ export default function Home() {
                       {photoContactGroups.length} photo groups / {previewReadyPhotos.length} preview-ready photos
                     </strong>
                   </div>
-                  <em>No memory claim until Adam context</em>
+                  <div className="photo-preview-access">
+                    <em>{photoPreviewAccessStatus || "No memory claim until Adam context"}</em>
+                    {hasGoogleStoragePreviewConfig() ? (
+                      <button type="button" onClick={handleEnablePhotoPreviews}>
+                        <KeyRound size={13} />
+                        {photoPreviewAccessToken ? "Refresh previews" : "Enable previews"}
+                      </button>
+                    ) : null}
+                  </div>
                 </header>
                 <div className="photo-contact-grid">
                   {contactSheetPhotos.map((group) => {
@@ -2232,7 +2404,7 @@ export default function Home() {
                         disabled={!relatedTask}
                         aria-label={`Open photo group ${group.title}`}
                       >
-                        <img src={getAssetPreviewUrl(group.canonical.id, "thumbnail")} alt="" loading="lazy" />
+                        <img src={photoPreviewUrl(group.canonical.id, "thumbnail")} alt="" loading="lazy" />
                         <span>{group.title}</span>
                         <small>
                           {relatedTask ? taskTypeLabel(relatedTask.task_type) : "No ready task yet"} / {variantLabel}
@@ -2248,26 +2420,26 @@ export default function Home() {
             ) : null}
 
             {selectedMode === "make_gold" && promptPairBatchGroups.length > 0 ? (
-              <section className="photo-pair-batch-shelf" aria-label="Photo prompt-pair batches">
-                <header>
+              <details className="photo-pair-batch-shelf compact-batch-shelf" aria-label="Photo training batches">
+                <summary>
                   <div>
-                    <span>Photo candidate batches</span>
+                    <span>Photo-backed batches</span>
                     <strong>
                       {promptPairBatchGroups.length} batch{promptPairBatchGroups.length === 1 ? "" : "es"} / candidate-only until gold edit
                     </strong>
                   </div>
-                  {activePhotoPairBatchId ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActivePhotoPairBatchId(null);
-                        setSelectedTaskId(null);
-                      }}
-                    >
-                      Clear batch
-                    </button>
-                  ) : null}
-                </header>
+                </summary>
+                {activePhotoPairBatchId ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivePhotoPairBatchId(null);
+                      setSelectedTaskId(null);
+                    }}
+                  >
+                    Clear batch
+                  </button>
+                ) : null}
                 <div className="photo-pair-batch-list">
                   {promptPairBatchGroups.slice(0, 6).map((batch) => (
                     <button
@@ -2296,7 +2468,7 @@ export default function Home() {
                   These are generated draft tickets from reviewed photo memory records. Keep the strongest versions, edit them in
                   Charles' voice, and delete weak candidates before export review.
                 </p>
-              </section>
+              </details>
             ) : null}
 
             {selectedMode === "make_gold" && photoPairBatch && photoPairBatch.candidates.length > 0 ? (
@@ -2389,7 +2561,7 @@ export default function Home() {
                     {showTaskThumbnail ? (
                       <img
                         className="task-row-thumbnail"
-                        src={getAssetPreviewUrl(taskAsset.id, "thumbnail")}
+                        src={photoPreviewUrl(taskAsset.id, "thumbnail")}
                         alt=""
                         loading="lazy"
                       />
@@ -2462,6 +2634,22 @@ export default function Home() {
             <ExportDryRunPanel onOpenReviewTask={openPhotoReviewTask} />
           ) : selectedMode === "model_starter" ? (
             <ModelStarterPanel />
+          ) : selectedMode === "chat" ? (
+            <ChatWorkbench
+              tasks={readyTasks}
+              assets={assets}
+              selectedTask={selectedTask}
+              photoPreviewAccessToken={photoPreviewAccessToken}
+              onOpenTask={openTask}
+              onSubmitted={(annotation) => {
+                setLastSubmitAnnotation(annotation);
+                setPhotoPairStatus(null);
+                setPhotoPairBatch(null);
+                setCompletedThisSession((count) => count + 1);
+              }}
+              onViewTrainingBoard={() => navigateMode("make_gold")}
+              onRefresh={load}
+            />
           ) : (
             <div className={selectedMode === "make_gold" ? "workbench-stack has-utility" : "workbench-stack"}>
               <SubmitReceiptBanner annotation={lastSubmitAnnotation} />
@@ -2479,6 +2667,13 @@ export default function Home() {
                   setSelectedTaskId(taskId);
                 }}
               />
+              {selectedMode === "make_gold" ? (
+                <TrainingBoard
+                  refreshKey={`${completedThisSession}:${lastSubmitAnnotation?.id ?? "none"}`}
+                  onOpenTask={openTask}
+                  onViewExports={() => navigateMode("exports")}
+                />
+              ) : null}
               {selectedTask ? (
                 <TaskWorkbench
                   key={selectedTask.id}
@@ -2491,6 +2686,7 @@ export default function Home() {
                   assetsCount={assets.length}
                   asset={selectedTaskAsset}
                   assets={assets}
+                  photoPreviewAccessToken={photoPreviewAccessToken}
                   onSubmit={handleSubmit}
                   onSkip={handleSkip}
                   onFlag={handleFlag}

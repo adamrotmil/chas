@@ -203,6 +203,7 @@ def preview_source_review_pair_generation(
     task_id: str,
     payload: TaskSubmit,
     session: Session = Depends(get_session),
+    app_settings: Settings = Depends(get_settings),
 ) -> dict:
     task = _task_or_404(session, task_id)
     if task.task_type not in {"text_segment_review", "text_segment_boundary_review", "email_voice_sample"}:
@@ -211,6 +212,7 @@ def preview_source_review_pair_generation(
         session=session,
         task=task,
         decisions=payload.decisions,
+        app_settings=app_settings,
     )
 
 
@@ -233,6 +235,7 @@ def submit_task(
     task_id: str,
     payload: TaskSubmit,
     session: Session = Depends(get_session),
+    app_settings: Settings = Depends(get_settings),
 ) -> Annotation:
     task = _task_or_404(session, task_id)
     if task.status != "ready":
@@ -344,6 +347,7 @@ def submit_task(
             decisions=payload.decisions,
             annotation_id=annotation.id,
             source_span_annotations=source_span_annotations,
+            app_settings=app_settings,
         )
         creates_or_updates = {**creates_or_updates, **pair_updates}
         annotation.creates_or_updates = creates_or_updates

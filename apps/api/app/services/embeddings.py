@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from sqlmodel import Session, select
 
+from app.config import Settings, settings
 from app.models import Boundary, EmbeddingRecord, MetadataProfile, utcnow
 
 
 MAX_EMBEDDING_INPUT_CHARS = 4000
+EMBEDDING_VECTOR_DIR = "embedding_vectors"
 
 
 def _checksum(text: str) -> str:
@@ -98,6 +102,172 @@ def boundary_embedding_text(snapshot: Dict[str, Any]) -> str:
     return _join_labeled(safe_parts)
 
 
+def live_embedding_ready(app_settings: Settings = settings) -> bool:
+    return bool(app_settings.embedding_live_calls_enabled and app_settings.openai_api_key)
+
+
+def _vector_relative_path(record: EmbeddingRecord) -> str:
+    return f"{EMBEDDING_VECTOR_DIR}/{record.id}.json"
+
+
+def _vector_path(record: EmbeddingRecord, app_settings: Settings) -> Path:
+    storage_root = Path(app_settings.storage_root).resolve()
+    return (storage_root / _vector_relative_path(record)).resolve()
+
+
+def load_embedding_vector(record: EmbeddingRecord, app_settings: Settings = settings) -> List[float]:
+    uri = record.vector_uri or ""
+    if not uri.startswith("local://"):
+        return []
+    relative = uri.removeprefix("local://")
+    storage_root = Path(app_settings.storage_root).resolve()
+    path = (storage_root / relative).resolve()
+    if not path.is_relative_to(storage_root) or not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if payload.get("input_checksum") != record.input_checksum:
+        return []
+    vector = payload.get("embedding")
+    if not isinstance(vector, list):
+        return []
+    try:
+        return [float(value) for value in vector]
+    except (TypeError, ValueError):
+        return []
+
+
+def _call_live_embedding_model(*, input_text: str, model_name: str, app_settings: Settings) -> Dict[str, Any]:
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=app_settings.openai_api_key,
+        project=app_settings.openai_project_id or None,
+        timeout=180,
+    )
+    response = client.embeddings.create(model=model_name, input=input_text)
+    data = getattr(response, "data", None)
+    first = data[0] if isinstance(data, list) and data else None
+    embedding = getattr(first, "embedding", None) if first is not None else None
+    if embedding is None and isinstance(first, dict):
+        embedding = first.get("embedding")
+    if not isinstance(embedding, list) or not embedding:
+        raise ValueError("Embedding model returned no vector values.")
+    return {
+        "embedding": [float(value) for value in embedding],
+        "provider_record_id": _clean(getattr(response, "id", None)),
+    }
+
+
+def embed_query_text(
+    *,
+    query: str,
+    app_settings: Settings = settings,
+    model_name: Optional[str] = None,
+) -> List[float]:
+    if not live_embedding_ready(app_settings):
+        return []
+    result = _call_live_embedding_model(
+        input_text=query,
+        model_name=model_name or app_settings.embedding_model,
+        app_settings=app_settings,
+    )
+    vector = result.get("embedding")
+    return vector if isinstance(vector, list) else []
+
+
+def embed_embedding_record(
+    *,
+    session: Session,
+    record: EmbeddingRecord,
+    app_settings: Settings = settings,
+    model_name: Optional[str] = None,
+) -> EmbeddingRecord:
+    if not live_embedding_ready(app_settings):
+        raise ValueError("Live embeddings require EMBEDDING_LIVE_CALLS_ENABLED=true and OPENAI_API_KEY.")
+    selected_model = model_name or app_settings.embedding_model
+    result = _call_live_embedding_model(input_text=record.input_text, model_name=selected_model, app_settings=app_settings)
+    vector = result["embedding"]
+    path = _vector_path(record, app_settings)
+    storage_root = Path(app_settings.storage_root).resolve()
+    if not path.is_relative_to(storage_root):
+        raise ValueError("Embedding vector path escaped storage root.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vector_payload = {
+        "embedding_record_id": record.id,
+        "target_type": record.target_type,
+        "target_id": record.target_id,
+        "model_name": selected_model,
+        "input_checksum": record.input_checksum,
+        "dims": len(vector),
+        "embedding": vector,
+    }
+    path.write_text(json.dumps(vector_payload, separators=(",", ":")), encoding="utf-8")
+    record.model_name = selected_model
+    record.vector_dims = len(vector)
+    record.vector_uri = f"local://{_vector_relative_path(record)}"
+    record.provider_record_id = result.get("provider_record_id") or f"openai:{selected_model}:{record.input_checksum}"
+    record.status = "embedded"
+    record.metadata_json = {
+        **(record.metadata_json or {}),
+        "live_embedding_call": True,
+        "embedding_provider": "openai",
+        "embedding_model": selected_model,
+        "vector_storage": "local_json_file",
+        "vector_values_in_db": False,
+        "vector_values_in_exports": False,
+        "embedded_at": utcnow().isoformat(),
+    }
+    record.updated_at = utcnow()
+    session.add(record)
+    session.flush()
+    return record
+
+
+def embed_ready_embedding_records(
+    *,
+    session: Session,
+    limit: int = 20,
+    app_settings: Settings = settings,
+    model_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not live_embedding_ready(app_settings):
+        return {
+            "status": "skipped",
+            "reason": "live_embedding_not_ready",
+            "live_embedding_ready": False,
+            "created_count": 0,
+            "embedded_record_ids": [],
+        }
+    safe_limit = max(1, min(limit, 100))
+    records = session.exec(
+        select(EmbeddingRecord)
+        .where(EmbeddingRecord.status == "ready_for_embedding")
+        .where(EmbeddingRecord.modality == "text")
+        .order_by(EmbeddingRecord.created_at.asc())
+    ).all()[:safe_limit]
+    embedded_ids: List[str] = []
+    failed: List[Dict[str, str]] = []
+    for record in records:
+        try:
+            embed_embedding_record(session=session, record=record, app_settings=app_settings, model_name=model_name)
+            embedded_ids.append(record.id)
+        except Exception as exc:
+            failed.append({"embedding_record_id": record.id, "error": f"{type(exc).__name__}: {exc}"})
+    return {
+        "status": "completed" if not failed else "completed_with_errors",
+        "live_embedding_ready": True,
+        "model_name": model_name or app_settings.embedding_model,
+        "requested_limit": safe_limit,
+        "eligible_count": len(records),
+        "created_count": len(embedded_ids),
+        "embedded_record_ids": embedded_ids,
+        "failed": failed,
+    }
+
+
 def upsert_embedding_record(
     *,
     session: Session,
@@ -133,23 +303,33 @@ def upsert_embedding_record(
         input_checksum=checksum,
         input_text=text,
     )
-    record.model_name = model_name
+    keep_existing_vector = bool(
+        existing
+        and existing.input_checksum == checksum
+        and existing.status == "embedded"
+        and existing.vector_uri
+        and existing.vector_dims
+    )
     record.input_checksum = checksum
     record.input_text = text
     record.input_preview = text[:280]
-    record.vector_dims = None
-    record.vector_uri = None
-    record.provider_record_id = None
-    record.status = "ready_for_embedding"
+    if not keep_existing_vector:
+        record.model_name = model_name
+        record.vector_dims = None
+        record.vector_uri = None
+        record.provider_record_id = None
+        record.status = "ready_for_embedding"
     record.truth_status = truth_status
     snapshot = boundary_snapshot if boundary_snapshot is not None else boundary_snapshot_for_target(session, target_type, target_id)
+    existing_metadata = record.metadata_json if keep_existing_vector and isinstance(record.metadata_json, dict) else {}
     record.boundary_snapshot = _normalize_boundary_snapshot(snapshot)
     record.metadata_json = {
+        **existing_metadata,
         **(metadata or {}),
         "input_checksum": checksum,
         "input_char_count": len(text),
-        "live_embedding_call": False,
-        "storage_note": "Vector values are not stored in ordinary DB rows in this scaffold; this record is the durable embedding input plan.",
+        "live_embedding_call": bool(keep_existing_vector and existing_metadata.get("live_embedding_call") is True),
+        "storage_note": "Vector values are stored outside ordinary DB rows; this DB row keeps the durable embedding input and vector pointer.",
     }
     record.created_by = created_by
     record.updated_at = utcnow()

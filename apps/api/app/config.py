@@ -16,8 +16,12 @@ class Settings(BaseSettings):
     vision_model: str = "gpt-4.1-mini"
     vision_live_calls_enabled: bool = False
     text_generation_model: str = "gpt-5.5"
-    text_generation_reasoning_effort: str = "xhigh"
+    text_generation_reasoning_effort: str = "medium"
     text_generation_live_calls_enabled: bool = False
+    chat_reasoning_effort: str = "medium"
+    chat_require_live_model: bool = False
+    embedding_model: str = "text-embedding-3-small"
+    embedding_live_calls_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

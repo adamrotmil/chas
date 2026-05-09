@@ -4121,7 +4121,7 @@ def main() -> int:
     parser.add_argument("--min-human-audit-pack-samples", type=int, default=200)
     parser.add_argument("--min-voice-reference-pack-samples", type=int, default=200)
     parser.add_argument("--required-text-model", default="gpt-5.5")
-    parser.add_argument("--required-text-reasoning", default="xhigh")
+    parser.add_argument("--required-text-reasoning", default="medium")
     parser.add_argument("--min-demo-prompts", type=int, default=5)
     parser.add_argument("--min-mirrored-photos", type=int, default=80)
     parser.add_argument("--min-photo-profiles", type=int, default=5)

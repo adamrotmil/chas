@@ -14,6 +14,7 @@ from app.models import ContextPack, Generation, PromptSpec, Segment, SourceSpanA
 from app.services.model_generation import live_text_generation_ready
 from app.services.pair_export import DEFAULT_SYSTEM_PROMPT, NATURAL_SYSTEM_PROMPT, compile_pair_export
 from app.services.prompt_pair_voice_modes import classify_prompt_pair_voice_mode
+from app.services.retrieval import search_embedding_records
 
 
 def _human_id(prefix: str, count: int) -> str:
@@ -314,6 +315,7 @@ def _llm_pair_generation(
     source_text: str,
     source_title: str,
     decisions: Dict[str, Any],
+    evidence_packet: Dict[str, Any],
     app_settings: Settings = settings,
 ) -> List[Dict[str, Any]]:
     if not live_text_generation_ready(app_settings):
@@ -346,6 +348,7 @@ def _llm_pair_generation(
                             "source_title": source_title,
                             "source_text": source_text[:50000],
                             "source_spans": decisions.get("source_spans", []),
+                            "ranked_evidence_packet": evidence_packet,
                             "requested_voice_mode": decisions.get("voice_mode"),
                             "context": decisions.get("context") or decisions.get("adam_context_note"),
                         },
@@ -446,10 +449,227 @@ def _source_text_hash(source_text: str) -> Optional[str]:
     return hashlib.sha256(source_text_normalized.encode("utf-8")).hexdigest()
 
 
+def _source_review_evidence_query(*, source_title: str, source_text: str, decisions: Dict[str, Any]) -> str:
+    span_text = " ".join(
+        _string(span.get("text")) or _string(span.get("selected_text"))
+        for span in decisions.get("source_spans", [])
+        if isinstance(span, dict)
+    )
+    return " ".join(
+        part.strip()
+        for part in [
+            source_title,
+            _string(decisions.get("context")) or _string(decisions.get("adam_context_note")),
+            span_text[:800],
+            source_text.strip()[:1200],
+        ]
+        if part and part.strip()
+    )[:2400]
+
+
+def _ranked_evidence_packet(
+    *,
+    session: Session,
+    task: Task,
+    decisions: Dict[str, Any],
+    source_text: str,
+    source_title: str,
+    app_settings: Settings,
+    use_live_query_embedding: bool,
+) -> Dict[str, Any]:
+    query = _source_review_evidence_query(source_title=source_title, source_text=source_text, decisions=decisions)
+    if not query:
+        return {
+            "packet_type": "source_review_ranked_evidence_packet",
+            "source_task_id": task.id,
+            "query": "",
+            "retrieval_strategy": "no_query",
+            "vector_query_used": False,
+            "record_count": 0,
+            "records": [],
+        }
+    search = search_embedding_records(
+        session=session,
+        query=query,
+        scope="family_private",
+        limit=5,
+        app_settings=app_settings,
+        use_live_query_embedding=use_live_query_embedding,
+    )
+    records = []
+    for rank, result in enumerate(search.get("results", []), start=1):
+        if not isinstance(result, dict):
+            continue
+        records.append(
+            {
+                "rank": rank,
+                "embedding_record_id": result.get("embedding_record_id"),
+                "target_type": result.get("target_type"),
+                "target_id": result.get("target_id"),
+                "source_photo_id": result.get("source_photo_id"),
+                "title": result.get("title"),
+                "score": result.get("score"),
+                "lexical_score": result.get("lexical_score"),
+                "vector_similarity": result.get("vector_similarity"),
+                "matched_terms": result.get("matched_terms") if isinstance(result.get("matched_terms"), list) else [],
+                "input_preview": result.get("input_preview"),
+                "embedding_status": result.get("embedding_status"),
+                "vector_uri": result.get("vector_uri"),
+                "truth_status": result.get("truth_status"),
+            }
+        )
+    return {
+        "packet_type": "source_review_ranked_evidence_packet",
+        "source_task_id": task.id,
+        "query": query,
+        "retrieval_strategy": search.get("retrieval_strategy"),
+        "vector_query_used": search.get("vector_query_used") is True,
+        "record_count": len(records),
+        "records": records,
+    }
+
+
+def _ranked_evidence_refs(evidence_packet: Dict[str, Any]) -> List[Dict[str, Any]]:
+    records = evidence_packet.get("records") if isinstance(evidence_packet.get("records"), list) else []
+    refs: List[Dict[str, Any]] = []
+    for record in records[:5]:
+        if not isinstance(record, dict):
+            continue
+        embedding_record_id = _string(record.get("embedding_record_id"))
+        if not embedding_record_id:
+            continue
+        refs.append(
+            {
+                "type": "retrieval_ranked_evidence_record",
+                "embedding_record_id": embedding_record_id,
+                "rank": record.get("rank"),
+                "target_type": record.get("target_type"),
+                "target_id": record.get("target_id"),
+                "title": record.get("title"),
+                "score": record.get("score"),
+                "vector_similarity": record.get("vector_similarity"),
+            }
+        )
+    return refs
+
+
 def _stable_hash(payload: Dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _source_evidence_defaults(
+    *,
+    session: Session,
+    task: Task,
+    decisions: Dict[str, Any],
+    source_text: str,
+    evidence_packet: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    segment: Optional[Segment] = session.get(Segment, task.target_id) if task.target_type == "segment" else None
+    chunks = _chunks_for_task(session, task, decisions)
+    if segment is None and len(chunks) == 1:
+        segment = chunks[0]
+    metadata = segment.metadata_json if segment and isinstance(segment.metadata_json, dict) else {}
+    locator = segment.locator if segment and isinstance(segment.locator, dict) else {}
+    source_excerpt = _string(segment.text_content if segment else "") or source_text.strip()
+    excerpt_sha256 = _source_text_hash(source_excerpt)
+    evidence_refs: List[Dict[str, Any]] = []
+    if segment:
+        evidence_refs.append(
+            {
+                "type": "source_segment",
+                "id": segment.id,
+                "human_id": segment.human_id,
+                "title": segment.title or segment.human_id,
+                "chunk_index": metadata.get("chunk_index") or locator.get("chunk_index"),
+            }
+        )
+    if excerpt_sha256:
+        evidence_refs.append(
+            {
+                "type": "source_excerpt_sha256",
+                "sha256": excerpt_sha256,
+                "char_count": len(source_excerpt.strip()),
+            }
+        )
+    source_spans = decisions.get("source_spans") if isinstance(decisions.get("source_spans"), list) else []
+    if source_spans:
+        evidence_refs.append({"type": "source_span_drafts", "count": len(source_spans)})
+    evidence_refs.extend(_ranked_evidence_refs(evidence_packet or {}))
+    supplemental_ids = decisions.get("supplemental_evidence_record_ids")
+    if isinstance(supplemental_ids, list):
+        for embedding_record_id in supplemental_ids[:12]:
+            if isinstance(embedding_record_id, str) and embedding_record_id.strip():
+                evidence_refs.append(
+                    {
+                        "type": "evidence_corpus_record",
+                        "embedding_record_id": embedding_record_id.strip(),
+                    }
+                )
+    return {
+        "source_segment_id": segment.id if segment else None,
+        "source_chunk_index": (metadata.get("chunk_index") or locator.get("chunk_index")) if segment else None,
+        "source_excerpt": source_excerpt,
+        "source_excerpt_sha256": excerpt_sha256,
+        "source_text_sha256": _source_text_hash(source_text),
+        "source_evidence_refs": evidence_refs,
+    }
+
+
+def _attach_source_evidence_to_pairs(
+    pairs: List[Dict[str, Any]],
+    *,
+    session: Session,
+    task: Task,
+    decisions: Dict[str, Any],
+    source_text: str,
+    evidence_packet: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    defaults = _source_evidence_defaults(
+        session=session,
+        task=task,
+        decisions=decisions,
+        source_text=source_text,
+        evidence_packet=evidence_packet,
+    )
+    enriched: List[Dict[str, Any]] = []
+    for pair in pairs:
+        next_pair = dict(pair)
+        for key in ("source_segment_id", "source_chunk_index", "source_text_sha256"):
+            if next_pair.get(key) in (None, "") and defaults.get(key) not in (None, ""):
+                next_pair[key] = defaults[key]
+        if not _string(next_pair.get("source_excerpt")) and _string(defaults.get("source_excerpt")):
+            next_pair["source_excerpt"] = defaults["source_excerpt"]
+        excerpt_hash = _source_text_hash(_string(next_pair.get("source_excerpt")))
+        next_pair["source_excerpt_sha256"] = _string(next_pair.get("source_excerpt_sha256")) or excerpt_hash or defaults.get("source_excerpt_sha256")
+        refs = next_pair.get("source_evidence_refs")
+        merged_refs = refs if isinstance(refs, list) else []
+        for ref in defaults["source_evidence_refs"]:
+            ref_key = json.dumps(ref, sort_keys=True, default=str)
+            if all(json.dumps(existing, sort_keys=True, default=str) != ref_key for existing in merged_refs if isinstance(existing, dict)):
+                merged_refs.append(ref)
+        next_pair["source_evidence_refs"] = merged_refs
+        next_pair["ranked_evidence_packet"] = evidence_packet or {}
+        next_pair["source_evidence_status"] = (
+            "evidence_linked" if not _pair_evidence_hold_reason(next_pair) else "missing_source_evidence"
+        )
+        enriched.append(next_pair)
+    return enriched
+
+
+def _pair_evidence_hold_reason(raw_pair: Dict[str, Any]) -> str:
+    evidence_refs = raw_pair.get("source_evidence_refs")
+    if isinstance(evidence_refs, list) and evidence_refs:
+        return ""
+    if _string(raw_pair.get("source_segment_id")):
+        return ""
+    if raw_pair.get("source_chunk_index") not in (None, ""):
+        return ""
+    if _string(raw_pair.get("source_excerpt_sha256")) or _string(raw_pair.get("source_text_sha256")):
+        return ""
+    return "missing_source_evidence_ref"
 
 
 def _pair_generation_metadata(
@@ -477,6 +697,15 @@ def _pair_generation_metadata(
         "source_text_sha256": _source_text_hash(source_text),
         "source_text_char_count": len(source_text_normalized),
         "source_text_preview": source_text_normalized[:1200],
+        "source_segment_id": raw_pair.get("source_segment_id"),
+        "source_chunk_index": raw_pair.get("source_chunk_index"),
+        "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+        "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+        "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
+        "evidence_gate": {
+            "passed": not _pair_evidence_hold_reason(raw_pair),
+            "blockers": [_pair_evidence_hold_reason(raw_pair)] if _pair_evidence_hold_reason(raw_pair) else [],
+        },
         "source_spans_supplied": isinstance(decisions.get("source_spans"), list) and bool(decisions.get("source_spans")),
         "source_section_review_hint": raw_pair.get("source_section_review_hint"),
         "voice_mode": compiled.get("voice_mode"),
@@ -492,26 +721,43 @@ def _pairs_for_review_source(
     decisions: Dict[str, Any],
     *,
     allow_live_model: bool = True,
+    app_settings: Settings = settings,
 ) -> List[Dict[str, Any]]:
     source_text = source_text_for_pair_generation(session, task, decisions)
     source_title = _source_title(session, task)
+    evidence_packet = _ranked_evidence_packet(
+        session=session,
+        task=task,
+        decisions=decisions,
+        source_text=source_text,
+        source_title=source_title,
+        app_settings=app_settings,
+        use_live_query_embedding=allow_live_model,
+    )
     pairs = _pairs_from_structured_chunk_metadata(session, task, decisions)
     if pairs:
-        return pairs
+        return _attach_source_evidence_to_pairs(pairs, session=session, task=task, decisions=decisions, source_text=source_text, evidence_packet=evidence_packet)
     pairs = parse_prompt_pairs_from_yaml(source_text)
     if pairs:
-        return pairs
+        return _attach_source_evidence_to_pairs(pairs, session=session, task=task, decisions=decisions, source_text=source_text, evidence_packet=evidence_packet)
     pairs = _pairs_from_spans(decisions)
     if pairs:
-        return pairs
+        return _attach_source_evidence_to_pairs(pairs, session=session, task=task, decisions=decisions, source_text=source_text, evidence_packet=evidence_packet)
     if allow_live_model:
-        pairs = _llm_pair_generation(source_text=source_text, source_title=source_title, decisions=decisions)
+        pairs = _llm_pair_generation(
+            source_text=source_text,
+            source_title=source_title,
+            decisions=decisions,
+            evidence_packet=evidence_packet,
+            app_settings=app_settings,
+        )
         if pairs:
-            return pairs
+            return _attach_source_evidence_to_pairs(pairs, session=session, task=task, decisions=decisions, source_text=source_text, evidence_packet=evidence_packet)
     pairs = _pairs_from_natural_section_chunks(session, task, decisions)
     if pairs:
-        return pairs
-    return _fallback_pair(source_text, source_title, decisions)
+        return _attach_source_evidence_to_pairs(pairs, session=session, task=task, decisions=decisions, source_text=source_text, evidence_packet=evidence_packet)
+    pairs = _fallback_pair(source_text, source_title, decisions)
+    return _attach_source_evidence_to_pairs(pairs, session=session, task=task, decisions=decisions, source_text=source_text, evidence_packet=evidence_packet)
 
 
 def _generation_strategy_label(strategy: str) -> str:
@@ -527,7 +773,10 @@ def _generation_strategy_label(strategy: str) -> str:
     return labels.get(strategy, strategy.replace("_", " ").title())
 
 
-def _preview_hold_reason(compiled: Dict[str, Any]) -> str:
+def _preview_hold_reason(compiled: Dict[str, Any], raw_pair: Dict[str, Any]) -> str:
+    evidence_hold = _pair_evidence_hold_reason(raw_pair)
+    if evidence_hold:
+        return evidence_hold
     if compiled["artifact_mode"] == "sft" and not _string(compiled.get("content")):
         return "empty_sft_content"
     if compiled["artifact_mode"] == "dpo" and (
@@ -542,12 +791,23 @@ def preview_make_gold_tasks_from_review(
     session: Session,
     task: Task,
     decisions: Dict[str, Any],
+    app_settings: Settings = settings,
+    allow_live_model: bool = False,
 ) -> Dict[str, Any]:
     source_text = source_text_for_pair_generation(session, task, decisions)
     source_title = _source_title(session, task)
-    pairs = _pairs_for_review_source(session, task, decisions, allow_live_model=False)
+    pairs = _pairs_for_review_source(session, task, decisions, allow_live_model=allow_live_model, app_settings=app_settings)
+    ranked_evidence_packet = next(
+        (
+            pair.get("ranked_evidence_packet")
+            for pair in pairs
+            if isinstance(pair.get("ranked_evidence_packet"), dict)
+        ),
+        {},
+    )
     source_sections = _source_sections_for_receipt(session, task, decisions)
     strategy_counts = Counter(_string(pair.get("pair_generation_strategy"), "unknown") for pair in pairs)
+    live_model_pair_count = strategy_counts.get("live_model_pair_generation", 0)
     source_spans = decisions.get("source_spans") if isinstance(decisions.get("source_spans"), list) else []
     creatable_pairs: List[Dict[str, Any]] = []
     held_pairs: List[Dict[str, Any]] = []
@@ -562,7 +822,7 @@ def preview_make_gold_tasks_from_review(
         }
         compiled = compile_pair_export(pair, fallback_truth_status=fallback_truth_status)
         strategy = _string(raw_pair.get("pair_generation_strategy"), "unknown")
-        hold_reason = _preview_hold_reason(compiled)
+        hold_reason = _preview_hold_reason(compiled, raw_pair)
         preview_item = {
             "pair_index": index,
             "artifact_mode": compiled["artifact_mode"],
@@ -578,6 +838,10 @@ def preview_make_gold_tasks_from_review(
             "source_chunk_index": raw_pair.get("source_chunk_index"),
             "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
             "source_section_review_hint": raw_pair.get("source_section_review_hint"),
+            "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+            "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+            "source_evidence_status": raw_pair.get("source_evidence_status"),
+            "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
         }
         if hold_reason:
             held_pairs.append({**preview_item, "reason": hold_reason})
@@ -602,8 +866,10 @@ def preview_make_gold_tasks_from_review(
     preview_payload = {
         "preview_type": "source_review_generate_pairs_preview",
         "review_policy": "dry_run_only_no_tasks_created_no_raw_source_mutation",
+        "evidence_policy": "candidate_pairs_require_source_segment_chunk_span_or_excerpt_hash",
         "does_not_mutate_state": True,
-        "no_live_model_call": True,
+        "no_live_model_call": live_model_pair_count == 0,
+        "live_model_call_used": live_model_pair_count > 0,
         "prompt_instructions_version": PAIR_GENERATION_PROMPT_INSTRUCTIONS_VERSION,
         "source_task_id": task.id,
         "source_task_human_id": task.human_id,
@@ -611,12 +877,17 @@ def preview_make_gold_tasks_from_review(
         "source_text_sha256": _source_text_hash(source_text),
         "source_text_char_count": len(source_text_normalized),
         "source_text_preview": source_text_normalized[:600],
+        "ranked_evidence_packet": ranked_evidence_packet,
+        "ranked_evidence_record_count": ranked_evidence_packet.get("record_count", 0) if isinstance(ranked_evidence_packet, dict) else 0,
+        "ranked_evidence_vector_query_used": ranked_evidence_packet.get("vector_query_used") is True if isinstance(ranked_evidence_packet, dict) else False,
         "source_spans_supplied": bool(source_spans),
         "source_span_draft_count": len(source_spans),
         "source_section_count": len(source_sections),
         "candidate_pair_count": len(pairs),
         "projected_created_pair_count": len(creatable_pairs),
         "projected_held_pair_count": len(held_pairs),
+        "projected_evidence_linked_pair_count": len([pair for pair in creatable_pairs if pair.get("source_evidence_status") == "evidence_linked"]),
+        "projected_missing_evidence_pair_count": len([pair for pair in held_pairs if pair.get("reason") == "missing_source_evidence_ref"]),
         "projected_held_source_section_count": len(held_source_sections),
         "strategy_counts": dict(sorted(strategy_counts.items())),
         "primary_strategy": primary_strategy,
@@ -714,10 +985,19 @@ def _pair_generation_run_receipt(
             if (pair.get("pair_generation_metadata") or {}).get("live_model_call") is True
         ]
     )
+    ranked_evidence_packet = next(
+        (
+            pair.get("ranked_evidence_packet")
+            for pair in pairs
+            if isinstance(pair.get("ranked_evidence_packet"), dict)
+        ),
+        {},
+    )
     source_text_normalized = source_text.strip()
     return {
         "run_type": "source_review_generate_pairs",
         "prompt_instructions_version": PAIR_GENERATION_PROMPT_INSTRUCTIONS_VERSION,
+        "evidence_policy": "candidate_pairs_require_source_segment_chunk_span_or_excerpt_hash",
         "source_review_annotation_id": annotation_id,
         "source_task_id": task.id,
         "source_task_human_id": task.human_id,
@@ -725,11 +1005,18 @@ def _pair_generation_run_receipt(
         "source_text_sha256": _source_text_hash(source_text),
         "source_text_char_count": len(source_text_normalized),
         "source_text_preview": source_text_normalized[:600],
+        "ranked_evidence_packet": ranked_evidence_packet,
+        "ranked_evidence_record_count": ranked_evidence_packet.get("record_count", 0) if isinstance(ranked_evidence_packet, dict) else 0,
+        "ranked_evidence_vector_query_used": ranked_evidence_packet.get("vector_query_used") is True if isinstance(ranked_evidence_packet, dict) else False,
         "source_span_annotation_ids": source_span_ids,
         "source_section_count": len(source_sections),
         "candidate_pair_count": len(pairs),
         "created_pair_count": len(created_pairs),
         "held_pair_count": len(held_pairs),
+        "evidence_linked_pair_count": len(
+            [pair for pair in created_pairs if (pair.get("pair_generation_metadata") or {}).get("evidence_gate", {}).get("passed") is True]
+        ),
+        "missing_evidence_pair_count": len([pair for pair in held_pairs if pair.get("reason") == "missing_source_evidence_ref"]),
         "held_source_section_count": len(held_source_sections),
         "strategy_counts": dict(sorted(created_strategy_counts.items())),
         "candidate_strategy_counts": dict(sorted(candidate_strategy_counts.items())),
@@ -749,12 +1036,13 @@ def create_make_gold_tasks_from_review(
     decisions: Dict[str, Any],
     annotation_id: str,
     source_span_annotations: Optional[List[SourceSpanAnnotation]] = None,
+    app_settings: Settings = settings,
 ) -> Dict[str, Any]:
     pair_decision = _string(decisions.get("generate_pairs_on_submit")) or _string(decisions.get("prompt_pair_decision"))
     if pair_decision and pair_decision not in {"yes", "generate", "high", "medium"}:
         return {}
 
-    pairs = _pairs_for_review_source(session, task, decisions)
+    pairs = _pairs_for_review_source(session, task, decisions, app_settings=app_settings)
     source_title = _source_title(session, task)
     source_text = source_text_for_pair_generation(session, task, decisions)
     source_span_ids = [span.id for span in source_span_annotations or []]
@@ -774,7 +1062,8 @@ def create_make_gold_tasks_from_review(
             **raw_pair,
         }
         compiled = compile_pair_export(pair, fallback_truth_status=fallback_truth_status)
-        if compiled["artifact_mode"] == "sft" and not _string(compiled.get("content")):
+        hold_reason = _preview_hold_reason(compiled, raw_pair)
+        if hold_reason:
             held_pairs.append(
                 {
                     "pair_index": index,
@@ -782,21 +1071,10 @@ def create_make_gold_tasks_from_review(
                     "strategy": _string(raw_pair.get("pair_generation_strategy"), "unknown"),
                     "source_segment_id": raw_pair.get("source_segment_id"),
                     "source_chunk_index": raw_pair.get("source_chunk_index"),
-                    "reason": "empty_sft_content",
-                }
-            )
-            continue
-        if compiled["artifact_mode"] == "dpo" and (
-            not _string(compiled.get("chosen")) or not _string(compiled.get("rejected"))
-        ):
-            held_pairs.append(
-                {
-                    "pair_index": index,
-                    "artifact_mode": compiled["artifact_mode"],
-                    "strategy": _string(raw_pair.get("pair_generation_strategy"), "unknown"),
-                    "source_segment_id": raw_pair.get("source_segment_id"),
-                    "source_chunk_index": raw_pair.get("source_chunk_index"),
-                    "reason": "empty_dpo_chosen_or_rejected",
+                    "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+                    "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+                    "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
+                    "reason": hold_reason,
                 }
             )
             continue
@@ -807,6 +1085,7 @@ def create_make_gold_tasks_from_review(
             decisions=decisions,
             raw_pair=raw_pair,
             compiled=compiled,
+            app_settings=app_settings,
         )
 
         prompt_spec = PromptSpec(
@@ -834,6 +1113,10 @@ def create_make_gold_tasks_from_review(
                 "source_chunk_index": raw_pair.get("source_chunk_index"),
                 "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
                 "source_section_review_hint": raw_pair.get("source_section_review_hint"),
+                "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+                "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+                "source_evidence_status": raw_pair.get("source_evidence_status"),
+                "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
                 "pair_generation_metadata": generation_metadata,
             },
         )
@@ -851,6 +1134,10 @@ def create_make_gold_tasks_from_review(
                 "source_task_id": task.id,
                 "source_span_annotation_ids": source_span_ids,
                 "source_title": source_title,
+                "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+                "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+                "source_evidence_status": raw_pair.get("source_evidence_status"),
+                "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
                 "requires_boundary_review_before_export": True,
             },
             style_guidance={
@@ -902,6 +1189,10 @@ def create_make_gold_tasks_from_review(
             "source_review_annotation_id": annotation_id,
             "source_task_id": task.id,
             "source_span_annotation_ids": source_span_ids,
+            "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+            "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+            "source_evidence_status": raw_pair.get("source_evidence_status"),
+            "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
             "pair_generation_metadata": generation_metadata,
             "candidate_requires_adam_gold_edit": True,
             "pair_index": index,
@@ -944,6 +1235,10 @@ def create_make_gold_tasks_from_review(
                 "source_chunk_index": raw_pair.get("source_chunk_index"),
                 "source_prompt_pair_example_index": raw_pair.get("source_prompt_pair_example_index"),
                 "source_section_review_hint": raw_pair.get("source_section_review_hint"),
+                "source_excerpt_sha256": raw_pair.get("source_excerpt_sha256"),
+                "source_evidence_refs": raw_pair.get("source_evidence_refs") if isinstance(raw_pair.get("source_evidence_refs"), list) else [],
+                "source_evidence_status": raw_pair.get("source_evidence_status"),
+                "ranked_evidence_packet": raw_pair.get("ranked_evidence_packet") if isinstance(raw_pair.get("ranked_evidence_packet"), dict) else {},
                 "pair_generation_metadata": generation_metadata,
             }
         )

@@ -11,8 +11,9 @@ from fastapi.testclient import TestClient
 from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.main import app
-from app.models import Asset, Annotation, ContextPack, DPOPair, Generation, GoldVoiceExample, PromptSpec, SFTCandidate, Segment, SourceSpanAnnotation, Task
+from app.models import Asset, Annotation, ContextPack, DPOPair, EmbeddingRecord, Generation, GoldVoiceExample, PromptSpec, SFTCandidate, Segment, SourceSpanAnnotation, Task
 from app.services.pair_export import compile_pair_export
+from app.services.pair_generation import preview_make_gold_tasks_from_review
 from app.services.model_generation import TextDraftResult
 from app.services.text_extraction import extract_text_from_file
 
@@ -24,12 +25,18 @@ def build_client():
         poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
+    app.dependency_overrides.clear()
 
     def override_session():
         with Session(engine) as session:
             yield session
 
     app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        openai_api_key="",
+        text_generation_live_calls_enabled=False,
+        vision_live_calls_enabled=False,
+    )
     return TestClient(app), engine
 
 
@@ -89,7 +96,7 @@ def _write_docx_fixture(path: Path, paragraphs: list[str]) -> None:
         archive.writestr("word/document.xml", document_xml)
 
 
-def test_model_status_exposes_gpt_55_xhigh_without_enabling_live_calls_or_fine_tuning():
+def test_model_status_exposes_gpt_55_medium_without_enabling_live_calls_or_fine_tuning():
     client, _engine = build_client()
 
     response = client.get("/api/model-status")
@@ -97,7 +104,7 @@ def test_model_status_exposes_gpt_55_xhigh_without_enabling_live_calls_or_fine_t
     assert response.status_code == 200
     body = response.json()
     assert body["text_generation_model"] == "gpt-5.5"
-    assert body["text_generation_reasoning_effort"] == "xhigh"
+    assert body["text_generation_reasoning_effort"] == "medium"
     assert body["text_generation_live_calls_enabled"] is False
     assert body["text_generation_live_ready"] is False
     assert body["fine_tuning_enabled_in_mvp"] is False
@@ -106,7 +113,7 @@ def test_model_status_exposes_gpt_55_xhigh_without_enabling_live_calls_or_fine_t
     assert requirements["requirements_type"] == "text_generation_credentials"
     assert requirements["api"] == "responses"
     assert requirements["model_name"] == "gpt-5.5"
-    assert requirements["reasoning_effort"] == "xhigh"
+    assert requirements["reasoning_effort"] == "medium"
     required_env = {item["name"]: item for item in requirements["required_env"]}
     assert required_env["OPENAI_API_KEY"]["configured"] is False
     assert required_env["OPENAI_API_KEY"]["secret"] is True
@@ -151,7 +158,7 @@ def test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_
     assert body["demo_type"] == "charles_voice_model_demo"
     assert body["status"] == "blocked_missing_credentials_or_live_gate"
     assert body["model_name"] == "gpt-5.5"
-    assert body["reasoning_effort"] == "xhigh"
+    assert body["reasoning_effort"] == "medium"
     assert body["can_generate"] is False
     assert body["blockers"] == ["text_generation_live_calls_disabled", "openai_api_key_missing"]
     assert body["safety_policy"] == {
@@ -167,7 +174,7 @@ def test_demo_generation_readiness_lists_held_out_prompts_and_honest_credential_
     plan = body["generation_input_plan"]
     assert plan["api"] == "responses"
     assert plan["model_name"] == "gpt-5.5"
-    assert plan["reasoning_effort"] == "xhigh"
+    assert plan["reasoning_effort"] == "medium"
     assert plan["credential_requirements"]["required_env"][0]["name"] == "OPENAI_API_KEY"
     assert plan["store"] is False
     assert plan["live_generation_ready"] is False
@@ -251,7 +258,7 @@ def test_demo_generation_request_preview_exposes_exact_no_live_payload_without_l
     assert body["does_not_promote_to_training_export"] is True
     assert body["api"] == "responses"
     assert body["model_name"] == "gpt-5.5"
-    assert body["reasoning_effort"] == "xhigh"
+    assert body["reasoning_effort"] == "medium"
     assert body["store"] is False
     assert body["request_count"] == 2
     assert len(body["content_sha256"]) == 64
@@ -264,7 +271,7 @@ def test_demo_generation_request_preview_exposes_exact_no_live_payload_without_l
     first = body["requests"][0]
     first_request_body = first["request_body"]
     assert first_request_body["model"] == "gpt-5.5"
-    assert first_request_body["reasoning"] == {"effort": "xhigh"}
+    assert first_request_body["reasoning"] == {"effort": "medium"}
     assert first_request_body["store"] is False
     assert first_request_body["max_output_tokens"] == 1800
     assert [message["role"] for message in first_request_body["input"]] == ["developer", "user"]
@@ -376,7 +383,7 @@ def test_demo_generation_endpoint_stores_model_generated_outputs_without_trainin
     assert len(captured["requests"]) == 2
     assert all(item["no_live_model_call"] is False for item in captured["requests"])
     assert all(item["model"] == "gpt-5.5" for item in captured["requests"])
-    assert all(item["reasoning"] == "xhigh" for item in captured["requests"])
+    assert all(item["reasoning"] == "medium" for item in captured["requests"])
     assert all("HELD OUT ANSWER" not in item["source_text"] for item in captured["requests"])
 
     with Session(engine) as session:
@@ -603,6 +610,24 @@ def test_source_review_generate_pairs_from_natural_sections_creates_singleton_pr
             created_by="text_extraction",
         )
         session.add(task)
+        session.add(
+            EmbeddingRecord(
+                id="embedding-reviewed-context-001",
+                target_type="gold_voice",
+                target_id="gold-reviewed-context-001",
+                embedding_type="gold_voice_text",
+                modality="text",
+                model_name="text-embedding-3-small",
+                input_checksum="reviewed-context-checksum",
+                input_text="Reviewed Charles voice evidence about writing to Tom with no word in a while.",
+                input_preview="Reviewed Charles voice evidence about writing to Tom.",
+                status="embedded",
+                vector_uri="local://embedding_vectors/reviewed-context-001.json",
+                vector_dims=3,
+                truth_status="adam_expert_reconstruction",
+                metadata_json={"source": "gold_voice_edit"},
+            )
+        )
         session.commit()
         task_id = task.id
         chunk_ids = [chunk.id for chunk in chunks]
@@ -729,6 +754,24 @@ def test_natural_section_generation_holds_split_sections_and_blocks_contextless_
             created_by="text_extraction",
         )
         session.add(task)
+        session.add(
+            EmbeddingRecord(
+                id="embedding-reviewed-context-001",
+                target_type="gold_voice",
+                target_id="gold-reviewed-context-001",
+                embedding_type="gold_voice_text",
+                modality="text",
+                model_name="text-embedding-3-small",
+                input_checksum="reviewed-context-preview-checksum",
+                input_text="Reviewed Charles voice evidence about writing to Tom with no word in a while.",
+                input_preview="Reviewed Charles voice evidence about writing to Tom.",
+                status="embedded",
+                vector_uri="local://embedding_vectors/reviewed-context-001.json",
+                vector_dims=3,
+                truth_status="adam_expert_reconstruction",
+                metadata_json={"source": "gold_voice_edit"},
+            )
+        )
         session.commit()
         task_id = task.id
 
@@ -865,6 +908,30 @@ def test_source_review_pair_generation_preview_is_non_mutating_and_matches_natur
             created_by="text_extraction",
         )
         session.add(task)
+        session.add(
+            EmbeddingRecord(
+                id="embedding-reviewed-context-001",
+                target_type="gold_voice",
+                target_id="gold-reviewed-context-001",
+                embedding_type="gold_voice_text",
+                modality="text",
+                model_name="text-embedding-3-small",
+                input_checksum="reviewed-context-preview-only-checksum",
+                input_text="Reviewed Charles voice evidence about writing to Tom with no word in a while.",
+                input_preview="Reviewed Charles voice evidence about writing to Tom.",
+                status="embedded",
+                vector_uri="local://embedding_vectors/reviewed-context-001.json",
+                vector_dims=3,
+                truth_status="adam_expert_reconstruction",
+                metadata_json={"source": "gold_voice_edit"},
+                boundary_snapshot={
+                    "privacy_level": "family_private",
+                    "searchable": True,
+                    "retrievable_in_chat": True,
+                    "reviewed_by": "adam",
+                },
+            )
+        )
         session.commit()
         task_id = task.id
 
@@ -890,6 +957,7 @@ def test_source_review_pair_generation_preview_is_non_mutating_and_matches_natur
                         "code": "fixture_note",
                     }
                 ],
+                "supplemental_evidence_record_ids": ["embedding-reviewed-context-001"],
             }
         },
     )
@@ -904,12 +972,24 @@ def test_source_review_pair_generation_preview_is_non_mutating_and_matches_natur
     assert body["source_section_count"] == 3
     assert body["source_spans_supplied"] is True
     assert body["source_span_draft_count"] == 1
+    assert body["ranked_evidence_record_count"] == 1
+    assert body["ranked_evidence_vector_query_used"] is False
+    assert body["ranked_evidence_packet"]["records"][0]["embedding_record_id"] == "embedding-reviewed-context-001"
     assert body["strategy_counts"] == {"natural_section": 3}
     assert body["primary_strategy_label"] == "Natural source sections"
     assert body["next_queue"] == "prompt_pairs_needing_gold_edits"
     assert body["completion_signal"] == "generate_pairs_creates_singleton_prompt_pair_tickets"
     assert len(body["content_sha256"]) == 64
     assert body["created_pairs_preview"][0]["prompt_preview"] == "What were you writing to Tom about?"
+    assert {
+        "type": "evidence_corpus_record",
+        "embedding_record_id": "embedding-reviewed-context-001",
+    } in body["created_pairs_preview"][0]["source_evidence_refs"]
+    assert any(
+        ref.get("type") == "retrieval_ranked_evidence_record"
+        and ref.get("embedding_record_id") == "embedding-reviewed-context-001"
+        for ref in body["created_pairs_preview"][0]["source_evidence_refs"]
+    )
     assert body["created_pairs_preview"][1]["source_chunk_index"] == 2
 
     with Session(engine) as session:
@@ -918,6 +998,103 @@ def test_source_review_pair_generation_preview_is_non_mutating_and_matches_natur
         assert session.exec(select(ContextPack)).all() == []
         assert session.exec(select(Generation)).all() == []
         assert session.exec(select(Annotation)).all() == []
+
+
+def test_source_review_pair_generation_can_use_vector_ranked_evidence_packet(monkeypatch, tmp_path):
+    _client, engine = build_client()
+
+    monkeypatch.setattr("app.services.retrieval.embed_query_text", lambda **kwargs: [0.1, 0.2, 0.3])
+    monkeypatch.setattr("app.services.retrieval.load_embedding_vector", lambda record, app_settings: [0.1, 0.2, 0.3])
+
+    source_text = "Memoir 1:\nWinter in Maine. Old Orchard. Waves a mile high."
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="ASSET_VECTOR_RANKED_SOURCE",
+            asset_type="text",
+            title="old_orchard_notes.txt",
+            original_filename="old_orchard_notes.txt",
+            mime_type="text/plain",
+        )
+        session.add(asset)
+        session.flush()
+        segment = Segment(
+            human_id="SEG_VECTOR_RANKED_SOURCE",
+            asset_id=asset.id,
+            segment_type="text_chunk",
+            title="Old Orchard note",
+            text_content=source_text,
+            locator={"kind": "natural_section", "chunk_index": 1},
+            metadata_json={"chunking_strategy": "natural_section", "chunk_index": 1},
+        )
+        session.add(segment)
+        session.flush()
+        task = Task(
+            human_id="TASK_VECTOR_RANKED_SOURCE",
+            task_type="text_segment_review",
+            target_type="segment",
+            target_id=segment.id,
+            queue="text_segments_needing_review",
+            input_payload={
+                "asset_id": asset.id,
+                "source_filename": "old_orchard_notes.txt",
+                "preview_text": source_text,
+            },
+            created_by="test",
+        )
+        session.add(task)
+        session.add(
+            EmbeddingRecord(
+                id="embedding-old-orchard-reviewed",
+                target_type="memory",
+                target_id="memory-old-orchard-reviewed",
+                embedding_type="memory_text",
+                modality="text",
+                model_name="text-embedding-3-small",
+                input_checksum="old-orchard-reviewed-checksum",
+                input_text="Reviewed memory context about Old Orchard waves and winter in Maine.",
+                input_preview="Reviewed memory context about Old Orchard waves.",
+                status="embedded",
+                vector_uri=str(tmp_path / "old-orchard.json"),
+                vector_dims=3,
+                truth_status="adam_memory",
+                metadata_json={"source": "photo_memory_review"},
+                boundary_snapshot={
+                    "privacy_level": "family_private",
+                    "searchable": True,
+                    "retrievable_in_chat": True,
+                    "reviewed_by": "adam",
+                },
+            )
+        )
+        session.commit()
+
+        body = preview_make_gold_tasks_from_review(
+            session=session,
+            task=task,
+            decisions={
+                "generate_pairs_on_submit": "yes",
+                "voice_mode": "father_to_adam",
+                "synthetic": True,
+                "context": "Use reviewed memory as supporting evidence.",
+            },
+            allow_live_model=True,
+            app_settings=Settings(
+                openai_api_key="test-key",
+                embedding_live_calls_enabled=True,
+                text_generation_live_calls_enabled=False,
+                storage_root=str(tmp_path),
+            ),
+        )
+
+    assert body["ranked_evidence_record_count"] == 1
+    assert body["ranked_evidence_vector_query_used"] is True
+    assert body["ranked_evidence_packet"]["retrieval_strategy"] == "boundary_filtered_vector_similarity_with_lexical_fallback"
+    assert body["created_pairs_preview"][0]["source_evidence_status"] == "evidence_linked"
+    assert any(
+        ref.get("type") == "retrieval_ranked_evidence_record"
+        and ref.get("embedding_record_id") == "embedding-old-orchard-reviewed"
+        for ref in body["created_pairs_preview"][0]["source_evidence_refs"]
+    )
 
 
 def test_source_review_fallback_pair_records_generation_metadata_without_archival_claim():
@@ -990,7 +1167,7 @@ def test_source_review_fallback_pair_records_generation_metadata_without_archiva
         assert metadata["prompt_instructions_version"] == "charlesops_source_review_pair_generation_v1"
         assert metadata["strategy"] == "deterministic_fallback_source_text"
         assert metadata["model_name"] == "gpt-5.5"
-        assert metadata["reasoning_effort"] == "xhigh"
+        assert metadata["reasoning_effort"] == "medium"
         assert metadata["live_model_call"] is False
         assert metadata["no_live_model_call"] is True
         assert metadata["source_title"] == "loose_source.txt"

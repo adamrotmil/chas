@@ -398,14 +398,21 @@ export interface SourcePairGenerationPreviewItem {
   source_segment_id?: string | null;
   source_chunk_index?: number | string | null;
   source_prompt_pair_example_index?: number | string | null;
+  source_section_review_hint?: string | null;
+  source_excerpt_sha256?: string | null;
+  source_evidence_refs?: unknown[];
+  source_evidence_status?: string | null;
+  ranked_evidence_packet?: JsonRecord;
   reason?: string;
 }
 
 export interface SourcePairGenerationPreview {
   preview_type: "source_review_generate_pairs_preview";
   review_policy: string;
+  evidence_policy?: string;
   does_not_mutate_state: boolean;
   no_live_model_call: boolean;
+  live_model_call_used?: boolean;
   prompt_instructions_version: string;
   source_task_id: string;
   source_task_human_id: string;
@@ -413,12 +420,17 @@ export interface SourcePairGenerationPreview {
   source_text_sha256?: string | null;
   source_text_char_count: number;
   source_text_preview: string;
+  ranked_evidence_packet?: JsonRecord;
+  ranked_evidence_record_count?: number;
+  ranked_evidence_vector_query_used?: boolean;
   source_spans_supplied: boolean;
   source_span_draft_count: number;
   source_section_count: number;
   candidate_pair_count: number;
   projected_created_pair_count: number;
   projected_held_pair_count: number;
+  projected_evidence_linked_pair_count?: number;
+  projected_missing_evidence_pair_count?: number;
   projected_held_source_section_count: number;
   strategy_counts: Record<string, number>;
   primary_strategy: string;
@@ -1259,6 +1271,7 @@ export interface DatasetExportDryRun {
   mode: string;
   included_count: number;
   excluded_count: number;
+  evidence_corpus_snapshot?: EvidenceCorpusSnapshot;
   included: DatasetDryRunRow[];
   excluded: DatasetDryRunRow[];
 }
@@ -2024,6 +2037,145 @@ export interface PhotoMemoryCorpusResponse {
   excluded?: PhotoMemoryHeldRecord[];
 }
 
+export interface EvidenceCorpusRecord {
+  embedding_record_id: string;
+  corpus_family: string;
+  target_type: string;
+  target_id: string;
+  embedding_type: string;
+  embedding_status: string;
+  embedding_model?: string | null;
+  vector_dims?: number | null;
+  vector_uri?: string | null;
+  provider_record_id?: string | null;
+  truth_status?: string | null;
+  review_status: string;
+  source_photo_id?: string | null;
+  title: string;
+  input_preview: string;
+  metadata_source?: string | null;
+  source_annotation_id?: string | null;
+  source_segment_id?: string | null;
+  source_evidence_refs?: unknown[];
+  boundary_snapshot: JsonRecord;
+  index_policy: JsonRecord;
+  excluded_reason?: string;
+}
+
+export interface EvidenceCorpusResponse {
+  corpus_type: string;
+  review_policy: string;
+  scope: string;
+  include_unreviewed: boolean;
+  record_count: number;
+  total_indexable_record_count: number;
+  excluded_count: number;
+  corpus_family_counts: Record<string, number>;
+  embedding_status_counts: Record<string, number>;
+  vector_ready_count: number;
+  ready_for_embedding_count: number;
+  safety_boundaries: string[];
+  records: EvidenceCorpusRecord[];
+  excluded: EvidenceCorpusRecord[];
+}
+
+export interface EvidenceClusterTopRecord {
+  rank: number;
+  embedding_record_id: string;
+  cluster_key?: string;
+  corpus_family: string;
+  target_type: string;
+  target_id: string;
+  source_asset_id?: string | null;
+  source_photo_id?: string | null;
+  source_segment_id?: string | null;
+  title: string;
+  score?: number | null;
+  lexical_score?: number | null;
+  vector_similarity?: number | null;
+  vector_query_used?: boolean;
+  matched_terms?: string[];
+  input_preview?: string | null;
+  embedding_status?: string | null;
+  embedding_model?: string | null;
+  vector_dims?: number | null;
+  truth_status?: string | null;
+  metadata_source?: string | null;
+  review_policy?: JsonRecord;
+  boundary_summary?: JsonRecord;
+  why_matched?: unknown;
+  retrieval_gap_origin?: unknown;
+}
+
+export interface EvidenceClusterTargetRef {
+  target_type?: string | null;
+  target_id?: string | null;
+}
+
+export interface EvidenceCluster {
+  cluster_id: string;
+  cluster_key: string;
+  cluster_family: string;
+  display_title: string;
+  source_asset_id?: string | null;
+  source_photo_id?: string | null;
+  top_score: number;
+  vector_query_used: boolean;
+  matched_terms: string[];
+  truth_status_counts: Record<string, number>;
+  metadata_source_counts: Record<string, number>;
+  target_refs: EvidenceClusterTargetRef[];
+  rank: number;
+  record_count: number;
+  top_records: EvidenceClusterTopRecord[];
+  planning_hint: string;
+  review_policy: string;
+  vector_values_included: boolean;
+}
+
+export interface EvidenceClustersResponse {
+  plan_type: string;
+  query: string;
+  scope: string;
+  retrieval_strategy?: string | null;
+  vector_query_used: boolean;
+  cluster_count: number;
+  source_result_count: number;
+  cluster_limit: number;
+  per_cluster_limit: number;
+  clusters: EvidenceCluster[];
+  retrieval_gap?: JsonRecord;
+  safety_boundaries: string[];
+}
+
+export interface EvidenceCorpusSnapshotRecord {
+  embedding_record_id: string;
+  corpus_family: string;
+  target_type: string;
+  target_id: string;
+  title: string;
+  review_status: string;
+  truth_status?: string | null;
+  embedding_status: string;
+  vector_uri?: string | null;
+  input_preview: string;
+}
+
+export interface EvidenceCorpusSnapshot {
+  corpus_type?: string | null;
+  review_policy?: string | null;
+  scope?: string | null;
+  record_count: number;
+  total_indexable_record_count?: number;
+  excluded_count?: number;
+  vector_ready_count?: number;
+  ready_for_embedding_count?: number;
+  corpus_family_counts?: Record<string, number>;
+  embedding_status_counts?: Record<string, number>;
+  records?: EvidenceCorpusSnapshotRecord[];
+  safety?: JsonRecord;
+}
+
 export interface PhotoMemoryVectorHandoffRecord {
   id: string;
   text: string;
@@ -2144,10 +2296,77 @@ export interface ModelStatus {
   text_generation_model: string;
   text_generation_reasoning_effort: string;
   text_generation_live_calls_enabled: boolean;
+  chat_reasoning_effort?: string;
+  chat_require_live_model?: boolean;
   openai_api_key_configured: boolean;
   text_generation_live_ready: boolean;
   fine_tuning_enabled_in_mvp: boolean;
   credential_requirements?: TextGenerationCredentialRequirements;
+}
+
+export type AISpinePathStatus = "live_ready" | "scaffold" | "partial_scaffold" | "fallback" | "blocked" | string;
+export type AISpineLiveCapability = "available" | "blocked_by_env" | "not_implemented" | "partial" | string;
+export type AISpineRiskSeverity = "high" | "medium" | "low" | string;
+
+export interface AISpineAuditPath {
+  id: string;
+  label: string;
+  category: string;
+  status: AISpinePathStatus;
+  model_status: string;
+  live_capability: AISpineLiveCapability;
+  env_gates: string[];
+  files: string[];
+  evidence: string[];
+  risks: string[];
+  next_action: string;
+}
+
+export interface AISpineAuditRisk {
+  path_id: string;
+  severity: AISpineRiskSeverity;
+  risk: string;
+  next_action: string;
+}
+
+export interface AISpineAuditProvider {
+  model?: string;
+  reasoning_effort?: string;
+  live_calls_enabled?: boolean;
+  require_live_model?: boolean;
+  api_key_configured?: boolean;
+  ready: boolean;
+  reason_not_ready?: string | null;
+}
+
+export interface AISpineAudit {
+  audit_type: "ai_spine_audit";
+  generated_at: string;
+  summary: {
+    text_generation_ready: boolean;
+    openai_api_key_configured: boolean;
+    text_generation_live_calls_enabled: boolean;
+    chat_require_live_model?: boolean;
+    vision_live_calls_enabled: boolean;
+    vision_live_ready: boolean;
+    embedding_live_calls_enabled?: boolean;
+    embedding_live_ready?: boolean;
+    live_path_count: number;
+    scaffold_or_fallback_path_count: number;
+    highest_risk: string;
+    recommended_next_step: string;
+  };
+  providers: {
+    text_generation: AISpineAuditProvider;
+    chat: AISpineAuditProvider;
+    vision: AISpineAuditProvider;
+    embeddings: AISpineAuditProvider;
+  };
+  counts: JsonRecord;
+  paths: AISpineAuditPath[];
+  risks: AISpineAuditRisk[];
+  recommended_next_actions: string[];
+  safety_policy: JsonRecord;
 }
 
 export interface TextGenerationCredentialRequirements {
@@ -2386,6 +2605,159 @@ export interface TaskDraft {
   updated_at: string;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatTurnRequest {
+  message: string;
+  session_id?: string | null;
+  task_id?: string | null;
+  mode?: string;
+  history?: ChatMessage[];
+  draft_decisions?: JsonRecord;
+  notes?: string | null;
+  apply_updates?: boolean;
+  confirm_action?: boolean;
+  confirm_submit?: boolean;
+  dismiss_action?: boolean;
+  confirm_action_id?: string | null;
+  user_id?: string;
+}
+
+export interface ChatTurnResponse {
+  assistant_type: string;
+  status: string;
+  session_id?: string | null;
+  turn_id?: string | null;
+  context_packet_hash?: string | null;
+  assistant_message: string;
+  next_question?: string | null;
+  model_name: string;
+  reasoning_effort: string;
+  model_ready: boolean;
+  live_model_call_used: boolean;
+  active_task: JsonRecord;
+  task_selection: JsonRecord;
+  work_surface?: JsonRecord;
+  work_summary: JsonRecord;
+  actions: JsonRecord[];
+  field_updates: JsonRecord;
+  field_diffs?: JsonRecord[];
+  draft_patch?: JsonRecord[];
+  patch_result?: JsonRecord;
+  draft_decisions: JsonRecord;
+  draft?: JsonRecord | null;
+  ready_to_submit: boolean;
+  submit_payload?: JsonRecord | null;
+  export_build_payload?: JsonRecord | null;
+  review_task_creation_payload?: JsonRecord | null;
+  created_review_task?: JsonRecord | null;
+  batch_continuation?: JsonRecord | null;
+  built_export?: DatasetExport | null;
+  submitted_annotation?: Annotation | null;
+  safety_policy: JsonRecord;
+  error?: string | null;
+}
+
+export interface ChatActionCommandRequest {
+  message?: string;
+  session_id?: string | null;
+  mode?: string;
+  user_id?: string;
+}
+
+export interface ChatActionPreviewResponse {
+  action: JsonRecord;
+  preview_payload: JsonRecord;
+  stale_reason?: string | null;
+  can_confirm: boolean;
+}
+
+export interface ChatSessionCreate {
+  user_id?: string;
+  mode?: string;
+  active_task_id?: string | null;
+  title?: string | null;
+}
+
+export interface ChatSessionResponse {
+  session: JsonRecord;
+  turns: JsonRecord[];
+  actions: JsonRecord[];
+  latest_response?: ChatTurnResponse | null;
+}
+
+export interface ChatSessionListResponse {
+  sessions: JsonRecord[];
+}
+
+export type TrainingBoardColumnId = "todo" | "doing" | "needs_fix" | "done" | "exported";
+
+export interface TrainingBoardItem {
+  id: string;
+  kind: "task" | "sft_candidate" | "dpo_pair" | "dataset_export_item";
+  column: TrainingBoardColumnId;
+  taskId?: string | null;
+  taskHumanId?: string | null;
+  annotationId?: string | null;
+  receiptId?: string | null;
+  goldVoiceExampleId?: string | null;
+  sftCandidateId?: string | null;
+  dpoPairId?: string | null;
+  datasetExportIds?: string[];
+  artifactMode: "sft" | "dpo" | "gold_voice" | string;
+  title: string;
+  subtitle?: string;
+  prompt: string;
+  chosen?: string;
+  rejected?: string;
+  content?: string;
+  reason?: string[];
+  sourceLabel?: string;
+  exportStatus: "candidate" | "approved" | "exported" | "blocked" | string;
+  gateStatus: "ready" | "blocked" | "unknown" | string;
+  blockers: string[];
+  labels?: string[];
+  updatedAt?: string | null;
+  createdAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface TrainingBoardColumn {
+  id: TrainingBoardColumnId;
+  label: string;
+  count: number;
+  items: TrainingBoardItem[];
+}
+
+export interface TrainingBoardResponse {
+  board_type: string;
+  columns: TrainingBoardColumn[];
+  counts: Record<string, number>;
+  exports?: JsonRecord[];
+}
+
+export interface ChatAuditResponse {
+  audit_type: string;
+  task_id?: string | null;
+  session_id?: string | null;
+  session_count: number;
+  turn_count: number;
+  action_count: number;
+  result_count: number;
+  action_status_counts: Record<string, number>;
+  latest_context_packet_hash?: string | null;
+  quality_gaps: string[];
+  quality_signals: JsonRecord;
+  sessions: JsonRecord[];
+  recent_turns: JsonRecord[];
+  recent_actions: JsonRecord[];
+  recent_results: JsonRecord[];
+  provenance_links: JsonRecord[];
+}
+
 export interface Segment {
   id: string;
   human_id: string;
@@ -2533,4 +2905,13 @@ export interface VisionDraftBatchResponse {
   metadata_profile_ids: string[];
   review_task_ids: string[];
   skipped_asset_ids: string[];
+}
+
+export interface VisionSchemaResponse {
+  structured_output: Record<string, unknown>;
+  truth_status: string;
+  review_required: boolean;
+  live_calls_enabled: boolean;
+  live_ready: boolean;
+  default_model: string;
 }

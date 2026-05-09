@@ -311,6 +311,8 @@ def upsert_gold_voice_artifacts(
     gold.adam_gold_edit = gold_text
     gold.ratings = ratings
     gold.failure_modes = failure_modes
+    source_payload = task.input_payload if isinstance(task.input_payload, dict) else {}
+    provenance_payload = {**source_payload, **decisions}
     gold.downstream_use = {
         **export_flags,
         "artifact_mode": compiled_export.get("artifact_mode") if compiled_export else "legacy_gold_voice_edit",
@@ -319,6 +321,18 @@ def upsert_gold_voice_artifacts(
         "grounding_asset_id": compiled_export.get("grounding_asset_id") if compiled_export else decisions.get("grounding_asset_id"),
         "export_preview_yaml": compiled_export.get("yaml_preview") if compiled_export else decisions.get("export_preview_yaml"),
         "source_annotation_id": annotation_id,
+        "source_segment_id": provenance_payload.get("source_segment_id"),
+        "source_chunk_index": provenance_payload.get("source_chunk_index"),
+        "source_prompt_pair_example_index": provenance_payload.get("source_prompt_pair_example_index"),
+        "source_section_review_hint": provenance_payload.get("source_section_review_hint"),
+        "source_excerpt": provenance_payload.get("source_excerpt"),
+        "source_excerpt_sha256": provenance_payload.get("source_excerpt_sha256"),
+        "source_evidence_refs": provenance_payload.get("source_evidence_refs"),
+        "source_evidence_status": provenance_payload.get("source_evidence_status"),
+        "source_photo_id": provenance_payload.get("source_photo_id"),
+        "photo_context_profile_id": provenance_payload.get("photo_context_profile_id"),
+        "photo_memory_id": provenance_payload.get("photo_memory_id"),
+        "pair_generation_metadata": provenance_payload.get("pair_generation_metadata"),
     }
     gold.approved_by = "adam"
     gold.approved_at = utcnow()

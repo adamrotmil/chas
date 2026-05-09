@@ -249,6 +249,73 @@ class TaskDraft(IdMixin, TimestampMixin, table=True):
     notes: Optional[str] = Field(default=None, sa_column=text_column())
 
 
+class ChatSession(IdMixin, TimestampMixin, table=True):
+    __tablename__ = "chat_sessions"
+
+    user_id: str = Field(default="adam", index=True)
+    status: str = Field(default="active", index=True)
+    active_task_id: Optional[str] = Field(default=None, foreign_key="tasks.id", index=True)
+    mode: str = Field(default="chat", index=True)
+    title: Optional[str] = None
+    summary: Optional[str] = Field(default=None, sa_column=text_column())
+    last_model: Optional[str] = None
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+
+
+class ChatTurn(IdMixin, table=True):
+    __tablename__ = "chat_turns"
+
+    session_id: str = Field(foreign_key="chat_sessions.id", index=True)
+    task_id: Optional[str] = Field(default=None, foreign_key="tasks.id", index=True)
+    role: str = Field(index=True)
+    content: str = Field(sa_column=text_column(nullable=False))
+    model_name: Optional[str] = Field(default=None, index=True)
+    input_token_count: Optional[int] = None
+    output_token_count: Optional[int] = None
+    latency_ms: Optional[int] = None
+    context_packet_hash: Optional[str] = Field(default=None, index=True)
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class ChatAction(IdMixin, table=True):
+    __tablename__ = "chat_actions"
+
+    session_id: str = Field(foreign_key="chat_sessions.id", index=True)
+    turn_id: Optional[str] = Field(default=None, foreign_key="chat_turns.id", index=True)
+    task_id: Optional[str] = Field(default=None, foreign_key="tasks.id", index=True)
+    action_type: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    proposed_payload_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    validated_payload_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    requires_confirmation: bool = Field(default=False, index=True)
+    confirmed_by_user_at: Optional[datetime] = None
+    executed_at: Optional[datetime] = None
+    error_message: Optional[str] = Field(default=None, sa_column=text_column())
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class ChatActionResult(IdMixin, table=True):
+    __tablename__ = "chat_action_results"
+
+    action_id: str = Field(foreign_key="chat_actions.id", index=True)
+    object_type: str = Field(index=True)
+    object_id: Optional[str] = Field(default=None, index=True)
+    before_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    after_json: Dict[str, Any] = Field(default_factory=dict, sa_column=json_column())
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class Annotation(IdMixin, table=True):
     __tablename__ = "annotations"
 

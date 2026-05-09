@@ -125,7 +125,7 @@ def test_downstream_bottleneck_queue_is_api_ranked_and_machine_verifiable():
     assert demo_item["priority_rank"] == 4
     assert demo_item["action"]["enabled"] is False
     assert demo_item["source_metrics"]["model_name"] == "gpt-5.5"
-    assert demo_item["source_metrics"]["reasoning_effort"] == "xhigh"
+    assert demo_item["source_metrics"]["reasoning_effort"] == "medium"
     assert set(demo_item["source_metrics"]["blockers"]) == {
         "text_generation_live_calls_disabled",
         "openai_api_key_missing",
@@ -340,7 +340,7 @@ def test_downstream_artifact_manifest_lists_hashable_outputs_without_side_effect
     assert items["demo_generation_request_preview_yaml"]["policy"]["no_generation_created"] is True
     assert items["demo_generation_request_preview_yaml"]["policy"]["does_not_promote_to_training_export"] is True
     assert items["demo_generation_request_preview_yaml"]["policy"]["model_name"] == "gpt-5.5"
-    assert items["demo_generation_request_preview_yaml"]["policy"]["reasoning_effort"] == "xhigh"
+    assert items["demo_generation_request_preview_yaml"]["policy"]["reasoning_effort"] == "medium"
     assert items["demo_generation_request_preview_yaml"]["policy"]["store"] is False
     assert len(items["demo_generation_request_preview_yaml"]["policy"]["preview_content_sha256"]) == 64
 
@@ -633,7 +633,7 @@ def test_downstream_morning_handoff_summarizes_live_bottlenecks_and_artifacts():
 
     model_status = handoff["model_generation_status"]
     assert model_status["model_name"] == "gpt-5.5"
-    assert model_status["reasoning_effort"] == "xhigh"
+    assert model_status["reasoning_effort"] == "medium"
     assert model_status["outputs_truth_status"] == "model_generated"
     assert model_status["fine_tuning_api_calls_allowed"] is False
     assert set(model_status["blockers"]) == {
@@ -1155,8 +1155,11 @@ def test_runtime_contract_includes_source_review_pair_generation_preview_fields(
     required = contract["required_response_fields"]["/api/tasks/{task_id}/pair-generation/preview"]
 
     assert "does_not_mutate_state" in required
+    assert "evidence_policy" in required
     assert "no_live_model_call" in required
     assert "projected_created_pair_count" in required
+    assert "projected_evidence_linked_pair_count" in required
+    assert "projected_missing_evidence_pair_count" in required
     assert "strategy_counts" in required
     assert "safety_boundaries" in required
     assert "content_sha256" in required

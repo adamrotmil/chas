@@ -555,6 +555,7 @@ def test_source_review_generate_pairs_from_yaml_creates_spans_and_make_gold_task
         )
         session.add(segment)
         session.flush()
+        source_segment_id = segment.id
         task = Task(
             human_id="TASK_PAIR_SOURCE_REVIEW",
             task_type="text_segment_review",
@@ -612,6 +613,12 @@ def test_source_review_generate_pairs_from_yaml_creates_spans_and_make_gold_task
         assert make_gold_task.input_payload["prompt"] == "How's Portland today?"
         assert "gray here" in make_gold_task.input_payload["content"]
         assert "messages:" in make_gold_task.input_payload["export_preview_yaml"]
+        assert make_gold_task.input_payload["source_segment_id"] == source_segment_id
+        assert len(make_gold_task.input_payload["source_excerpt_sha256"]) == 64
+        assert make_gold_task.input_payload["source_evidence_status"] == "evidence_linked"
+        assert make_gold_task.input_payload["source_evidence_refs"][0]["type"] == "source_segment"
+        evidence_gate = make_gold_task.input_payload["pair_generation_metadata"]["evidence_gate"]
+        assert evidence_gate == {"passed": True, "blockers": []}
 
 
 def test_source_review_generate_pairs_from_structured_chunks_creates_singleton_prompt_pair_tasks():
@@ -748,6 +755,8 @@ def test_source_review_generate_pairs_from_structured_chunks_creates_singleton_p
     assert run["candidate_pair_count"] == 2
     assert run["created_pair_count"] == 2
     assert run["held_pair_count"] == 0
+    assert run["evidence_linked_pair_count"] == 2
+    assert run["missing_evidence_pair_count"] == 0
     assert run["source_section_count"] == 3
     assert run["held_source_section_count"] == 1
     assert run["held_source_sections"][0]["chunk_index"] == 3
@@ -766,6 +775,9 @@ def test_source_review_generate_pairs_from_structured_chunks_creates_singleton_p
             "gray here...\nlight rain\nkeeps the trees happy\nwent for a walk\nocean hiding behind fog"
         )
         assert tasks[0].input_payload["source_excerpt"].startswith("Example 1")
+        assert len(tasks[0].input_payload["source_excerpt_sha256"]) == 64
+        assert tasks[0].input_payload["source_evidence_status"] == "evidence_linked"
+        assert tasks[0].input_payload["pair_generation_metadata"]["evidence_gate"]["passed"] is True
         assert tasks[0].input_payload["source_prompt_pair_example_index"] == 1
         assert tasks[1].input_payload["prompt"] == "Do you feel like getting coffee?"
         assert tasks[1].input_payload["content"] == "sure... yeah.\nCoffee Me Up down the street?\n\nlove\ndad"
@@ -1510,7 +1522,7 @@ def test_prompt_pair_candidate_submission_can_use_live_text_generation_gate(monk
             model_name="gpt-5.5",
             model_parameters={
                 "api": "responses",
-                "reasoning": {"effort": "xhigh"},
+                "reasoning": {"effort": "medium"},
                 "no_live_model_call": False,
             },
         )
@@ -1602,7 +1614,7 @@ def test_prompt_pair_candidate_submission_can_use_live_text_generation_gate(monk
         assert captured["user_prompt"] == "How's Portland today?"
         assert captured["source_text"] == "ready reference chunk only"
         assert generation.model_name == "gpt-5.5"
-        assert generation.model_parameters["reasoning"]["effort"] == "xhigh"
+        assert generation.model_parameters["reasoning"]["effort"] == "medium"
         assert generation.model_parameters["no_live_model_call"] is False
         assert review_task.input_payload["prompt_pair_factory_no_model_call"] is False
         assert review_task.input_payload["prompt_pair_factory_generation_status"] == "live_model_call"

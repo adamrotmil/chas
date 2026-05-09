@@ -2,8 +2,8 @@
 
 import { CheckCircle2, Download, FileJson, RefreshCw, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { buildDatasetExport, getDatasetExportDryRun, getDatasetJsonlUrl } from "@/lib/api";
-import type { DatasetDryRunRow, DatasetExport, DatasetExportDryRun } from "@/lib/types";
+import { buildDatasetExport, getDatasetExportDryRun, getDatasetJsonlUrl, getStoredDatasetJsonlUrl } from "@/lib/api";
+import type { DatasetDryRunRow, DatasetExport, DatasetExportDryRun, EvidenceCorpusSnapshot } from "@/lib/types";
 import { DownstreamReadinessPanel } from "@/components/DownstreamReadinessPanel";
 
 type ExportType = "sft" | "dpo";
@@ -48,6 +48,53 @@ function rowReviewBlockers(row: DatasetDryRunRow): string[] {
   }
   const blockers = metadata.review_blockers;
   return Array.isArray(blockers) ? blockers.map(String).filter(Boolean) : [];
+}
+
+function EvidenceCorpusSnapshotPanel({ snapshot }: { snapshot?: EvidenceCorpusSnapshot }) {
+  if (!snapshot) {
+    return null;
+  }
+  const familyCounts = Object.entries(snapshot.corpus_family_counts ?? {})
+    .sort(([, left], [, right]) => right - left)
+    .slice(0, 4);
+  const records = Array.isArray(snapshot.records) ? snapshot.records.slice(0, 4) : [];
+  return (
+    <section className="export-evidence-snapshot" aria-label="Unified evidence corpus snapshot">
+      <header>
+        <div>
+          <span>Evidence corpus</span>
+          <strong>{snapshot.scope ?? "family_private"}</strong>
+        </div>
+        <div>
+          <em>{snapshot.record_count ?? 0} reviewed</em>
+          <em>{snapshot.excluded_count ?? 0} held</em>
+          <em>{snapshot.vector_ready_count ?? 0} vectors</em>
+        </div>
+      </header>
+      {familyCounts.length > 0 ? (
+        <div className="export-evidence-families">
+          {familyCounts.map(([family, count]) => (
+            <span key={family}>
+              {titleCase(family)} <strong>{count}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {records.length > 0 ? (
+        <div className="export-evidence-records">
+          {records.map((record) => (
+            <article key={record.embedding_record_id}>
+              <em>{titleCase(record.corpus_family)}</em>
+              <strong>{record.title || record.target_id}</strong>
+              <p>{record.input_preview}</p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="quiet">No reviewed evidence records are currently available for this export scope.</p>
+      )}
+    </section>
+  );
 }
 
 function DryRunRows({ rows, kind }: { rows: DatasetDryRunRow[]; kind: "included" | "excluded" }) {
@@ -98,11 +145,12 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadDryRun() {
+  async function loadDryRun(nextExportType = exportType, nextIncludeCandidates = includeCandidates) {
     setLoading(true);
     setError(null);
     try {
-      setDryRun(await getDatasetExportDryRun(exportType, includeCandidates));
+      const nextDryRun = await getDatasetExportDryRun(nextExportType, nextIncludeCandidates);
+      setDryRun(nextDryRun);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load export dry-run.");
     } finally {
@@ -111,7 +159,7 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
   }
 
   useEffect(() => {
-    void loadDryRun();
+    void loadDryRun(exportType, includeCandidates);
   }, [exportType, includeCandidates]);
 
   async function handleBuildExport() {
@@ -120,7 +168,7 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
     try {
       const built = await buildDatasetExport(exportType);
       setBuiltExport(built);
-      await loadDryRun();
+      await loadDryRun(exportType, includeCandidates);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to build dataset export.");
     } finally {
@@ -195,7 +243,10 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
         <div className="utility-alert good">
           <CheckCircle2 size={14} />
           <span>
-            Built {builtExport.human_id} with {String(builtExport.manifest.item_count ?? 0)} item(s).
+            Built {builtExport.human_id} with {String(builtExport.manifest.item_count ?? 0)} item(s).{" "}
+            <a href={getStoredDatasetJsonlUrl(builtExport.id)} target="_blank" rel="noreferrer">
+              Open stored JSONL
+            </a>
           </span>
         </div>
       ) : null}
@@ -220,6 +271,8 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
           <strong>{dryRun?.mode ?? "approved_only"}</strong>
         </article>
       </div>
+
+      <EvidenceCorpusSnapshotPanel snapshot={dryRun?.evidence_corpus_snapshot} />
 
       <div className="dry-run-columns">
         <section>

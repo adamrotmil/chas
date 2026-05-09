@@ -3,8 +3,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlmodel import Session, select
 
@@ -56,6 +59,8 @@ from app.services.photo_context_review_pack import (
 from app.services.photo_review_priority import build_photo_review_priority_summary
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+GCS_PREVIEW_CACHE_ROOT = "preview_cache/gcs"
 
 
 def _asset_or_404(session: Session, asset_id: str) -> Asset:
@@ -296,12 +301,54 @@ def _image_derivative(session: Session, asset_id: str, variant: str) -> Optional
     return sorted(matches, key=lambda item: item.created_at, reverse=True)[0]
 
 
+def _gcs_preview_cache_path(object_file: ObjectFile, storage_root: Path) -> Path:
+    cache_key = object_file.metadata_json.get("local_preview_cache_key")
+    if not isinstance(cache_key, str) or not cache_key.strip():
+        cache_key = "/".join([GCS_PREVIEW_CACHE_ROOT, object_file.object_key])
+    return (storage_root / cache_key).resolve()
+
+
+def _download_gcs_object_to_cache(
+    *,
+    object_file: ObjectFile,
+    cache_path: Path,
+    content_type: str,
+    storage_access_token: str,
+) -> None:
+    bucket = object_file.bucket or settings.gcs_bucket
+    if not bucket:
+        raise HTTPException(status_code=404, detail="GCS preview object is missing a bucket")
+
+    encoded_bucket = quote(bucket, safe="")
+    encoded_name = quote(object_file.object_key, safe="")
+    url = f"https://storage.googleapis.com/storage/v1/b/{encoded_bucket}/o/{encoded_name}?alt=media"
+    request = UrlRequest(url, headers={"Authorization": f"Bearer {storage_access_token}"})
+
+    try:
+        with urlopen(request, timeout=120) as response:
+            response_content_type = response.headers.get("Content-Type", content_type)
+            if response_content_type and not response_content_type.lower().startswith("image/"):
+                raise HTTPException(status_code=415, detail="GCS preview object is not an image")
+            data = response.read()
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        if exc.code in {401, 403}:
+            raise HTTPException(status_code=exc.code, detail="GCS preview token could not read this object") from exc
+        raise HTTPException(status_code=502, detail=f"GCS preview download failed: {exc.code} {body[:300]}") from exc
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail=f"GCS preview download failed: {exc.reason}") from exc
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(data)
+
+
 def _file_response_for_object(
     *,
     object_file: ObjectFile,
     asset: Asset,
     filename: str,
     missing_detail: str,
+    storage_access_token: Optional[str] = None,
 ) -> Optional[FileResponse]:
     content_type = object_file.content_type or asset.mime_type or ""
     if not content_type.startswith("image/"):
@@ -311,14 +358,24 @@ def _file_response_for_object(
     if object_file.storage_provider == "local":
         preview_path = (storage_root / object_file.object_key).resolve()
     elif object_file.storage_provider == "gcs":
-        cache_key = object_file.metadata_json.get("local_preview_cache_key")
-        preview_path = (storage_root / cache_key).resolve() if isinstance(cache_key, str) else None
+        preview_path = _gcs_preview_cache_path(object_file, storage_root)
     else:
         preview_path = None
 
     if preview_path is None:
         return None
-    if not preview_path.is_relative_to(storage_root) or not preview_path.is_file():
+    if not preview_path.is_relative_to(storage_root):
+        raise HTTPException(status_code=400, detail="Preview object path is outside storage root")
+    if not preview_path.is_file() and object_file.storage_provider == "gcs" and storage_access_token:
+        _download_gcs_object_to_cache(
+            object_file=object_file,
+            cache_path=preview_path,
+            content_type=content_type,
+            storage_access_token=storage_access_token,
+        )
+    if not preview_path.is_file():
+        if object_file.storage_provider == "gcs":
+            return None
         raise HTTPException(status_code=404, detail=missing_detail)
 
     return FileResponse(preview_path, media_type=content_type, filename=filename)
@@ -1253,10 +1310,13 @@ def get_asset_dossier(asset_id: str, session: Session = Depends(get_session)) ->
 @router.get("/{asset_id}/preview")
 def preview_asset(
     asset_id: str,
+    request: Request,
     variant: str = Query(default="display", pattern="^(thumbnail|display|original)$"),
+    storage_access_token: Optional[str] = Query(default=None, include_in_schema=False),
     session: Session = Depends(get_session),
 ) -> FileResponse:
     asset = _asset_or_404(session, asset_id)
+    effective_storage_access_token = storage_access_token or request.headers.get("x-storage-access-token")
     if variant != "original":
         variant_order = list(dict.fromkeys([variant, "display", "thumbnail"]))
         for derivative_variant in variant_order:
@@ -1274,6 +1334,7 @@ def preview_asset(
                         asset=asset,
                         filename=filename,
                         missing_detail="Preview derivative file is missing",
+                        storage_access_token=effective_storage_access_token,
                     )
                     if response:
                         return response
@@ -1299,6 +1360,7 @@ def preview_asset(
         asset=asset,
         filename=filename,
         missing_detail="Mirrored preview file is missing",
+        storage_access_token=effective_storage_access_token,
     )
     if response:
         return response

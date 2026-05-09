@@ -35,6 +35,8 @@ def get_model_status(app_settings: Settings = Depends(get_settings)) -> dict:
         "text_generation_model": app_settings.text_generation_model,
         "text_generation_reasoning_effort": app_settings.text_generation_reasoning_effort,
         "text_generation_live_calls_enabled": app_settings.text_generation_live_calls_enabled,
+        "chat_reasoning_effort": app_settings.chat_reasoning_effort,
+        "chat_require_live_model": app_settings.chat_require_live_model,
         "openai_api_key_configured": bool(app_settings.openai_api_key),
         "text_generation_live_ready": live_text_generation_ready(app_settings),
         "fine_tuning_enabled_in_mvp": False,

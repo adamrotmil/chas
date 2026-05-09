@@ -26,6 +26,7 @@ from app.models import (
     Segment,
     Task,
 )
+from app.routers import assets as assets_router
 from app.services import asset_mirror
 from app.services.asset_mirror import mirror_upload_for_asset
 from app.services.text_extraction import extract_text_from_file
@@ -658,3 +659,82 @@ def test_gcs_image_mirror_creates_cached_preview_derivatives(tmp_path, monkeypat
         ]
         assert len(derivative_caches) == 2
         assert all((tmp_path / "storage" / cache_key).is_file() for cache_key in derivative_caches)
+
+
+def test_gcs_preview_hydrates_missing_cache_with_storage_token(tmp_path, monkeypatch):
+    client, engine = build_client(tmp_path)
+    settings.gcs_bucket = "charlesops-vault-test"
+    image_body = image_bytes(size=(128, 96))
+    requested = {}
+
+    class FakeGcsResponse:
+        headers = {"Content-Type": "image/jpeg"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return image_body
+
+    def fake_urlopen(request, timeout):
+        requested["url"] = request.full_url
+        requested["authorization"] = request.get_header("Authorization")
+        requested["timeout"] = timeout
+        return FakeGcsResponse()
+
+    monkeypatch.setattr(assets_router, "urlopen", fake_urlopen)
+
+    with Session(engine) as session:
+        asset = Asset(
+            human_id="PHOTO_GCS_CACHE_TEST",
+            title="GCS cached preview",
+            original_filename="gcs-preview.jpg",
+            asset_type="photo",
+            mime_type="image/jpeg",
+            processing_status="image_preview_ready",
+        )
+        session.add(asset)
+        session.flush()
+        object_file = ObjectFile(
+            storage_provider="gcs",
+            bucket="charlesops-vault-test",
+            object_key="charlesops/derivatives/images/test/v1/thumbnail/gcs-preview.thumbnail.jpg",
+            uri="gs://charlesops-vault-test/charlesops/derivatives/images/test/v1/thumbnail/gcs-preview.thumbnail.jpg",
+            content_type="image/jpeg",
+            metadata_json={
+                "derivative_kind": "image_preview",
+                "variant": "thumbnail",
+                "local_preview_cache_key": "preview_cache/gcs/charlesops/derivatives/images/test/v1/thumbnail/gcs-preview.thumbnail.jpg",
+            },
+        )
+        session.add(object_file)
+        session.flush()
+        session.add(
+            Derivative(
+                asset_id=asset.id,
+                derivative_type="image_preview",
+                object_file_id=object_file.id,
+                status="ready",
+                metadata_json={"variant": "thumbnail"},
+            )
+        )
+        asset_id = asset.id
+        cache_path = tmp_path / "storage" / object_file.metadata_json["local_preview_cache_key"]
+        session.commit()
+
+    assert not cache_path.exists()
+
+    preview = client.get(
+        f"/api/assets/{asset_id}/preview?variant=thumbnail",
+        headers={"x-storage-access-token": "fake-read-token"},
+    )
+
+    assert preview.status_code == 200
+    assert preview.content == image_body
+    assert preview.headers["content-type"] == "image/jpeg"
+    assert cache_path.read_bytes() == image_body
+    assert requested["authorization"] == "Bearer fake-read-token"
+    assert requested["timeout"] == 120

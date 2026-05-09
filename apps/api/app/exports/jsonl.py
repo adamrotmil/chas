@@ -3,8 +3,9 @@ from typing import Any, Dict, Iterable, List
 
 from sqlmodel import Session, select
 
-from app.models import ContextPack, DPOPair, GoldVoiceExample, PromptSpec, SFTCandidate, Task, TaskReceipt
+from app.models import Boundary, ContextPack, DPOPair, GoldVoiceExample, PromptSpec, SFTCandidate, Task, TaskReceipt
 from app.services.pair_export import dpo_export_blockers, sft_export_blockers, source_section_export_blockers
+from app.services.retrieval import unified_evidence_corpus
 
 
 DEFAULT_SYSTEM_PROMPT = "You are Charles Rotmil."
@@ -23,10 +24,11 @@ def to_jsonl(items: Iterable[Dict[str, Any]]) -> str:
     return "\n".join(rows) + ("\n" if rows else "")
 
 
-def _gold_export_metadata(session: Session, gold_id: str, export_status: str) -> Dict[str, Any]:
+def _gold_export_metadata(session: Session, gold_id: str, export_status: str, export_type: str) -> Dict[str, Any]:
     gold = session.get(GoldVoiceExample, gold_id)
     downstream_use = gold.downstream_use if gold and isinstance(gold.downstream_use, dict) else {}
     context = _context_for(session, gold)
+    boundary_gate = _context_boundary_gate_summary(session, context, export_type)
     return {
         "source_gold_voice_example_id": gold_id,
         "truth_status": gold.truth_status if gold else "adam_expert_reconstruction",
@@ -37,13 +39,26 @@ def _gold_export_metadata(session: Session, gold_id: str, export_status: str) ->
         "context": downstream_use.get("context"),
         "grounding_asset_id": downstream_use.get("grounding_asset_id"),
         "source_annotation_id": downstream_use.get("source_annotation_id"),
+        "source_segment_id": downstream_use.get("source_segment_id"),
+        "source_chunk_index": downstream_use.get("source_chunk_index"),
+        "source_prompt_pair_example_index": downstream_use.get("source_prompt_pair_example_index"),
+        "source_section_review_hint": downstream_use.get("source_section_review_hint"),
+        "source_excerpt": downstream_use.get("source_excerpt"),
+        "source_excerpt_sha256": downstream_use.get("source_excerpt_sha256"),
+        "source_evidence_refs": downstream_use.get("source_evidence_refs"),
+        "source_evidence_status": downstream_use.get("source_evidence_status"),
+        "source_photo_id": downstream_use.get("source_photo_id"),
+        "photo_context_profile_id": downstream_use.get("photo_context_profile_id"),
+        "photo_memory_id": downstream_use.get("photo_memory_id"),
+        "pair_generation_metadata": downstream_use.get("pair_generation_metadata"),
         "export_preview_yaml": downstream_use.get("export_preview_yaml"),
         "boundary_snapshot": context.boundaries_snapshot if context else downstream_use.get("boundary_snapshot"),
+        "boundary_gate": boundary_gate,
     }
 
 
 def _sft_payload(session: Session, candidate: SFTCandidate) -> Dict[str, Any]:
-    metadata = _gold_export_metadata(session, candidate.source_gold_voice_example_id, candidate.export_status)
+    metadata = _gold_export_metadata(session, candidate.source_gold_voice_example_id, candidate.export_status, "sft")
     quality_gate = candidate.quality_gate if isinstance(candidate.quality_gate, dict) else {}
     review_blockers = _list_strings(quality_gate.get("export_blockers"))
     if candidate.export_status != "approved" and not review_blockers:
@@ -86,7 +101,7 @@ def _dpo_payload(session: Session, pair: DPOPair) -> Dict[str, Any]:
         "preferred_output": pair.chosen,
         "non_preferred_output": pair.rejected,
         "metadata": {
-            **_gold_export_metadata(session, pair.source_gold_voice_example_id, pair.export_status),
+            **_gold_export_metadata(session, pair.source_gold_voice_example_id, pair.export_status, "dpo"),
             "reason": pair.reason,
         },
     }
@@ -220,6 +235,10 @@ def _candidate_review_blockers(payload: Dict[str, Any], export_type: str) -> Lis
         blockers.append("candidate_marked_for_adam_gold_edit")
     if payload.get("no_live_model_call") or payload.get("prompt_pair_factory_no_model_call"):
         blockers.append("scaffolded_without_live_model_call")
+    pair_generation_metadata = payload.get("pair_generation_metadata") if isinstance(payload.get("pair_generation_metadata"), dict) else {}
+    evidence_gate = pair_generation_metadata.get("evidence_gate") if isinstance(pair_generation_metadata.get("evidence_gate"), dict) else {}
+    if evidence_gate.get("passed") is False or payload.get("source_evidence_status") == "missing_source_evidence":
+        blockers.append("missing_source_evidence_ref")
     blockers.extend(source_section_export_blockers(payload))
     truth_status = str(payload.get("truth_status") or "")
     if truth_status in {"system_inference", "model_generated", "adam_inference"}:
@@ -277,6 +296,9 @@ def _prompt_pair_sft_payload(task: Task) -> Dict[str, Any]:
             "source_prompt_pair_example_index": payload.get("source_prompt_pair_example_index"),
             "source_section_review_hint": payload.get("source_section_review_hint"),
             "source_excerpt": payload.get("source_excerpt"),
+            "source_excerpt_sha256": payload.get("source_excerpt_sha256"),
+            "source_evidence_refs": payload.get("source_evidence_refs"),
+            "source_evidence_status": payload.get("source_evidence_status"),
             "source_photo_id": payload.get("source_photo_id"),
             "photo_context_profile_id": payload.get("photo_context_profile_id"),
             "photo_memory_id": payload.get("photo_memory_id"),
@@ -333,6 +355,9 @@ def _prompt_pair_dpo_payload(task: Task) -> Dict[str, Any]:
             "source_prompt_pair_example_index": payload.get("source_prompt_pair_example_index"),
             "source_section_review_hint": payload.get("source_section_review_hint"),
             "source_excerpt": payload.get("source_excerpt"),
+            "source_excerpt_sha256": payload.get("source_excerpt_sha256"),
+            "source_evidence_refs": payload.get("source_evidence_refs"),
+            "source_evidence_status": payload.get("source_evidence_status"),
             "source_photo_id": payload.get("source_photo_id"),
             "photo_context_profile_id": payload.get("photo_context_profile_id"),
             "photo_memory_id": payload.get("photo_memory_id"),
@@ -438,6 +463,44 @@ def _split_duplicate_training_rows(rows: List[Dict[str, Any]]) -> tuple[List[Dic
     return unique, duplicates
 
 
+def _evidence_corpus_snapshot(session: Session, *, scope: str = "family_private") -> Dict[str, Any]:
+    corpus = unified_evidence_corpus(session=session, scope=scope, limit=12, include_unreviewed=False)
+    records = corpus.get("records") if isinstance(corpus.get("records"), list) else []
+    return {
+        "corpus_type": corpus.get("corpus_type"),
+        "review_policy": corpus.get("review_policy"),
+        "scope": corpus.get("scope"),
+        "record_count": corpus.get("record_count", 0),
+        "total_indexable_record_count": corpus.get("total_indexable_record_count", 0),
+        "excluded_count": corpus.get("excluded_count", 0),
+        "vector_ready_count": corpus.get("vector_ready_count", 0),
+        "ready_for_embedding_count": corpus.get("ready_for_embedding_count", 0),
+        "corpus_family_counts": corpus.get("corpus_family_counts", {}),
+        "embedding_status_counts": corpus.get("embedding_status_counts", {}),
+        "records": [
+            {
+                "embedding_record_id": record.get("embedding_record_id"),
+                "corpus_family": record.get("corpus_family"),
+                "target_type": record.get("target_type"),
+                "target_id": record.get("target_id"),
+                "title": record.get("title"),
+                "review_status": record.get("review_status"),
+                "truth_status": record.get("truth_status"),
+                "embedding_status": record.get("embedding_status"),
+                "vector_uri": record.get("vector_uri"),
+                "input_preview": record.get("input_preview"),
+            }
+            for record in records[:6]
+            if isinstance(record, dict)
+        ],
+        "safety": {
+            "vector_values_in_exports": False,
+            "reviewed_only_by_default": True,
+            "unreviewed_records_excluded_from_picker": True,
+        },
+    }
+
+
 def _gold_for(session: Session, gold_id: str) -> GoldVoiceExample | None:
     return session.get(GoldVoiceExample, gold_id)
 
@@ -448,9 +511,109 @@ def _context_for(session: Session, gold: GoldVoiceExample | None) -> ContextPack
     return session.get(ContextPack, gold.context_pack_id)
 
 
-def _source_summary(gold: GoldVoiceExample | None, context: ContextPack | None) -> Dict[str, Any]:
+def _source_boundary_for_task(session: Session, source_task_id: Any) -> Boundary | None:
+    if not isinstance(source_task_id, str) or not source_task_id:
+        return None
+    task = session.get(Task, source_task_id)
+    if not task or not task.target_type or not task.target_id:
+        return None
+    return session.exec(
+        select(Boundary).where(Boundary.target_type == task.target_type).where(Boundary.target_id == task.target_id)
+    ).first()
+
+
+def _boundary_export_reasons_from_record(boundary: Boundary, export_type: str, prefix: str = "source_boundary") -> List[str]:
+    reasons: List[str] = []
+    if boundary.reviewed_by != "adam":
+        reasons.append(f"{prefix}_not_adam_reviewed")
+    if boundary.redaction_required:
+        reasons.append(f"{prefix}_redaction_required")
+    if boundary.privacy_level in {"private_sensitive", "sensitive_living_people", "sealed"}:
+        reasons.append(f"{prefix}_privacy_level_{boundary.privacy_level}")
+    if export_type == "sft" and not boundary.usable_for_sft:
+        reasons.append(f"{prefix}_blocks_sft")
+    if export_type == "dpo" and not boundary.usable_for_dpo:
+        reasons.append(f"{prefix}_blocks_dpo")
+    return reasons
+
+
+def _boundary_export_reasons_from_snapshot(snapshot: Dict[str, Any], export_type: str) -> List[str]:
+    boundary = snapshot.get("boundary")
+    if not isinstance(boundary, dict):
+        return []
+    reasons: List[str] = []
+    if boundary.get("reviewed_by") != "adam":
+        reasons.append("source_boundary_not_adam_reviewed")
+    if boundary.get("redaction_required") is True:
+        reasons.append("source_boundary_redaction_required")
+    privacy_level = str(boundary.get("privacy_level") or "")
+    if privacy_level in {"private_sensitive", "sensitive_living_people", "sealed"}:
+        reasons.append(f"source_boundary_privacy_level_{privacy_level}")
+    if export_type == "sft" and boundary.get("usable_for_sft") is not True:
+        reasons.append("source_boundary_blocks_sft")
+    if export_type == "dpo" and boundary.get("usable_for_dpo") is not True:
+        reasons.append("source_boundary_blocks_dpo")
+    return reasons
+
+
+def _context_boundary_export_reasons(session: Session, context: ContextPack | None, export_type: str) -> List[str]:
+    if not context or not isinstance(context.boundaries_snapshot, dict):
+        return []
+    snapshot = context.boundaries_snapshot
+    reasons = _boundary_export_reasons_from_snapshot(snapshot, export_type)
+    if snapshot.get("requires_boundary_review_before_export") is True:
+        boundary = _source_boundary_for_task(session, snapshot.get("source_task_id"))
+        if boundary is None:
+            reasons.append("source_boundary_review_required")
+        else:
+            reasons.extend(_boundary_export_reasons_from_record(boundary, export_type))
+    return list(dict.fromkeys(reasons))
+
+
+def _context_boundary_gate_summary(session: Session, context: ContextPack | None, export_type: str) -> Dict[str, Any]:
+    if not context or not isinstance(context.boundaries_snapshot, dict):
+        return {"status": "not_required", "reasons": []}
+    snapshot = context.boundaries_snapshot
+    reasons = _context_boundary_export_reasons(session, context, export_type)
+    required = snapshot.get("requires_boundary_review_before_export") is True
+    boundary = _source_boundary_for_task(session, snapshot.get("source_task_id")) if required else None
+    if reasons:
+        status = "blocked"
+    elif required:
+        status = "passed"
+    else:
+        status = "not_required"
+    summary: Dict[str, Any] = {
+        "status": status,
+        "reasons": reasons,
+        "requires_boundary_review_before_export": required,
+        "source_task_id": snapshot.get("source_task_id"),
+    }
+    if boundary:
+        summary.update(
+            {
+                "source_boundary_id": boundary.id,
+                "source_boundary_target_type": boundary.target_type,
+                "source_boundary_target_id": boundary.target_id,
+                "source_boundary_reviewed_by": boundary.reviewed_by,
+                "source_boundary_privacy_level": boundary.privacy_level,
+                "source_boundary_redaction_required": boundary.redaction_required,
+                "source_boundary_usable_for_sft": boundary.usable_for_sft,
+                "source_boundary_usable_for_dpo": boundary.usable_for_dpo,
+            }
+        )
+    return summary
+
+
+def _source_summary(
+    session: Session,
+    gold: GoldVoiceExample | None,
+    context: ContextPack | None,
+    export_type: str,
+) -> Dict[str, Any]:
     if not gold:
         return {}
+    boundary_gate = _context_boundary_gate_summary(session, context, export_type)
     return {
         "gold_voice_example_id": gold.id,
         "gold_human_id": gold.human_id,
@@ -459,6 +622,9 @@ def _source_summary(gold: GoldVoiceExample | None, context: ContextPack | None) 
         "context_pack_id": context.id if context else gold.context_pack_id,
         "context_human_id": context.human_id if context else None,
         "context_boundary_status": context.boundaries_snapshot.get("boundary_status") if context else None,
+        "context_boundary_gate_status": boundary_gate.get("status"),
+        "context_boundary_gate_reasons": boundary_gate.get("reasons", []),
+        "source_boundary_id": boundary_gate.get("source_boundary_id"),
     }
 
 
@@ -551,6 +717,7 @@ def _exclusion_reasons(
 
     if context and context.boundaries_snapshot.get("boundary_status") == "blocked":
         reasons.append("context_pack_boundary_blocked")
+    reasons.extend(_context_boundary_export_reasons(session, context, export_type))
 
     if export_status == "approved" and export_type == "sft":
         reasons.extend(_actual_sft_blockers(payload))
@@ -597,7 +764,7 @@ def export_dry_run(session: Session, export_type: str, *, include_candidates: bo
         row = {
             **row,
             "source": {
-                **_source_summary(gold, context),
+                **_source_summary(session, gold, context, export_type),
                 "task_receipt_id": receipt.id if receipt else None,
                 "task_receipt_human_id": receipt.human_id if receipt else None,
                 "receipt_downstream_status": receipt.downstream_status if receipt else None,
@@ -628,6 +795,7 @@ def export_dry_run(session: Session, export_type: str, *, include_candidates: bo
         "mode": "candidate_allowed" if include_candidates else "approved_only",
         "included_count": len(included),
         "excluded_count": len(excluded),
+        "evidence_corpus_snapshot": _evidence_corpus_snapshot(session),
         "included": included,
         "excluded": excluded,
     }

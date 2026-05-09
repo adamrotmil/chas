@@ -3,9 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import (
+    ai_spine,
     annotations,
     assets,
     boundaries,
+    chat,
     downstream_readiness,
     entities,
     exports,
@@ -20,6 +22,7 @@ from app.routers import (
     retrieval,
     segments,
     tasks,
+    training_board,
     vision,
     voice,
 )
@@ -52,7 +55,10 @@ def runtime_contract() -> dict:
 
 
 app.include_router(assets.router, prefix="/api")
+app.include_router(ai_spine.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
+app.include_router(training_board.router, prefix="/api")
 app.include_router(annotations.router, prefix="/api")
 app.include_router(boundaries.router, prefix="/api")
 app.include_router(downstream_readiness.router, prefix="/api")

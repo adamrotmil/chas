@@ -1,5 +1,6 @@
 import type {
   Annotation,
+  AISpineAudit,
   Asset,
   AssetDossier,
   AssetMirrorResponse,
@@ -14,6 +15,14 @@ import type {
   PhotoContextTopSlice,
   PhotoReviewPrioritySummary,
   AssetUploadResponse,
+  ChatTurnRequest,
+  ChatTurnResponse,
+  ChatAuditResponse,
+  ChatActionCommandRequest,
+  ChatActionPreviewResponse,
+  ChatSessionCreate,
+  ChatSessionListResponse,
+  ChatSessionResponse,
   ContextPack,
   ContextPackBuildRequest,
   ContextPackBuildResponse,
@@ -32,6 +41,8 @@ import type {
   DriveImportResponse,
   Entity,
   EntityCreate,
+  EvidenceCorpusResponse,
+  EvidenceClustersResponse,
   GoldVoiceExample,
   Memory,
   ModelStarterDPOPair,
@@ -66,8 +77,10 @@ import type {
   SourcePairGenerationPreview,
   Task,
   TaskDraft,
+  TrainingBoardResponse,
   VoiceMode,
-  VisionDraftBatchResponse
+  VisionDraftBatchResponse,
+  VisionSchemaResponse
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
@@ -338,8 +351,19 @@ export function createPhotoContextTaskFromInventory(payload: {
   });
 }
 
-export function getAssetPreviewUrl(assetId: string, variant: "thumbnail" | "display" | "original" = "display"): string {
-  return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview?variant=${encodeURIComponent(variant)}`;
+export function getAssetPreviewUrl(
+  assetId: string,
+  variant: "thumbnail" | "display" | "original" = "display",
+  storageAccessToken?: string | null
+): string {
+  const params = new URLSearchParams({ variant });
+  const previewToken =
+    storageAccessToken ||
+    (typeof window !== "undefined" ? window.sessionStorage.getItem("charlesops:gcs-preview-token") : "");
+  if (previewToken) {
+    params.set("storage_access_token", previewToken);
+  }
+  return `${API_BASE}/assets/${encodeURIComponent(assetId)}/preview?${params.toString()}`;
 }
 
 export function getAssetDossier(assetId: string): Promise<AssetDossier> {
@@ -451,6 +475,10 @@ export function getDatasetJsonlUrl(exportType: "sft" | "dpo"): string {
   return `${API_BASE}/dataset-exports/jsonl?export_type=${encodeURIComponent(exportType)}`;
 }
 
+export function getStoredDatasetJsonlUrl(exportId: string): string {
+  return `${API_BASE}/dataset-exports/${encodeURIComponent(exportId)}/jsonl`;
+}
+
 export function getModelStarterSummary(): Promise<ModelStarterSummary> {
   return request<ModelStarterSummary>("/model-starter/summary");
 }
@@ -558,6 +586,10 @@ export function getModelStatus(): Promise<ModelStatus> {
   return request<ModelStatus>("/model-status");
 }
 
+export function getAISpineAudit(): Promise<AISpineAudit> {
+  return request<AISpineAudit>("/ai-spine/audit");
+}
+
 export function getDemoGenerationReadiness(limit = 5): Promise<DemoGenerationReadiness> {
   return request<DemoGenerationReadiness>(`/model-status/demo-readiness?limit=${limit}`);
 }
@@ -656,6 +688,35 @@ export function searchRetrieval(
 ): Promise<RetrievalSearchResponse> {
   const params = new URLSearchParams({ q: query, scope, limit: String(limit) });
   return request<RetrievalSearchResponse>(`/retrieval/search?${params.toString()}`);
+}
+
+export function getEvidenceCorpus(
+  scope: "public" | "family_private" | "private" = "family_private",
+  limit = 100,
+  includeUnreviewed = false
+): Promise<EvidenceCorpusResponse> {
+  const params = new URLSearchParams({ scope, limit: String(limit), include_unreviewed: String(includeUnreviewed) });
+  return request<EvidenceCorpusResponse>(`/retrieval/evidence-corpus?${params.toString()}`);
+}
+
+export function getEvidenceClusters({
+  query,
+  scope = "family_private",
+  limit = 6,
+  perClusterLimit = 3
+}: {
+  query: string;
+  scope?: "public" | "family_private" | "private";
+  limit?: number;
+  perClusterLimit?: number;
+}): Promise<EvidenceClustersResponse> {
+  const params = new URLSearchParams({
+    q: query,
+    scope,
+    limit: String(limit),
+    per_cluster_limit: String(perClusterLimit)
+  });
+  return request<EvidenceClustersResponse>(`/retrieval/evidence-clusters?${params.toString()}`);
 }
 
 export function getRetrievalGapReviewSlice(
@@ -771,10 +832,25 @@ export function createPromptPairBatch(options: PromptPairBatchOptions | number =
   });
 }
 
-export function createVisionDraftBatch(limit = 10): Promise<VisionDraftBatchResponse> {
+export type VisionDraftBatchOptions = {
+  limit?: number;
+  asset_ids?: string[];
+  queue?: string;
+  draft_type?: string;
+  model_name?: string;
+  input_detail?: string;
+  no_live_model_call?: boolean;
+};
+
+export function getVisionSchema(): Promise<VisionSchemaResponse> {
+  return request<VisionSchemaResponse>("/vision/schema");
+}
+
+export function createVisionDraftBatch(options: VisionDraftBatchOptions | number = 10): Promise<VisionDraftBatchResponse> {
+  const payload = typeof options === "number" ? { limit: options, no_live_model_call: true } : options;
   return request<VisionDraftBatchResponse>("/vision/drafts/batches", {
     method: "POST",
-    body: JSON.stringify({ limit, no_live_model_call: true })
+    body: JSON.stringify(payload)
   });
 }
 
@@ -816,6 +892,72 @@ export async function deleteTaskDraft(taskId: string): Promise<void> {
   await request<{ deleted: boolean }>(`/tasks/${taskId}/draft`, {
     method: "DELETE"
   });
+}
+
+export function sendChatTurn(payload: ChatTurnRequest): Promise<ChatTurnResponse> {
+  return request<ChatTurnResponse>("/chat/turn", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function previewChatAction(actionId: string, payload: ChatActionCommandRequest = {}): Promise<ChatActionPreviewResponse> {
+  return request<ChatActionPreviewResponse>(`/chat/actions/${actionId}/preview`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function confirmChatAction(actionId: string, payload: ChatActionCommandRequest = {}): Promise<ChatTurnResponse> {
+  return request<ChatTurnResponse>(`/chat/actions/${actionId}/confirm`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function dismissChatAction(actionId: string, payload: ChatActionCommandRequest = {}): Promise<ChatTurnResponse> {
+  return request<ChatTurnResponse>(`/chat/actions/${actionId}/dismiss`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getChatSession(sessionId: string): Promise<ChatSessionResponse> {
+  return request<ChatSessionResponse>(`/chat/sessions/${sessionId}`);
+}
+
+export function getTrainingBoard(): Promise<TrainingBoardResponse> {
+  return request<TrainingBoardResponse>("/training-board");
+}
+
+export function createChatSession(payload: ChatSessionCreate = {}): Promise<ChatSessionResponse> {
+  return request<ChatSessionResponse>("/chat/sessions", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function listChatSessions(userId = "adam", limit = 20): Promise<ChatSessionListResponse> {
+  return request<ChatSessionListResponse>(`/chat/sessions?user_id=${encodeURIComponent(userId)}&limit=${limit}`);
+}
+
+export function getChatAudit({
+  taskId,
+  sessionId,
+  limit = 20
+}: {
+  taskId?: string | null;
+  sessionId?: string | null;
+  limit?: number;
+}): Promise<ChatAuditResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (taskId) {
+    params.set("task_id", taskId);
+  }
+  if (sessionId) {
+    params.set("session_id", sessionId);
+  }
+  return request<ChatAuditResponse>(`/chat/audit?${params.toString()}`);
 }
 
 export function skipTask(taskId: string, reason?: string): Promise<Task> {
