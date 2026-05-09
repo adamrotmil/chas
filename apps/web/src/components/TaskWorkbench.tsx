@@ -7,13 +7,11 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
-  Copy,
   FileText,
   Flag,
   Gauge,
   Image,
   Mail,
-  RotateCcw,
   Save,
   ShieldCheck,
   SkipForward,
@@ -128,6 +126,77 @@ function isGeneratePairsTask(task: Task): boolean {
 
 function isPromptPairCandidateTask(task: Task): boolean {
   return ["gold_voice_edit", "grounded_prompt_pair_candidate"].includes(task.task_type);
+}
+
+function promptPairApprovalBlocker(task: Task, decisions: Decisions): string {
+  if (!isPromptPairCandidateTask(task)) {
+    return "";
+  }
+  const input = task.input_payload;
+  const artifactMode = decisionString(decisions, "artifact_mode", payloadString(input.artifact_mode, "sft")).toLowerCase();
+  const prompt = decisionString(decisions, "prompt", payloadString(input.prompt)).trim();
+  const content = (
+    decisionString(decisions, "content", payloadString(input.content)) ||
+    decisionString(decisions, "adam_gold_edit", payloadString(input.adam_gold_edit))
+  ).trim();
+  const chosen = (
+    decisionString(decisions, "chosen", payloadString(input.chosen)) ||
+    decisionString(decisions, "adam_gold_edit", payloadString(input.adam_gold_edit)) ||
+    content
+  ).trim();
+  const rejected = (
+    decisionString(decisions, "rejected", payloadString(input.rejected)) ||
+    decisionString(decisions, "model_draft", payloadString(input.model_draft))
+  ).trim();
+  const responseRubric = payloadRecord(decisions.response_rubric);
+  const responseA = payloadRecord(responseRubric.response_a);
+  const voiceAuthenticity = payloadRecord(responseA.voice_authenticity);
+  const rejectedReasonNote = recordString(voiceAuthenticity, "notes").trim();
+  const rejectedReasonStatus = recordString(voiceAuthenticity, "status");
+  const failureModes = decisionStringList(
+    decisions,
+    "failure_modes",
+    Array.isArray(input.failure_modes) ? input.failure_modes.map(String).filter(Boolean) : []
+  );
+  const hasRejectedReason =
+    failureModes.length > 0 ||
+    rejectedReasonNote.length > 0 ||
+    ["minor_issues", "major_issues"].includes(rejectedReasonStatus);
+  const gatePreview = payloadRecord(decisions.export_gate_preview);
+  const gateBlockers = Array.isArray(gatePreview.blockers) ? gatePreview.blockers.map(String).filter(Boolean) : [];
+  const unresolvedGateBlocker = gateBlockers.find((blocker) => {
+    if (blocker === "server_preflight_pending") {
+      return false;
+    }
+    if (blocker === "dpo_rejected_reason_empty" && hasRejectedReason) {
+      return false;
+    }
+    return true;
+  });
+
+  if (!prompt) {
+    return "Prompt is required.";
+  }
+  if (artifactMode === "dpo") {
+    if (!chosen) {
+      return "Chosen response is required.";
+    }
+    if (!rejected) {
+      return "Rejected response is required.";
+    }
+    if (!hasRejectedReason) {
+      return "Rejected reason is required next to Rejected.";
+    }
+  } else if (!content) {
+    return "Answer is required.";
+  }
+  if (unresolvedGateBlocker === "source_boundary_blocks_training") {
+    return "Source boundary review must clear before approval.";
+  }
+  if (unresolvedGateBlocker) {
+    return `${labelFromKey(unresolvedGateBlocker)} must clear before approval.`;
+  }
+  return "";
 }
 
 interface TaskWorkbenchProps {
@@ -401,7 +470,7 @@ function submitRecommendationStatus(suggestion: OperatorAssistantSuggestion | nu
     return "";
   }
   if (recommendation.ready) {
-    return recommendation.reason || "Assistant thinks this ticket is ready to submit.";
+    return recommendation.reason || "Assistant thinks this item is ready to submit.";
   }
   const missing = recommendation.missing_fields?.map(promptFromDecisionKey).join(", ");
   return [recommendation.reason, missing ? `Still needed: ${missing}` : ""].filter(Boolean).join(" ");
@@ -1692,10 +1761,10 @@ function SourcePairGenerationPreviewPanel({
     <section className="source-pair-generation-preview" aria-label="Generate Pairs preview">
       <header>
         <div>
-          <span>Generate Pairs preview</span>
+          <span>What should it generate?</span>
           <strong>
             {preview
-              ? `${preview.projected_created_pair_count} ticket${preview.projected_created_pair_count === 1 ? "" : "s"} projected`
+              ? `${preview.projected_created_pair_count} item${preview.projected_created_pair_count === 1 ? "" : "s"} projected`
               : status || "Preparing preview"}
           </strong>
         </div>
@@ -1710,7 +1779,7 @@ function SourcePairGenerationPreviewPanel({
               <small>{strategyEntries.map(([strategy, count]) => `${count} ${labelFromKey(strategy)}`).join(" / ") || "No pairs"}</small>
             </div>
             <div>
-              <span>Tickets after click</span>
+              <span>Items after click</span>
               <strong>
                 {preview.projected_created_pair_count} create / {preview.projected_held_pair_count} held
               </strong>
@@ -1743,7 +1812,7 @@ function SourcePairGenerationPreviewPanel({
           </div>
           {firstPair ? (
             <div className="source-pair-example-preview" aria-label="First generated pair preview">
-              <span>First ticket preview</span>
+              <span>First item preview</span>
               <strong>
                 {firstPair.artifact_mode.toUpperCase()} Pair {String(firstPair.pair_index).padStart(3, "0")}
               </strong>
@@ -1758,12 +1827,12 @@ function SourcePairGenerationPreviewPanel({
           )}
           <ul className="source-pair-safety-list">
             {preview.safety_boundaries.map((boundary) => (
-              <li key={boundary}>{boundary}</li>
+              <li key={boundary}>{boundary.replace(/\btickets\b/gi, "items").replace(/\bticket\b/gi, "item")}</li>
             ))}
           </ul>
         </>
       ) : (
-        <p className="quiet">{status || "Generation preview will appear here before you click Generate Pairs."}</p>
+        <p className="quiet">{status || "Generation preview will appear here before you click Generate."}</p>
       )}
     </section>
   );
@@ -1790,14 +1859,25 @@ function SourceEvidenceCorpusPanel({
     .slice(0, 4);
   const records = corpus?.records ?? [];
   return (
-    <section className="source-evidence-corpus" aria-label="Unified evidence corpus picker">
+    <details className="source-evidence-corpus" aria-label="Unified evidence corpus picker">
+      <summary>
+        <span>
+          <FileText size={14} />
+          Evidence attached
+        </span>
+        <strong>
+          {loading && !corpus
+            ? "Loading reviewed sources"
+            : `${selectedIds.length || records.length} source${(selectedIds.length || records.length) === 1 ? "" : "s"}`}
+        </strong>
+      </summary>
       <header>
         <div>
           <span>
             <FileText size={14} />
-            Evidence picker
+            Reviewed sources
           </span>
-          <strong>{loading && !corpus ? "Loading reviewed corpus" : `${corpus?.record_count ?? 0} reviewed records`}</strong>
+          <strong>{loading && !corpus ? "Loading reviewed sources" : `${corpus?.record_count ?? 0} reviewed sources`}</strong>
         </div>
         <div>
           <em>{corpus?.excluded_count ?? 0} held</em>
@@ -1828,16 +1908,16 @@ function SourceEvidenceCorpusPanel({
                 aria-pressed={selected}
               >
                 <em>{labelFromKey(record.corpus_family)}</em>
-                <strong>{record.title || record.target_id}</strong>
+                <strong>{record.title || labelFromKey(record.corpus_family)}</strong>
                 <span>{record.input_preview}</span>
               </button>
             );
           })}
         </div>
       ) : (
-        <p className="quiet">Reviewed evidence records will appear here once available.</p>
+        <p className="quiet">Reviewed source matches will appear here once available.</p>
       )}
-    </section>
+    </details>
   );
 }
 
@@ -2042,7 +2122,7 @@ function PhotoGroupContextCard({ task }: { task: Task }) {
       {retrievalQuery ? (
         <div className="retrieval-gap-task-plan" aria-label="Retrieval gap task plan">
           <span>
-            <strong>No memory claim yet</strong>
+            <strong>Adam context required</strong>
             <em>{recordString(retrievalReview, "review_policy", "retrieval_gap_no_claim_until_adam_context")}</em>
           </span>
           {displayRetrievalReviewFields.length > 0 ? (
@@ -3297,7 +3377,7 @@ function PhotoMemoryReviewForm({
     const submitRecommendation = suggestion.submit_recommendation;
     const appliedMessage = submitRecommendation?.requested
       ? submitRecommendation.ready
-        ? "Assistant says this is ready and is submitting the ticket."
+        ? "Assistant says this item is ready and is submitting it."
         : `Assistant says more review is needed before submit: ${submitRecommendation.missing_fields.map(promptFromDecisionKey).join(", ") || "missing fields"}`
       : `Applied to ${appliedFields.join(", ")}.`;
     setOperatorMessages((current) =>
@@ -3398,7 +3478,7 @@ function PhotoMemoryReviewForm({
             ))}
           </div>
           <small>
-            No memory claim until Adam submits context.{" "}
+            Adam context gates downstream use.{" "}
             {retrievalIncompleteFields.length
               ? `Needs: ${retrievalIncompleteFields.slice(0, 3).join(", ")}`
               : "Required context is complete in the current projection."}
@@ -3406,10 +3486,11 @@ function PhotoMemoryReviewForm({
         </section>
       ) : null}
       {hasMachineDraftDefaults ? (
-        <section className="machine-draft-defaults" aria-label="Machine draft defaults">
+        <details className="machine-draft-defaults" aria-label="Machine draft defaults">
+          <summary>Model observations</summary>
           <header>
             <div>
-              <span>Machine-derived defaults</span>
+              <span>Model observations</span>
               <strong>Visible-field scaffold only</strong>
             </div>
             <button type="button" onClick={restoreMachineDraftDefaults}>
@@ -3439,8 +3520,9 @@ function PhotoMemoryReviewForm({
               </span>
             ) : null}
           </div>
-        </section>
+        </details>
       ) : null}
+      <div className="photo-review-group-heading">Visible</div>
       <Field label="Is the machine/scaffold description accurate?">
         <Select
           value={visionAccuracy}
@@ -3491,6 +3573,7 @@ function PhotoMemoryReviewForm({
       >
         <input value={openQuestions} onChange={(event) => setOpenQuestions(event.target.value)} />
       </Field>
+      <div className="photo-review-group-heading">Adam memory</div>
       <Field label="Memory this photo brings up" hint="Write the story, relationship, or association the image evokes." focusKey="why_it_matters">
         <TextArea rows={4} value={adamContextNote} onChange={setAdamContextNote} />
       </Field>
@@ -3562,7 +3645,7 @@ function PhotoMemoryReviewForm({
                 <span>Session progress impact</span>
                 <strong>Item {sessionPositionText}</strong>
               </div>
-              <em>No memory claim until submit</em>
+              <em>Held until submit</em>
             </header>
             <div className="photo-memory-consequence-grid">
               <span data-tone={sessionRequirementTotal > 0 && sessionRequirementCompleteCount === sessionRequirementTotal ? "good" : "warning"}>
@@ -3593,7 +3676,7 @@ function PhotoMemoryReviewForm({
           <section className="retrieval-payoff-panel" aria-label="Task retrieval payoff preview">
             <div>
               <span>Retrieval payoff preview</span>
-              <strong>No generated memory claim</strong>
+              <strong>Adam-authored context only</strong>
               <small>{recordString(retrievalReview, "review_policy", "retrieval_gap_no_claim_until_adam_context")}</small>
             </div>
             <div className="photo-memory-consequence-grid">
@@ -3633,9 +3716,9 @@ function PhotoMemoryReviewForm({
       {reviewQuestions.length > 0 ? (
         <div className="dynamic-question-stack">
           <FormHint title="Questions for Adam">
-            These answers are stored as Adam-provided context, separate from system inference.
+            Answer one guided question at a time. Other model-suggested questions stay available under More questions.
           </FormHint>
-          {reviewQuestions.map((question, index) => {
+          {reviewQuestions.slice(0, 1).map((question, index) => {
             const id = payloadString(question.id, `question_${index + 1}`);
             return (
               <Field
@@ -3647,6 +3730,23 @@ function PhotoMemoryReviewForm({
               </Field>
             );
           })}
+          {reviewQuestions.length > 1 ? (
+            <details className="photo-review-details">
+              <summary>More questions</summary>
+              {reviewQuestions.slice(1).map((question, index) => {
+                const id = payloadString(question.id, `question_${index + 2}`);
+                return (
+                  <Field
+                    key={id}
+                    label={payloadString(question.question, `Question ${index + 2}`)}
+                    hint={payloadString(question.reason)}
+                  >
+                    <TextArea rows={3} value={questionAnswers[id] ?? ""} onChange={(value) => updateQuestionAnswer(id, value)} />
+                  </Field>
+                );
+              })}
+            </details>
+          ) : null}
         </div>
       ) : null}
       <section className="adam-required-focus-drawer" aria-label="Required Adam fields focus">
@@ -3718,6 +3818,7 @@ function PhotoMemoryReviewForm({
         <Rating label="Memory potential" value={memoryPotential} onChange={setMemoryPotential} />
         <Rating label="Privacy sensitivity" value={privacySensitivity} onChange={setPrivacySensitivity} />
       </div>
+      <div className="photo-review-group-heading">Boundary</div>
       <section className="reviewed-memory-readiness-controls" aria-label="Reviewed memory readiness controls">
         <header>
           <div>
@@ -4254,10 +4355,11 @@ function TextSegmentReviewForm({
       <FormHint title="Raw source material">
         Annotate what it is, who made it, what kind of truth it carries, who/where/when it is about, why Adam thinks it matters, and whether it should move into processing.
       </FormHint>
-      <Field label="What should we call this segment?" hint="A short human-readable title for queue cards and retrieval.">
+      <div className="source-review-group-heading">What is this source?</div>
+      <Field label="What should we call this segment?" hint="A short human-readable title for item cards and retrieval.">
         <input value={title} onChange={(event) => setTitle(event.target.value)} />
       </Field>
-      <Field label="What kind of document is it?" hint="The backend stores this as source_genre.">
+      <Field label="What kind of document is it?" hint="Used for filtering and future retrieval.">
         <Select
           value={sourceGenre}
           onChange={setSourceGenre}
@@ -4375,10 +4477,11 @@ function TextSegmentReviewForm({
       <Field label="When is it from or about?" hint="Use a year, date range, or unknown.">
         <input value={dateRange} onChange={(event) => setDateRange(event.target.value)} />
       </Field>
-      <Field label="Why does Adam think it matters?" hint="This is retrieval/context metadata, not training target text by itself.">
+      <Field label="Why does Adam think it matters?" hint="This is search/context detail, not training target text by itself.">
         <TextArea rows={5} value={adamContextNote} onChange={setAdamContextNote} />
       </Field>
-      <Field label="Should this move to segmentation?" hint="Yes creates a separate chunk/privacy processing task before any prompt-pair work.">
+      <div className="source-review-group-heading">Can it be used?</div>
+      <Field label="Can this source move forward?" hint="Yes creates the next review step before prompt-pair work.">
         <Select value={readyForProcessing} onChange={setReadyForProcessing} options={["yes", "later", "no"]} />
       </Field>
       <FormHint title="Privacy">
@@ -4392,8 +4495,8 @@ function TextSegmentReviewForm({
         />
       </Field>
       <div className="toggle-grid">
-        <Toggle label="contains_living_person_sensitive_material" checked={livingPersonSensitive} onChange={setLivingPersonSensitive} />
-        <Toggle label="redaction_required" checked={redactionRequired} onChange={setRedactionRequired} />
+        <Toggle label="Living-person sensitive material" checked={livingPersonSensitive} onChange={setLivingPersonSensitive} />
+        <Toggle label="Redaction required" checked={redactionRequired} onChange={setRedactionRequired} />
       </div>
       <Field label="Why is this privacy decision right?" hint="Note sensitivity, uncertainty, or why this should stay local.">
         <TextArea value={privacyNotes} onChange={setPrivacyNotes} />
@@ -4977,7 +5080,7 @@ function GroundedPromptPairCandidateForm({
   return (
     <div className="form-grid">
       <FormHint title="Prompt Pair Factory">
-        Configure what kind of prompt pair this source should become. This stage creates the review ticket where Adam edits, compares, and approves export artifacts.
+        Configure what kind of prompt pair this source should become. This stage creates the review item where Adam edits, compares, and approves export artifacts.
       </FormHint>
       <Field label="What kind of prompt/response pair should this become?">
         <Select
@@ -5120,13 +5223,13 @@ function GoldVoiceEditForm({
   const initialEditorModeSource = decisionString(initialDecisions, "editor_mode_source");
   const initialEditorMode: PromptPairEditorMode =
     initialEditorModeSource === "manual" || initialEditorModeSource === "assistant"
-      ? validEditorMode(decisionString(initialDecisions, "editor_mode", "yaml"))
-      : "yaml";
+      ? validEditorMode(decisionString(initialDecisions, "editor_mode", "plain"))
+      : "plain";
   const [prompt, setPrompt] = useState(decisionString(initialDecisions, "prompt", payloadString(payload.prompt, "")));
   const [artifactMode, setArtifactMode] = useState<"sft" | "dpo">(initialMode);
   const [artifactModeSource, setArtifactModeSource] = useState(initialArtifactModeSource || "payload");
   const [editorMode, setEditorMode] = useState<PromptPairEditorMode>(initialEditorMode);
-  const [editorModeSource, setEditorModeSource] = useState(initialEditorModeSource || "default_yaml");
+  const [editorModeSource, setEditorModeSource] = useState(initialEditorModeSource || "default_plain");
   const [voiceMode, setVoiceMode] = useState(decisionString(initialDecisions, "voice_mode", payloadString(payload.voice_mode, "father_to_adam")));
   const [voiceModes, setVoiceModes] = useState<VoiceMode[]>([]);
   const [addingVoiceMode, setAddingVoiceMode] = useState(false);
@@ -5340,6 +5443,8 @@ function GoldVoiceEditForm({
     (sourcePhotoId || Object.keys(boundarySnapshot).length > 0);
   const needsDpoRejectedReason =
     artifactMode === "dpo" && (failureModes.length === 0 || promptPairGateBlockers.includes("dpo_rejected_reason_empty"));
+  const currentPromptPairBlocker = promptPairExportReady ? "" : promptPairGateBlockers[0] ?? "";
+  const rejectedReasonNote = responseARubric.voice_authenticity?.notes ?? "";
   const dpoRepairInputPatch =
     dpoRepairProjection?.input_patch && typeof dpoRepairProjection.input_patch === "object"
       ? dpoRepairProjection.input_patch
@@ -5605,6 +5710,16 @@ function GoldVoiceEditForm({
     });
   }
 
+  function handleRejectedReasonChange(value: string) {
+    const currentDecision = responseRubric.response_a.voice_authenticity;
+    updateRubricDecision("response_a", "voice_authenticity", {
+      ...currentDecision,
+      status: value.trim() ? "minor_issues" : "no_issues",
+      notes: value,
+      issue_tags: value.trim() ? uniqueValues([...currentDecision.issue_tags, "not_charles_voice"]) : []
+    });
+  }
+
   function applyPromptPairOperatorFieldUpdates(updates: Decisions): string[] {
     const applied: string[] = [];
     const setIfPresent = (key: string, setter: (value: string) => void) => {
@@ -5695,10 +5810,10 @@ function GoldVoiceEditForm({
     const submitRecommendation = suggestion.submit_recommendation;
     const appliedMessage = submitRecommendation?.requested
       ? submitRecommendation.ready
-        ? "Assistant says this is ready and is submitting the ticket."
+        ? "Assistant says this item is ready and is submitting it."
         : `Assistant says more review is needed before submit: ${submitRecommendation.missing_fields.map(promptFromDecisionKey).join(", ") || "missing fields"}`
       : deleteIntent
-      ? "Delete intent noted. Use Delete candidate to remove this ticket from the active review queue while preserving the audit record."
+      ? "Delete intent noted. Use Delete candidate to remove this item from the active review worklist while preserving the audit record."
       : `Applied to ${appliedFields.join(", ")}.`;
     setOperatorMessages((current) =>
       [
@@ -5719,10 +5834,10 @@ function GoldVoiceEditForm({
     <div className="gold-grid training-artifact-grid">
       <section className="training-editor-intro" aria-label="Training artifact editor">
         <div>
-          <span>Training artifact</span>
-          <strong>{artifactMode.toUpperCase()} gold edit</strong>
+          <span>{artifactMode.toUpperCase()} training row</span>
+          <strong>{prompt || "Untitled prompt"}</strong>
           <p>
-            {promptPairExportReady ? "Approved-ready" : "Candidate review"} / {labelFromKey(effectiveTruthStatus)}
+            {promptPairExportReady ? "Ready" : currentPromptPairBlocker ? `Needs edit: ${labelFromKey(currentPromptPairBlocker)}` : "Candidate"}
           </p>
         </div>
         <div className="prompt-pair-mode-bar">
@@ -5737,17 +5852,7 @@ function GoldVoiceEditForm({
               </button>
             </div>
           </div>
-          <div className="mode-control">
-            <span>Editing</span>
-            <div className="segmented-control" aria-label="Prompt pair editing mode">
-              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => handleEditorModeChange("yaml")}>
-                YAML
-              </button>
-              <button type="button" className={editorMode === "plain" ? "active" : ""} onClick={() => handleEditorModeChange("plain")}>
-                Plain
-              </button>
-            </div>
-          </div>
+          <span className="plain-editing-chip">Plain editor</span>
         </div>
       </section>
       <PhotoPromptPairSourceCard
@@ -5771,7 +5876,7 @@ function GoldVoiceEditForm({
         </details>
       ) : null}
       {generationEvidenceVisible ? (
-        <details className="training-support-drawer" open>
+        <details className="training-support-drawer">
           <summary>
             <span>Generation evidence</span>
             <em>{labelFromKey(sourceEvidenceStatus)}</em>
@@ -5842,7 +5947,7 @@ function GoldVoiceEditForm({
       </details>
       <details className="training-support-drawer training-metadata-drawer">
         <summary>
-          <span>Artifact metadata</span>
+          <span>Details</span>
           <em>{labelFromKey(voiceMode)} / {synthetic === "yes" ? "Synthetic" : "Source-authored"}</em>
         </summary>
       <div className="prompt-grid">
@@ -5893,14 +5998,14 @@ function GoldVoiceEditForm({
             </div>
           </Field>
         ) : null}
-        <Field label="Prompt">
-          <TextArea value={prompt} onChange={setPrompt} rows={5} />
-        </Field>
         <Field label="Context" hint="Freeform context for smart models, reviewers, and future RAG pack builders.">
           <TextArea value={context} onChange={setContext} rows={5} />
         </Field>
       </div>
       </details>
+      <Field label="Prompt" hint="The user-facing prompt this row trains against.">
+        <textarea rows={4} value={prompt} required onChange={(event) => setPrompt(event.target.value)} />
+      </Field>
       {sourceBoundaryFocusVisible ? (
         <section className="source-boundary-training-focus" aria-label="Source boundary training focus aid">
           <header>
@@ -5997,9 +6102,19 @@ function GoldVoiceEditForm({
               <Field label="Chosen" hint="Preferred response. This is the side you want the model to learn.">
                 <LineNumberedTextArea value={chosen} onChange={setChosen} rows={16} />
               </Field>
-              <Field label="Rejected" hint="Less authentic or lower-quality response.">
-                <LineNumberedTextArea value={rejected} onChange={setRejected} rows={16} />
-              </Field>
+              <div className="rejected-with-reason">
+                <Field label="Rejected" hint="Less authentic or lower-quality response.">
+                  <LineNumberedTextArea value={rejected} onChange={setRejected} rows={12} />
+                </Field>
+                <Field label="Rejected reason" hint="Required DPO comparison note. Explain why Rejected is weaker.">
+                  <textarea
+                    rows={4}
+                    value={rejectedReasonNote}
+                    required={artifactMode === "dpo"}
+                    onChange={(event) => handleRejectedReasonChange(event.target.value)}
+                  />
+                </Field>
+              </div>
             </div>
           )}
           <details className="training-review-drawer" open={needsDpoRejectedReason}>
@@ -6016,7 +6131,7 @@ function GoldVoiceEditForm({
                   <span>DPO rejected reason</span>
                   <strong>Rejected side needs a concrete issue note</strong>
                   <p>
-                    Add a Minor or Major issue under the Rejected rubric. The note becomes the DPO reason; it is comparison metadata, not a new memory claim.
+                    Add a Minor or Major issue under the Rejected rubric. The note becomes the DPO reason; it is a comparison note, not a new memory claim.
                   </p>
                 </div>
                 <div className="dpo-repair-inline-projection" aria-label="DPO rejected reason repair projection">
@@ -6067,7 +6182,7 @@ function GoldVoiceEditForm({
                       </div>
                     </>
                   ) : (
-                    <strong>No matching backend repair projection for this ticket yet</strong>
+                    <strong>No matching backend repair projection for this item yet</strong>
                   )}
                 </div>
                 <button type="button" onClick={applyDpoRejectedReasonScaffold}>
@@ -6490,7 +6605,7 @@ export function TaskWorkbench({
       return;
     }
     const confirmed = window.confirm(
-      "Delete this prompt-pair candidate from the active review queue? An audit record will be kept."
+      "Delete this prompt-pair candidate from the active review worklist? A review record will be kept."
     );
     if (!confirmed) {
       return;
@@ -6637,7 +6752,7 @@ export function TaskWorkbench({
         );
       default:
         return (
-          <Field label="Decision payload">
+          <Field label="Review data">
             <TextArea
               value={JSON.stringify(decisions, null, 2)}
               onChange={(value) => {
@@ -6658,7 +6773,7 @@ export function TaskWorkbench({
     payloadString(task.input_payload.source_title) ||
     payloadString(task.input_payload.asset_title) ||
     task.target_id;
-  const formInCanvas = task.task_type === "gold_voice_edit";
+  const formInCanvas = isPromptPairCandidateTask(task);
   const sourceReviewInCanvas = ["text_segment_review", "photo_context", "vision_draft_review"].includes(task.task_type);
   const segmentationInCanvas = task.task_type === "text_segment_boundary_review";
   const formInCenter = formInCanvas || sourceReviewInCanvas || segmentationInCanvas;
@@ -6666,7 +6781,7 @@ export function TaskWorkbench({
   const showPhotoPreview = isPhotoLikeTask(task, asset);
   const showChunkBrowser =
     showSourceReviewCanvas &&
-    ["text_segment_review", "text_segment_boundary_review", "grounded_prompt_pair_candidate"].includes(task.task_type);
+    ["text_segment_boundary_review", "grounded_prompt_pair_candidate"].includes(task.task_type);
   const showEditableExtraction = false;
   const reviewCanvasClass = [
     "review-canvas",
@@ -6676,7 +6791,7 @@ export function TaskWorkbench({
   ]
     .filter(Boolean)
     .join(" ");
-  const reviewGridClass = formInCanvas ? "review-grid training-review-grid" : "review-grid";
+  const reviewGridClass = formInCanvas ? "review-grid training-review-grid quiet-review-grid" : "review-grid";
   const effectiveInspectorWidth = formInCanvas ? Math.min(inspectorWidth, 320) : inspectorWidth;
   const draftMetadataItems = task.task_type === "vision_draft_review" || task.task_type === "photo_context"
     ? visionDigestItems(autosaveDecisions)
@@ -6687,9 +6802,11 @@ export function TaskWorkbench({
     : formInCanvas
     ? promptPairDigestItems(autosaveDecisions)
     : genericDecisionDigestItems(autosaveDecisions);
+  const approvalBlocker = promptPairApprovalBlocker(task, autosaveDecisions);
+  const primaryActionDisabled = busy || Boolean(approvalBlocker);
 
   return (
-    <form className="workbench" onSubmit={handleSubmit}>
+    <form className={formInCanvas ? "workbench quiet-review" : "workbench"} onSubmit={handleSubmit}>
       <header className="workbench-header">
         <div>
           <div className="task-type">
@@ -6709,7 +6826,7 @@ export function TaskWorkbench({
         </div>
         <div className="task-meta">
           {asset ? (
-            <Link className="dossier-action-link" href={`/assets/${asset.id}`} {...tooltip("Built: open the asset dossier with provenance, mirror snapshots, derivatives, boundaries, tasks, and annotations.")}>
+            <Link className="dossier-action-link" href={`/assets/${asset.id}`} {...tooltip("Built: open the source dossier with provenance, mirror snapshots, derivatives, boundaries, and review history.")}>
               Dossier
             </Link>
           ) : null}
@@ -6721,7 +6838,7 @@ export function TaskWorkbench({
             value={reviewStatus}
             onChange={(event) => setReviewStatus(event.target.value)}
             aria-label="Review status"
-            {...tooltip("Local task status selector for the current review session. Submit still creates the durable annotation.")}
+            {...tooltip("Local review status selector for the current session. Submit still saves a durable review record.")}
           >
             <option value="needs_review">Needs Review</option>
             <option value="needs_context">Needs Context</option>
@@ -6729,13 +6846,13 @@ export function TaskWorkbench({
             <option value="approved">Approved</option>
             <option value="blocked">Blocked</option>
           </select>
-          <div className="queue-stepper" aria-label="Queue position">
+          <div className="queue-stepper" aria-label="Worklist position">
             <button
               type="button"
               onClick={onPrevious}
               disabled={queuePosition <= 1}
               aria-label="Previous task"
-              {...tooltip("Built: move to the previous task in the current filtered queue.")}
+              {...tooltip("Built: move to the previous item in the current filtered worklist.")}
             >
               <ChevronLeft size={16} />
             </button>
@@ -6747,7 +6864,7 @@ export function TaskWorkbench({
               onClick={onNext}
               disabled={queuePosition >= queueTotal}
               aria-label="Next task"
-              {...tooltip("Built: move to the next task in the current filtered queue.")}
+              {...tooltip("Built: move to the next item in the current filtered worklist.")}
             >
               <ChevronRight size={16} />
             </button>
@@ -6821,13 +6938,13 @@ export function TaskWorkbench({
                 onClick={() => setInspectorTab(tab)}
                 {...tooltip(
                   tab === "metadata"
-                    ? "Built: compact readout of task metadata and current labels."
+                    ? "Built: compact readout of item details and current labels."
                     : tab === "annotations"
-                      ? "Built: session notes and current draft decision payload."
+                      ? "Built: session notes and the current draft review data."
                       : "Built: task status, autosave state, and session counters."
                 )}
               >
-                {labelFromKey(tab)}
+                {tab === "metadata" ? "Info" : tab === "annotations" ? "Notes" : "History"}
               </button>
             ))}
           </nav>
@@ -6835,11 +6952,11 @@ export function TaskWorkbench({
           {inspectorTab === "metadata" ? (
             <div className="inspector-panel">
               <MetadataValueList
-                title="Task metadata"
+                title="Item details"
                 items={[
-                  { label: "Collection", value: labelFromKey(task.queue) },
+                  { label: "Area", value: labelFromKey(task.queue) },
                   { label: "Source", value: taskSource },
-                  { label: "Type", value: descriptor.label },
+                  { label: "Kind", value: descriptor.label },
                   { label: "Maturity", value: maturityLabel(asset?.maturity_level) },
                   { label: "Import", value: asset?.import_status ? labelFromKey(asset.import_status) : "Unknown" },
                   { label: "Processing", value: asset?.processing_status ? labelFromKey(asset.processing_status) : "Unknown" },
@@ -6848,7 +6965,7 @@ export function TaskWorkbench({
               />
               <section className="preview-band">
                 <div>
-                  <span>Target</span>
+                  <span>Debug target</span>
                   <strong>
                     {task.target_type} / {task.target_id.slice(0, 8)}
                   </strong>
@@ -6858,7 +6975,7 @@ export function TaskWorkbench({
                   <p>{task.reason_created}</p>
                 </div>
                 <div>
-                  <span>Required</span>
+                  <span>Needed</span>
                   <p>{task.required_decisions.map(promptFromDecisionKey).join(", ")}</p>
                 </div>
               </section>
@@ -6879,11 +6996,11 @@ export function TaskWorkbench({
                     />
                     {formInCanvas ? (
                       <FormHint title="Main editor">
-                        Prompt, rejected draft, preferred version, rubric, and export flags are in the center editor so the comparison has enough room.
+                        Prompt and response fields are in the center editor so the comparison has enough room.
                       </FormHint>
                     ) : task.task_type === "vision_draft_review" || task.task_type === "photo_context" ? (
                       <FormHint title="Photo questions">
-                        Answer the photo-memory questions in the center pane below the image; this rail stays as a compact metadata readout.
+                        Answer the photo-memory questions in the center pane below the image; this rail stays as a compact details readout.
                       </FormHint>
                     ) : task.task_type === "text_segment_boundary_review" ? (
                       <FormHint title="Segmentation questions">
@@ -6891,7 +7008,7 @@ export function TaskWorkbench({
                       </FormHint>
                     ) : (
                       <FormHint title="Source questions">
-                        Answer the review questions in the center pane below the source text; this rail stays as a compact metadata readout.
+                        Answer the review questions in the center pane below the source text; this rail stays as a compact details readout.
                       </FormHint>
                     )}
                   </>
@@ -6908,7 +7025,7 @@ export function TaskWorkbench({
                 <TextArea value={notes} onChange={setNotes} rows={5} />
               </Field>
               <section className="decision-summary">
-                <span>Current draft decisions</span>
+                <span>Current draft</span>
                 {Object.entries(autosaveDecisions).slice(0, 12).map(([key, value]) => (
                   <div key={key}>
                     <strong>{promptFromDecisionKey(key)}</strong>
@@ -6951,7 +7068,7 @@ export function TaskWorkbench({
       </div>
 
       <footer className="workbench-actions">
-        <button type="button" onClick={onSkip} disabled={busy} {...tooltip("Built: mark this task skipped and move on without submitting a review annotation.")}>
+        <button type="button" onClick={onSkip} disabled={busy} {...tooltip("Built: mark this item skipped and move on without submitting a review record.")}>
           <SkipForward size={16} />
           Skip
         </button>
@@ -6965,27 +7082,16 @@ export function TaskWorkbench({
             type="button"
             onClick={() => void handleDeleteCandidate()}
             disabled={busy}
-            {...tooltip("Built: reject/delete this prompt-pair candidate from the active queue while preserving an audit annotation.")}
+            {...tooltip("Built: reject/delete this prompt-pair candidate from the active worklist while preserving a review record.")}
           >
             <Trash2 size={16} />
             Delete candidate
           </button>
         ) : null}
-        <span {...tooltip("Planned: duplicate or fork this task/review into a related task.")}>
-          <button type="button" disabled>
-            <Copy size={16} />
-            Duplicate
-          </button>
-        </span>
-        <span {...tooltip("Planned: reset the current local draft back to the last saved task state.")}>
-          <button type="button" disabled>
-            <RotateCcw size={16} />
-            Reset
-          </button>
-        </span>
-        <button className="primary-action" type="submit" disabled={busy} {...tooltip("Built: submit the task, create a durable annotation, and trigger any downstream records for this workflow.")}>
+        {approvalBlocker ? <p className="submit-blocker" role="status">Approve needs: {approvalBlocker}</p> : null}
+        <button className="primary-action" type="submit" disabled={primaryActionDisabled} {...tooltip("Built: submit the item, save a review record, and trigger any downstream records for this workflow.")}>
           <Save size={16} />
-          {isGeneratePairsTask(task) ? (busy ? "Generating" : "Generate Pairs") : busy ? "Submitting" : "Submit"}
+          {isGeneratePairsTask(task) ? (busy ? "Generating" : "Generate") : busy ? "Submitting" : formInCanvas ? "Approve" : "Submit"}
         </button>
         <span className="status-chip" {...tooltip("Status: current form is idle, busy, or recently autosaved.")}>
           <CheckCircle2 size={14} />

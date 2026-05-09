@@ -404,7 +404,7 @@ function confirmedSubmitResponse(sessionId: string, activeTask = dpoTask) {
     session_id: sessionId,
     turn_id: "turn-confirm-submit",
     context_packet_hash: "hash-confirm-submit",
-    assistant_message: "Submitted. I moved that ticket forward and saved the resulting records.",
+    assistant_message: "Submitted. I moved that item forward and saved the resulting records.",
     next_question: null,
     model_name: "gpt-test",
     reasoning_effort: "medium",
@@ -431,7 +431,7 @@ function confirmedSubmitResponse(sessionId: string, activeTask = dpoTask) {
       does_not_mutate_state: false,
       confirmed_action_id: "chat-submit-action-ui"
     },
-    actions: [{ id: "chat-submit-action-ui", type: "submit_task", label: "Submitted ticket", requires_confirmation: false, status: "executed" }],
+    actions: [{ id: "chat-submit-action-ui", type: "submit_task", label: "Submitted item", requires_confirmation: false, status: "executed" }],
     field_updates: {},
     field_diffs: [],
     draft_decisions: activeTask.input_payload,
@@ -1326,7 +1326,7 @@ async function mockWorkbenchBootstrap(
                 {
                   id: "chat-submit-action-ui",
                   type: "submit_task",
-                  label: "Submit this ticket",
+                  label: "Submit this item",
                   requires_confirmation: true,
                   status: "pending_confirmation"
                 }
@@ -1548,6 +1548,7 @@ test("chat can render an approved-only export preview dry run", async ({ page })
   await composer.fill("Preview the SFT export JSONL.");
   await page.locator(".chat-composer").getByRole("button", { name: "Send" }).click();
 
+  await page.locator(".chat-provenance-drawer > summary").click();
   const summary = page.getByLabel("Chat work summary");
   await expect(summary.getByText("Export preview")).toBeVisible();
   await expect(summary.getByText("Included")).toBeVisible();
@@ -1582,6 +1583,7 @@ test("chat can dismiss a pending export build action", async ({ page }) => {
 
   await pendingAction.getByRole("button", { name: "Dismiss" }).click();
 
+  await page.locator(".chat-provenance-drawer > summary").click();
   const summary = page.getByLabel("Chat work summary");
   await expect(summary.getByText("Action dismissed")).toBeVisible();
   await expect(summary.getByText("None")).toBeVisible();
@@ -1595,13 +1597,13 @@ test("training board shows approved pairs accumulating outside the active queue"
   await page.goto("/");
   await page.getByLabel("Workbench navigation").getByRole("button", { name: /^Training\b/ }).click();
 
-  const board = page.getByLabel("Training kanban board");
+  const board = page.getByLabel("Training Set");
   await expect(board).toBeVisible();
-  await expect(board.getByText("Training board")).toBeVisible();
+  await expect(board.getByText("Training Set")).toBeVisible();
   await expect(board.getByLabel("To Do training items").getByText("SFT Pair 403")).toBeVisible();
   await expect(board.getByLabel("Doing training items").getByText("DPO Pair 402")).toBeVisible();
-  await expect(board.getByLabel("To Do training items").getByText("No model call")).toBeVisible();
-  await expect(board.getByLabel("Doing training items").getByText("Live AI")).toBeVisible();
+  await expect(board.getByLabel("To Do training items").getByText("Candidate row waiting for Adam.")).toBeVisible();
+  await expect(board.getByLabel("Doing training items").getByText("In review.")).toBeVisible();
   await expect(board.getByLabel("Needs Fix training items")).toContainText(/dpo rejected reason empty/i);
   await expect(board.getByLabel("Done training items")).toContainText("Approved SFT");
   await expect(board.getByLabel("Done training items")).toContainText("Approved DPO pair");
@@ -1613,7 +1615,8 @@ test("generated prompt-pair editor shows evidence quality and ranked refs", asyn
 
   await page.goto("/");
   await page.getByLabel("Workbench navigation").getByRole("button", { name: /^Training\b/ }).click();
-  await page.getByLabel("Training kanban board").getByRole("button", { name: /DPO Pair 402/ }).click();
+  await page.getByLabel("Training Set").getByLabel("Doing training items").getByRole("button", { name: "Edit" }).click();
+  await page.getByText("Generation evidence").click();
 
   const evidence = page.getByLabel("Generated candidate evidence quality");
   await expect(evidence).toBeVisible();
@@ -1628,6 +1631,7 @@ test("global chrome distinguishes live text AI from scaffolded vision", async ({
 
   await page.goto("/");
 
+  await page.locator(".system-health-menu > summary").click();
   const panel = page.getByLabel("AI spine status");
   await expect(panel).toBeVisible();
   await expect(panel.getByText("Text live")).toBeVisible();
@@ -1674,7 +1678,7 @@ test("chat shows DPO pair context and previews submit without changing the draft
 
   await pendingAction.getByRole("button", { name: "Confirm" }).click();
 
-  await expect(page.getByText("Submitted. I moved that ticket forward and saved the resulting records.")).toBeVisible();
+  await expect(page.getByText("Submitted. I moved that item forward and saved the resulting records.")).toBeVisible();
   await expect(page.getByLabel("Pending chat action preview")).toHaveCount(0);
   expect(actionRequestPaths).toContain("/api/chat/actions/chat-submit-action-ui/confirm");
 });
@@ -1727,14 +1731,16 @@ test("chat renders model plan uncertainty and evidence summary", async ({ page }
   await composer.fill("Chosen is stronger, but identity still needs confirmation.");
   await page.locator(".chat-composer").getByRole("button", { name: "Send" }).click();
 
+  await page.locator(".chat-provenance-drawer > summary").click();
   const modelPlan = page.getByLabel("Chat model plan summary");
-  await expect(modelPlan.getByText("Model plan")).toBeVisible();
+  await modelPlan.locator("summary").click();
+  await expect(modelPlan.getByText("Live model used tools")).toBeVisible();
   await expect(modelPlan.getByText("Medium")).toBeVisible();
   await expect(modelPlan.getByText("Identity still needs Adam confirmation.")).toBeVisible();
   await expect(modelPlan.getByText("Rejected action: Delete Everything")).toBeVisible();
 });
 
-test("chat shows ranked evidence clusters for the active ticket", async ({ page }) => {
+test("chat shows ranked evidence clusters for the active item", async ({ page }) => {
   const clusterQueries: string[] = [];
   const clusterReviewPrompts: string[] = [];
   page.on("request", (request) => {
@@ -1755,7 +1761,7 @@ test("chat shows ranked evidence clusters for the active ticket", async ({ page 
   await page.getByRole("button", { name: /^Chat\b/ }).click();
 
   const clusters = page.getByLabel("Ranked evidence clusters");
-  await expect(clusters.getByText("Evidence clusters")).toBeVisible();
+  await expect(clusters.locator("header").getByText("Evidence", { exact: true })).toBeVisible();
   await expect(clusters.getByText("Cooking journal source cluster")).toBeVisible();
   await expect(clusters.getByText("Source Context")).toBeVisible();
   await expect(
@@ -1765,6 +1771,7 @@ test("chat shows ranked evidence clusters for the active ticket", async ({ page 
       .getByText("hunger teaches you. when i came to America, i had almost no money.", { exact: true })
   ).toBeVisible();
   await expect(clusters.getByRole("button", { name: /Review evidence cluster Cooking journal source cluster/ })).toBeVisible();
+  await clusters.getByText("More evidence").click();
   await expect(clusters.getByText("Reference evidence")).toBeVisible();
   await expect(clusters.getByRole("button", { name: /Review evidence cluster/ })).toHaveCount(1);
   expect(clusterQueries.some((query) => query.includes("How did you learn to cook?"))).toBeTruthy();
@@ -1785,6 +1792,7 @@ test("chat shows compact audit trail for the current work item", async ({ page }
   await composer.fill("Chosen is stronger. The rejected answer is too generic and too formal.");
   await page.locator(".chat-composer").getByRole("button", { name: "Send" }).click();
 
+  await page.locator(".chat-provenance-drawer > summary").click();
   const audit = page.getByLabel("Chat audit trail");
   await expect(audit.getByText("Audit trail")).toBeVisible();
   await expect(audit.getByText("hash-dpo-cri")).toBeVisible();
@@ -1802,6 +1810,7 @@ test("chat audit trail surfaces pending confirmation quality gaps", async ({ pag
   await composer.fill("ready");
   await page.locator(".chat-composer").getByRole("button", { name: "Send" }).click();
 
+  await page.locator(".chat-provenance-drawer > summary").click();
   const audit = page.getByLabel("Chat audit trail");
   await expect(audit.getByLabel("Chat audit quality gaps").getByText("Pending Confirmation")).toBeVisible();
 });
@@ -1824,7 +1833,7 @@ test("chat distinguishes backend action execution from model thinking", async ({
 
   await expect(page.getByText("Applying confirmed action.")).toBeVisible();
   await expect(page.getByText("Applying confirmed action.")).toHaveCount(0);
-  await expect(page.getByText("Submitted. I moved that ticket forward and saved the resulting records.")).toBeVisible();
+  await expect(page.getByText("Submitted. I moved that item forward and saved the resulting records.")).toBeVisible();
 });
 
 test("chat labels SFT rewrites as accepted response and rejected original", async ({ page }) => {
@@ -1882,7 +1891,7 @@ test("chat shows source excerpt context with metadata and classification", async
   await expect(contextPanel.getByText("Journal excerpt").first()).toBeVisible();
   await expect(contextPanel.getByText("Excerpt Adam is reviewing")).toBeVisible();
   await expect(contextPanel.getByText("The rain stayed all morning. I kept looking at the cup in the sink.")).toBeVisible();
-  await expect(contextPanel.getByText("Known metadata")).toBeVisible();
+  await expect(contextPanel.getByText("Known details")).toBeVisible();
   await expect(contextPanel.getByText(/Journal \/ Charles \/ Archival Source/)).toBeVisible();
   await expect(contextPanel.getByText("Current classification")).toBeVisible();
   await expect(contextPanel.getByText(/Charles Voice \/ Family Private/)).toBeVisible();
@@ -1895,7 +1904,7 @@ test("chat shows photo context with preview people and objects", async ({ page }
   await page.getByRole("button", { name: /^Chat\b/ }).click();
 
   const contextPanel = page.getByLabel("Chat work item context");
-  await expect(contextPanel.getByText("Photo ticket")).toBeVisible();
+  await expect(contextPanel.getByText("Photo item")).toBeVisible();
   await expect(contextPanel.getByText("Beach photo")).toBeVisible();
   await expect(contextPanel.locator("img[alt='Beach photo']")).toBeVisible();
   await expect(contextPanel.getByText("Visible people")).toBeVisible();
@@ -1931,7 +1940,7 @@ test("chat keeps context and composer usable on mobile viewport", async ({ page 
   await page.goto("/");
   await page.getByRole("button", { name: /^Chat\b/ }).click();
 
-  await expect(page.getByLabel("Chat work item context").getByText("Photo ticket")).toBeVisible();
+  await expect(page.getByLabel("Chat work item context").getByText("Photo item")).toBeVisible();
   await expect(page.locator(".chat-composer textarea")).toBeVisible();
   await expect(page.locator(".chat-composer").getByRole("button", { name: "Send" })).toBeVisible();
 });
@@ -1963,10 +1972,10 @@ test("chat shows loading state while a turn is in flight", async ({ page }) => {
   await composer.fill("Charles is by the water.");
   await page.locator(".chat-composer").getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByText("Thinking through the current ticket.")).toBeVisible();
-  await expect(page.locator('[role="status"]').filter({ hasText: "Thinking through the current ticket." })).toBeVisible();
+  await expect(page.getByText("Thinking through the current item.")).toBeVisible();
+  await expect(page.locator('[role="status"]').filter({ hasText: "Thinking through the current item." })).toBeVisible();
   await expect(page.locator(".chat-composer").getByRole("button", { name: "Send" })).toBeDisabled();
-  await expect(page.getByText("Thinking through the current ticket.")).toHaveCount(0);
+  await expect(page.getByText("Thinking through the current item.")).toHaveCount(0);
 });
 
 test("chat shows API failure without losing the composer", async ({ page }) => {

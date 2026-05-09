@@ -857,7 +857,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             <em>{state?.photoContextProgress.does_not_create_memory_claim ? "passed" : "needs attention"}</em>
             <strong>Photo progress proof</strong>
             <small>
-              {state?.photoContextProgress.completion_signal ?? "completion signal pending"} / no memory claim / no embedding
+              {state?.photoContextProgress.completion_signal ?? "completion signal pending"}
             </small>
           </span>
         </div>
@@ -894,11 +894,11 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             ) : null}
           </article>
           <article data-tone={metrics && metrics.contextTaskSubmitReadyCount > 0 ? "good" : "warning"}>
-            <span>Photo review queue</span>
+            <span>Photo review worklist</span>
             <strong>
               {metrics?.contextTaskSubmitReadyCount ?? 0} submit-ready / {metrics?.contextTaskBlockedCount ?? 0} blocked
             </strong>
-            <em>{metrics?.contextTaskDraftCount ?? 0} active draft task(s) in the session.</em>
+            <em>{metrics?.contextTaskDraftCount ?? 0} active draft(s) in the session.</em>
           </article>
           <article data-tone={state?.demoReadiness.can_generate ? "good" : "warning"}>
             <span>Demo generation</span>
@@ -908,7 +908,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </div>
       </section>
 
-      <section className="bottleneck-queue" aria-label="Next bottleneck work queue" data-export-tab="overview">
+      <section className="bottleneck-queue" aria-label="Next bottleneck worklist" data-export-tab="overview">
         <header>
           <span>Next bottlenecks</span>
           <strong>Highest-leverage work across pairs, photos, vectors, and demo gate</strong>
@@ -1451,7 +1451,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             {state?.dpoRepairProjection.found ? (
               <div className="repair-projection-receipt" aria-label="DPO repair projection receipt">
                 <span>
-                  <em>Single-ticket repair receipt</em>
+                  <em>Single-item repair receipt</em>
                   <strong>{state.dpoRepairProjection.task_human_id ?? "DPO repair candidate"}</strong>
                   <small>{state.dpoRepairProjection.prompt}</small>
                 </span>
@@ -1835,7 +1835,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             </span>
             <span>
               <em>Review worklists</em>
-              <strong>{metrics?.packPhotoWorklistCount ?? 0} batch queues</strong>
+              <strong>{metrics?.packPhotoWorklistCount ?? 0} batches</strong>
             </span>
             <span>
               <em>Review task progress</em>
@@ -1847,8 +1847,8 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
               <em>Progress proof</em>
               <strong>{state?.photoContextProgress.completion_signal ?? "progress proof pending"}</strong>
               <small>
-                {state?.photoContextProgress.does_not_create_memory_claim && state.photoContextProgress.does_not_create_embedding_record
-                  ? `no memory claim / no embedding / ${state.photoContextProgress.content_sha256.slice(0, 16)}`
+                {state?.photoContextProgress.content_sha256
+                  ? `review proof ${state.photoContextProgress.content_sha256.slice(0, 16)}`
                   : "boundary proof pending"}
               </small>
             </span>
@@ -2005,7 +2005,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
             <span>
               <em>Query context</em>
               <strong>{state?.photoContextSessionPlan.source_query ?? retrievalGapQuery}</strong>
-              <small>{state?.photoContextSessionPlan.does_not_create_memory_claim ? "prioritization only, not a memory claim" : "needs policy check"}</small>
+              <small>{state?.photoContextSessionPlan.does_not_create_memory_claim ? "prioritization only" : "needs policy check"}</small>
             </span>
             <span>
               <em>Field plan</em>
@@ -2025,7 +2025,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
           <section className="photo-context-session-queue" aria-label="Ordered photo context review session">
             <header>
               <div>
-                <span>Ordered session queue</span>
+                <span>Ordered review session</span>
                 <strong>
                   {state?.photoContextSessionPlan.selected_count ?? 0} highest-payoff no-claim photo group(s)
                 </strong>
@@ -2035,7 +2035,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                 onClick={() => void handleCreatePhotoContextReviewSession()}
                 disabled={!state?.photoContextSessionPlan.items.length || photoActionKey === "photo-context-review-session"}
               >
-                {photoActionKey === "photo-context-review-session" ? "Creating" : "Create/open session queue"}
+                {photoActionKey === "photo-context-review-session" ? "Creating" : "Create/open session"}
               </button>
             </header>
             <ol>
@@ -2061,7 +2061,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
                       <em>Request carries query: {actionProvenance.sourceQuery}</em>
                       <small>
                         {actionProvenance.queryIsPrioritizationOnly && actionProvenance.notMemoryClaim
-                          ? "prioritization only, not a memory claim"
+                          ? "prioritization only"
                           : "needs provenance review before task creation"}
                       </small>
                     </div>
@@ -2347,7 +2347,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </section>
 
         <section className="readiness-card" data-export-tab="photos">
-          <h4>Photo Draft Queue {metrics ? `(${metrics.photoReviewTaskCount} ready)` : ""}</h4>
+          <h4>Photo Drafts {metrics ? `(${metrics.photoReviewTaskCount} ready)` : ""}</h4>
           <div className="photo-draft-list">
             {state?.photoDrafts.candidates.slice(0, 5).map((candidate) => (
               <span key={candidate.asset_id}>
@@ -2359,7 +2359,7 @@ export function DownstreamReadinessPanel({ onOpenReviewTask }: DownstreamReadine
         </section>
 
         <section className="readiness-card" data-export-tab="prompt_pairs photos">
-          <h4>Photo Prompt Seeds {metrics ? `(${metrics.photoPairTaskCount} tickets)` : ""}</h4>
+          <h4>Photo Prompt Seeds {metrics ? `(${metrics.photoPairTaskCount} rows)` : ""}</h4>
           <div className="photo-draft-list">
             {state?.photoPairCandidates.candidates.slice(0, 5).map((candidate) => (
               <span key={candidate.metadata_profile_id}>

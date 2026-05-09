@@ -1,17 +1,14 @@
 "use client";
 
 import {
-  Archive,
   CheckCircle2,
   ChevronDown,
   Clock3,
-  ClipboardList,
   Database,
   Download,
   FileText,
   FolderArchive,
   Image,
-  Inbox,
   KeyRound,
   MessageCircle,
   RefreshCw,
@@ -104,32 +101,25 @@ const topNav: NavItem[] = [
     id: "chat",
     label: "Chat",
     icon: <MessageCircle size={15} />,
-    tooltip: "Work through ready tickets conversationally with draft-first actions."
+    tooltip: "Answer one guided question at a time and let the assistant update the active item."
   },
-  { id: "intake", label: "Intake", icon: <Inbox size={15} />, tooltip: "Import local or Drive artifacts and start the first triage task." },
   {
     id: "review",
-    label: "Review",
-    icon: <CheckCircle2 size={15} />,
-    tooltip: "Review sources, segments, photos, OCR, boundaries, and privacy before anything moves downstream."
+    label: "Sources",
+    icon: <FileText size={15} />,
+    tooltip: "Import and review source documents, photos, segments, OCR, boundaries, and privacy."
   },
   {
     id: "make_gold",
-    label: "Training",
+    label: "Training Set",
     icon: <Sparkles size={15} />,
-    tooltip: "Review each generated SFT or DPO artifact as a singleton downstream training item."
+    tooltip: "Edit and approve generated SFT or DPO rows before export."
   },
   {
     id: "exports",
     label: "Exports",
     icon: <FolderArchive size={15} />,
-    tooltip: "Inspect export dry-runs and build JSONL only from boundary-cleared artifacts."
-  },
-  {
-    id: "model_starter",
-    label: "Model Starter",
-    icon: <ClipboardList size={15} />,
-    tooltip: "Edit and export the trainer-ready Charles model starter package."
+    tooltip: "Build training files and review the generated model starter package."
   }
 ];
 
@@ -138,10 +128,10 @@ const sideNav: NavItem[] = [
 ];
 
 const collectionDefs: CollectionItem[] = [
-  { id: "all", label: "All", icon: <Database size={15} />, tooltip: "Show every ready task in this workflow stage." },
+  { id: "all", label: "All", icon: <Database size={15} />, tooltip: "Show every ready item in this workflow stage." },
   { id: "photos", label: "Photos", icon: <Image size={15} />, tooltip: "Photo, scan, and vision-memory review tasks." },
   { id: "text", label: "Text", icon: <FileText size={15} />, tooltip: "Documents, source text, email, OCR, and segmentation tasks." },
-  { id: "gold", label: "Training", icon: <Download size={15} />, tooltip: "SFT and DPO tickets waiting for gold review." },
+  { id: "gold", label: "Training Set", icon: <Download size={15} />, tooltip: "SFT and DPO rows waiting for gold review." },
   { id: "needs_boundary", label: "Needs Boundary", icon: <ShieldCheck size={15} />, tooltip: "Anything waiting on privacy, quote, retrieval, or export clearance." }
 ];
 
@@ -235,13 +225,13 @@ function promptPairReadinessDelta(task: Task): { label: string; detail: string; 
   if (payload.candidate_requires_adam_gold_edit === true || payload.truth_status === "model_generated") {
     return {
       label: "Needs Adam gold edit",
-      detail: "Opening this ticket can improve the draft, but it remains candidate-only until Adam confirms gold.",
+      detail: "Opening this item can improve the draft, but it remains candidate-only until Adam confirms gold.",
       tone: "accent"
     };
   }
   return {
-    label: "Approved-ready signal",
-    detail: "No local blocker signal on the queue row; backend preflight still verifies inside the editor.",
+    label: "Ready",
+    detail: "No local blocker signal on the row; backend preflight still verifies inside the editor.",
     tone: "good"
   };
 }
@@ -256,27 +246,27 @@ function sourceReviewGenerationDelta(task: Task): { label: string; detail: strin
   if (chunkingStrategy === "prompt_pair_yaml") {
     return {
       label: "YAML prompt-pair source",
-      detail: `${countLabel}; editor dry-run previews singleton tickets before Generate Pairs.`,
+      detail: `${countLabel}; editor dry-run previews singleton items before Generate Pairs.`,
       tone: "good"
     };
   }
   if (chunkingStrategy === "natural_section") {
     return {
       label: "Natural-section source",
-      detail: `${countLabel}; editor dry-run previews one ticket per complete section.`,
+      detail: `${countLabel}; editor dry-run previews one item per complete section.`,
       tone: "good"
     };
   }
   if (chunkCount && chunkCount > 1) {
     return {
       label: "Chunked source review",
-      detail: `${countLabel}; editor dry-run shows which chunks become prompt-pair tickets.`,
+      detail: `${countLabel}; editor dry-run shows which chunks become prompt-pair items.`,
       tone: "accent"
     };
   }
   return {
     label: "Generate Pairs dry-run available",
-    detail: "Open this source to preview ticket count, strategy, spans, and safety before clicking.",
+    detail: "Open this source to preview item count, strategy, spans, and safety before clicking.",
     tone: "warning"
   };
 }
@@ -321,6 +311,60 @@ function taskTypeLabel(taskType: string): string {
 function modeLabel(mode: NavMode): string {
   const found = sideNav.find((item) => item.id === mode) ?? topNav.find((item) => item.id === mode);
   return found?.label ?? queueLabel(mode);
+}
+
+function statusLabelForTask(task: Task): "Candidate" | "Needs edit" | "Ready" | "Approved" | "Exported" {
+  const payload = task.input_payload;
+  const exportStatus = typeof payload.export_status === "string" ? payload.export_status : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  if (exportStatus.includes("export") || status.includes("export")) {
+    return "Exported";
+  }
+  if (
+    payload.candidate_requires_adam_gold_edit === false ||
+    payload.truth_status === "adam_expert_reconstruction" ||
+    payload.gold_voice_example_id
+  ) {
+    return "Approved";
+  }
+  if (task.task_type === "gold_voice_edit" && payload.candidate_requires_adam_gold_edit !== false) {
+    return "Needs edit";
+  }
+  return task.status === "ready" ? "Ready" : "Candidate";
+}
+
+function queueStatusSentence(
+  task: Task,
+  taskAsset?: Asset,
+  priorityItem?: PhotoReviewPriorityItem | null,
+  mode?: NavMode,
+  collection?: CollectionId
+): { status: "Candidate" | "Needs edit" | "Ready" | "Approved" | "Exported"; text: string; tone: "good" | "warning" | "danger" | "accent" | "info" | "neutral" } {
+  const promptPairDelta = promptPairReadinessDelta(task);
+  const photoDelta = mode === "review" && collection === "photos" ? photoRowReadinessDelta(task, priorityItem) : null;
+  const sourceReviewDelta = sourceReviewGenerationDelta(task);
+  const submitOutcomeBadge = mode === "review" && collection === "photos" ? photoSubmitOutcomeBadge(priorityItem) : null;
+  const firstBadge = submitOutcomeBadge ?? readinessBadgesForTask(task, taskAsset)[0];
+  const delta = promptPairDelta ?? photoDelta ?? sourceReviewDelta;
+  if (delta) {
+    return {
+      status: statusLabelForTask(task),
+      text: delta.label,
+      tone: delta.tone
+    };
+  }
+  if (firstBadge) {
+    return {
+      status: statusLabelForTask(task),
+      text: firstBadge.label,
+      tone: firstBadge.tone
+    };
+  }
+  return {
+    status: statusLabelForTask(task),
+    text: "Open item",
+    tone: "info"
+  };
 }
 
 function isPromptPairTask(task: Task): boolean {
@@ -571,7 +615,7 @@ function photoPromotionDryRun(task?: Task | null): PhotoPromotionDryRun | null {
         "Downstream choice: set Yes for retrieval",
         "Boundary review for family/public use"
       ],
-      safeguards: ["No memory claim yet", "No vector write before submit", "Not SFT/DPO training material"]
+      safeguards: ["Adam context required", "No vector write before submit", "Not SFT/DPO training material"]
     };
   }
 
@@ -593,7 +637,7 @@ function photoPromotionDryRun(task?: Task | null): PhotoPromotionDryRun | null {
         "Downstream choice: set Yes for retrieval",
         "Boundary review for family/public use"
       ],
-      safeguards: ["No memory claim yet", "Filename/title evidence only until reviewed", "Not SFT/DPO training material"]
+      safeguards: ["Adam context required", "Filename/title evidence only until reviewed", "Not SFT/DPO training material"]
     };
   }
 
@@ -607,7 +651,7 @@ function photoPromotionDryRun(task?: Task | null): PhotoPromotionDryRun | null {
     submitOutcomeDetail: "The review creates durable context, then waits for Adam-authored memory detail and downstream clearance before vector handoff.",
     vectorHandoffPreviewStatus: "held_until_required_context",
     missingFields: ["Reviewed visual description", "Adam context or answers", "Downstream choice: set Yes for retrieval"],
-    safeguards: ["No memory claim yet", "No vector write before submit", "Not SFT/DPO training material"]
+    safeguards: ["Adam context required", "No vector write before submit", "Not SFT/DPO training material"]
   };
 }
 
@@ -625,7 +669,9 @@ function photoPromotionDryRunFromPriorityItem(item?: PhotoReviewPriorityItem | n
     submitOutcomeDetail: item.submit_outcome_detail || "Submit stores durable review context without making a training example.",
     vectorHandoffPreviewStatus: item.vector_handoff_preview_status || "unknown",
     missingFields: item.missing_fields,
-    safeguards: item.safeguards
+    safeguards: item.safeguards.map((safeguard) =>
+      safeguard.toLowerCase().includes("memory claim") ? "Adam context required" : safeguard
+    )
   };
 }
 
@@ -754,6 +800,7 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
     case "review":
       return (
         [
+          "asset_triage",
           "text_segment_review",
           "text_segment_boundary_review",
           "boundary_review",
@@ -776,7 +823,7 @@ function taskMatchesMode(task: Task, mode: NavMode): boolean {
 }
 
 function modeUsesCollectionFilter(mode: NavMode): boolean {
-  return mode !== "chat" && mode !== "exports" && mode !== "model_starter";
+  return mode === "review" || mode === "make_gold" || mode === "intake";
 }
 
 function defaultCollectionForMode(mode: NavMode): CollectionId {
@@ -1108,7 +1155,7 @@ function SubmitReceiptBanner({ annotation }: { annotation: Annotation | null }) 
             Item {reviewSessionSequence} / {reviewSessionSelectedCount}
           </strong>
           <em>
-            {reviewSessionQuery ? `Query: ${reviewSessionQuery}` : "Photo-context session queue"}
+            {reviewSessionQuery ? `Query: ${reviewSessionQuery}` : "Photo-context review session"}
             {reviewSessionPlanHash ? ` / plan ${reviewSessionPlanHash.slice(0, 8)}` : ""}
           </em>
           <p>No-claim gap moved toward vector-safe memory readiness.</p>
@@ -1172,7 +1219,7 @@ function SubmittedResultPanel({
   ].filter(([, value]) => value);
   const vectorStatus = receiptString(receipt, "vector_handoff_status");
   const vectorReason = receiptString(receipt, "vector_handoff_reason");
-  const nextAction = receiptString(receipt, "next_action_label") || "Pick the next ready task";
+  const nextAction = receiptString(receipt, "next_action_label") || "Pick the next ready item";
   const receiptPhotoPairBatch = annotationPhotoPromptPairBatch(annotation);
   const effectivePhotoPairBatch = photoPairBatch ?? receiptPhotoPairBatch;
   const photoPairBatchId = effectivePhotoPairBatch?.generation_batch_id || effectivePhotoPairBatch?.generation_batch_ids?.[0] || "";
@@ -1183,7 +1230,7 @@ function SubmittedResultPanel({
       <header>
         <div>
           <span>Where it went</span>
-          <strong>This task is now submitted, so it left the ready queue.</strong>
+          <strong>This item is now submitted, so it left the ready worklist.</strong>
           <p>
             The review was saved as durable records. You can inspect the IDs here, open the source dossier, or move into Exports to see
             aggregate downstream readiness.
@@ -1267,7 +1314,7 @@ export default function Home() {
   const [promptPairProgress, setPromptPairProgress] = useState<PromptPairReviewProgress | null>(null);
   const [dpoRepairPacket, setDpoRepairPacket] = useState<DpoRejectedReasonRepairPacket | null>(null);
   const [shellWidths, setShellWidths] = useState<Record<ShellColumn, number>>({ sidebar: 212, queue: 326 });
-  const [selectedMode, setSelectedMode] = useState<NavMode>("review");
+  const [selectedMode, setSelectedMode] = useState<NavMode>("chat");
   const [selectedCollection, setSelectedCollection] = useState<CollectionId>("all");
   const [promptPairFilters, setPromptPairFilters] = useState<PromptPairFilters>(defaultPromptPairFilters);
   const [photoTaskFocus, setPhotoTaskFocus] = useState<PhotoTaskFocus>(defaultPhotoTaskFocus);
@@ -1369,7 +1416,7 @@ export default function Home() {
     setSelectedCollection("all");
     setActivePhotoPairBatchId(null);
     setQueueSearch("");
-    setSelectedMode(upload.segment_ids.length > 0 ? "review" : "intake");
+    setSelectedMode("review");
   }
 
   useEffect(() => {
@@ -1543,7 +1590,7 @@ export default function Home() {
     promptPairAudit?.blocker_review_actions?.filter((action) => action.action_type === "open_prompt_pair_blocker" && typeof action.task_id === "string") ?? [];
   const selectedCollectionDef = collectionDefs.find((collection) => collection.id === selectedCollection) ?? collectionDefs[0];
   const queueScopeTitle = selectedMode === "make_gold"
-    ? "Training queue"
+    ? "Training Set"
     : showCollectionFilters
       ? selectedCollectionDef.label
       : modeLabel(selectedMode);
@@ -1552,9 +1599,9 @@ export default function Home() {
     : queueSearch.trim()
     ? `${filteredTasks.length} of ${modeTasks.length} items match "${queueSearch.trim()}"`
     : selectedMode === "make_gold"
-      ? `${filteredTasks.length} editable artifacts`
+      ? `${filteredTasks.length} editable training rows`
     : selectedMode === "review" && selectedCollection === "photos" && photoTaskFocus === "fastest_vector"
-      ? `${filteredTasks.length} fastest vector-memory tasks`
+      ? `${filteredTasks.length} fastest vector-memory reviews`
     : `${filteredTasks.length} items`;
   const selectedTaskIndex = selectedTask ? filteredTasks.findIndex((task) => task.id === selectedTask.id) : -1;
   const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets]);
@@ -1840,7 +1887,7 @@ export default function Home() {
       const annotation = await deletePromptPairCandidate(
         selectedTask.id,
         reason || "Rejected from Prompt Pairs editor",
-        "Removed from active review queue by Adam during prompt-pair triage."
+        "Removed from active review worklist by Adam during prompt-pair triage."
       );
       setLastSubmitAnnotation(annotation);
       await load();
@@ -1915,22 +1962,13 @@ export default function Home() {
           <span>Synced</span>
         </div>
 
-        <AISpinePanel />
-
-        <nav className="top-nav" aria-label="Primary workbench sections">
-          {topNav.map((item) => (
-            <button
-              key={item.id}
-              className={selectedMode === item.id ? "active" : ""}
-              type="button"
-              onClick={() => navigateMode(item.id)}
-              {...tooltip(item.tooltip)}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
+        <details className="system-health-menu">
+          <summary {...tooltip("System health and AI readiness details.")}>
+            <CheckCircle2 size={14} />
+            <span>System</span>
+          </summary>
+          <AISpinePanel />
+        </details>
 
         <button
           className="avatar-button"
@@ -1954,6 +1992,7 @@ export default function Home() {
         <aside className="sidebar">
           <nav className="primary-rail" aria-label="Workbench navigation">
             {sideNav.map((item) => {
+              const count = modeCounts[item.id] ?? 0;
               return (
                 <button
                   key={item.id}
@@ -1964,7 +2003,7 @@ export default function Home() {
                 >
                   {item.icon}
                   <span>{item.label}</span>
-                  <em>{modeCounts[item.id]}</em>
+                  {count > 0 ? <em>{count}</em> : null}
                 </button>
               );
             })}
@@ -2003,11 +2042,11 @@ export default function Home() {
                 <div className="prompt-pair-filter-block prompt-pair-workstream" aria-label="Training review controls">
                   <div className="training-workstream-summary" aria-label="Training review summary">
                     <span className="rail-heading">Training set</span>
-                    <strong>{promptPairReadinessCounts.candidate ?? 0} need gold edit</strong>
-                    <small>
-                      {promptPairReadinessCounts.approved ?? 0} approved-ready /{" "}
+                  <strong>{promptPairReadinessCounts.candidate ?? 0} need edit</strong>
+                  <small>
+                      {promptPairReadinessCounts.approved ?? 0} approved /{" "}
                       {promptPairAudit?.inspectable_pair_count ?? promptPairBaseTasks.length} inspected
-                    </small>
+                  </small>
                   </div>
                   {promptPairHeldAction?.task_id ? (
                     <button
@@ -2028,10 +2067,10 @@ export default function Home() {
                   <details className="prompt-pair-advanced-filters">
                     <summary>
                       <span>Filters and blockers</span>
-                      <em>{activePromptPairFilterCount > 0 ? `${activePromptPairFilterCount} active` : "All artifacts"}</em>
+                      <em>{activePromptPairFilterCount > 0 ? `${activePromptPairFilterCount} active` : "All rows"}</em>
                     </summary>
                     <div className="filter-heading-row">
-                      <span className="rail-heading">Artifact filters</span>
+                      <span className="rail-heading">Row filters</span>
                       {activePromptPairFilterCount > 0 ? (
                         <button
                           type="button"
@@ -2077,7 +2116,7 @@ export default function Home() {
                     ))}
                     <div className="prompt-pair-readiness-summary" aria-label="Training export readiness counts">
                       <span>
-                        <em>Approved-ready</em>
+                        <em>Approved</em>
                         <strong>{promptPairReadinessCounts.approved ?? 0}</strong>
                       </span>
                       <span>
@@ -2091,7 +2130,7 @@ export default function Home() {
                     </div>
                     {promptPairProgress ? (
                       <div className="prompt-pair-progress-proof" aria-label="Training review progress proof">
-                        <span>Review progress proof</span>
+                      <span>Progress proof</span>
                         <strong>
                           {promptPairProgress.candidate_count} candidate / {promptPairProgress.approved_count} approved
                         </strong>
@@ -2104,14 +2143,14 @@ export default function Home() {
                       </div>
                     ) : null}
                     {dpoRepairPacket?.items.length ? (
-                      <div className="prompt-pair-dpo-repair-queue" aria-label="DPO rejected reason repair queue">
-                        <span>DPO rejected reason queue</span>
+                    <div className="prompt-pair-dpo-repair-queue" aria-label="DPO rejected reason repair worklist">
+                        <span>DPO rejected reason worklist</span>
                         <strong>
                           {dpoRepairPacket.reported_candidate_count} shown / {dpoRepairPacket.total_candidate_count} rejected-reason gaps
                         </strong>
                         <small>{dpoRepairPacket.completion_signal}</small>
                         <small>
-                          Review-only packet. {dpoRepairPacket.requires_adam_gold_edit ? "Adam gold edit still required." : "Adam review status unknown."}
+                          Review-only worklist. {dpoRepairPacket.requires_adam_gold_edit ? "Adam gold edit still required." : "Adam review status unknown."}
                         </small>
                         <ol>
                           {dpoRepairPacket.items.slice(0, 3).map((item) => (
@@ -2189,7 +2228,7 @@ export default function Home() {
                   </label>
                   {photoContextProgress ? (
                     <div className="photo-context-progress-proof" aria-label="Photo context review progress proof">
-                      <span>Photo context progress proof</span>
+                      <span>Photo progress proof</span>
                       <strong>
                         {photoContextProgress.submit_ready_count} submit-ready / {photoContextProgress.reported_task_count} tasks
                       </strong>
@@ -2204,8 +2243,6 @@ export default function Home() {
                       ) : null}
                       <small>{photoContextProgress.completion_signal}</small>
                       <code>
-                        {photoContextProgress.does_not_create_memory_claim ? "no memory claim" : "memory claim risk"} /{" "}
-                        {photoContextProgress.does_not_create_embedding_record ? "no embedding" : "embedding risk"} /{" "}
                         {photoContextProgress.content_sha256.slice(0, 16)}
                       </code>
                     </div>
@@ -2217,7 +2254,7 @@ export default function Home() {
             <div className="mode-context">
               <span className="rail-heading">Current scope</span>
               <strong>{modeLabel(selectedMode)}</strong>
-              <p>Source filters are hidden because this workstream has a dedicated queue.</p>
+            <p>Source filters are hidden because this workstream has a dedicated worklist.</p>
             </div>
           )}
 
@@ -2247,20 +2284,17 @@ export default function Home() {
           {...tooltip("Built: drag or use arrow keys to resize the navigation column.")}
         />
 
-        <section className="queue-panel" aria-label="Task queue">
+        <section className="queue-panel" aria-label="Worklist">
           <header className="queue-panel-header">
             <div>
               <h1>{queueScopeTitle}</h1>
               <span>{queueScopeSubtitle}</span>
             </div>
             <div className="queue-tools">
-              <button type="button" aria-label="Filter queue" {...tooltip("Planned: advanced queue filters beyond the left source filters.")}>
-                <Archive size={15} />
-              </button>
-              <label className="queue-search" {...tooltip("Built: search task titles, prompts, responses, source filenames, and voice modes in the current queue scope.")}>
+              <label className="queue-search" {...tooltip("Built: search item titles, prompts, responses, source filenames, and voice modes in the current worklist.")}>
                 <Search size={15} />
                 <input
-                  aria-label="Search task queue"
+                  aria-label="Search worklist"
                   type="search"
                   value={queueSearch}
                   onChange={(event) => {
@@ -2298,11 +2332,15 @@ export default function Home() {
           </header>
 
           <div className="queue-panel-body">
-            {selectedMode === "intake" ? (
-              <div className="intake-stack">
+            {selectedMode === "review" || selectedMode === "intake" ? (
+              <details className="intake-stack sources-import-strip">
+                <summary>
+                  <span>Add sources</span>
+                  <em>Files and Drive imports</em>
+                </summary>
                 <ArtifactUpload onUploaded={handleArtifactUploaded} />
                 <GoogleDriveImport onImported={load} />
-              </div>
+              </details>
             ) : null}
 
             {error ? <div className="error-banner">{error}</div> : null}
@@ -2382,7 +2420,7 @@ export default function Home() {
                     </strong>
                   </div>
                   <div className="photo-preview-access">
-                    <em>{photoPreviewAccessStatus || "No memory claim until Adam context"}</em>
+                    <em>{photoPreviewAccessStatus || "Adam context required"}</em>
                     {hasGoogleStoragePreviewConfig() ? (
                       <button type="button" onClick={handleEnablePhotoPreviews}>
                         <KeyRound size={13} />
@@ -2465,7 +2503,7 @@ export default function Home() {
                   ))}
                 </div>
                 <p>
-                  These are generated draft tickets from reviewed photo memory records. Keep the strongest versions, edit them in
+                  These are generated draft items from reviewed photo memory records. Keep the strongest versions, edit them in
                   Charles' voice, and delete weak candidates before export review.
                 </p>
               </details>
@@ -2523,27 +2561,15 @@ export default function Home() {
               </section>
             ) : null}
 
-            <div className="task-list" aria-label="Tasks">
+            <div className="task-list" aria-label="Items">
               {loading ? <p className="quiet">Loading workbench data...</p> : null}
-              {!loading && filteredTasks.length === 0 ? <p className="quiet">No ready tasks in this collection.</p> : null}
+              {!loading && filteredTasks.length === 0 ? <p className="quiet">No items need work here.</p> : null}
               {filteredTasks.map((task) => {
                 const taskAsset = assetsById.get(assetIdForTask(task) ?? "");
-                const priorityBadge = selectedMode === "review" && selectedCollection === "photos" ? photoPriorityBadge(task) : null;
                 const priorityItem = selectedMode === "review" && selectedCollection === "photos"
                   ? photoPriorityItemForTask(photoPrioritySummary, task)
                   : null;
-                const submitOutcomeBadge = photoSubmitOutcomeBadge(priorityItem);
-                const photoDelta = selectedMode === "review" && selectedCollection === "photos"
-                  ? photoRowReadinessDelta(task, priorityItem)
-                  : null;
-                const readinessBadges = [
-                  ...(priorityBadge ? [priorityBadge] : []),
-                  ...(submitOutcomeBadge ? [submitOutcomeBadge] : []),
-                  ...readinessBadgesForTask(task, taskAsset)
-                ].slice(0, 3);
-                const promptPairDelta = promptPairReadinessDelta(task);
-                const sourceReviewDelta = sourceReviewGenerationDelta(task);
-                const ordinalLabel = promptPairOrdinalLabel(task);
+                const queueStatus = queueStatusSentence(task, taskAsset, priorityItem, selectedMode, selectedCollection);
                 const showTaskThumbnail =
                   taskAsset?.asset_type === "photo" && taskAsset.processing_status === "image_preview_ready";
                 return (
@@ -2556,7 +2582,7 @@ export default function Home() {
                     ].filter(Boolean).join(" ")}
                     type="button"
                     onClick={() => openTask(task.id)}
-                    {...tooltip(`Open task: ${taskTitle(task)}. ${taskSubtitle(task)}`)}
+                    {...tooltip(`Open item: ${taskTitle(task)}. ${taskSubtitle(task)}`)}
                   >
                     {showTaskThumbnail ? (
                       <img
@@ -2569,35 +2595,10 @@ export default function Home() {
                     <span>{taskTypeLabel(task.task_type)}</span>
                     <strong>{taskTitle(task)}</strong>
                     <em>{taskSubtitle(task)}</em>
-                    {readinessBadges.length > 0 ? (
-                      <div className="queue-readiness-strip" aria-label="Readiness badges">
-                        {readinessBadges.map((badge) => (
-                          <span key={badge.label} data-tone={badge.tone} title={badge.tooltip}>
-                            {badge.label}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    {promptPairDelta ? (
-                      <div className="prompt-pair-row-delta" aria-label="Prompt pair readiness delta" data-tone={promptPairDelta.tone}>
-                        <span>{promptPairDelta.label}</span>
-                        <small>{promptPairDelta.detail}</small>
-                      </div>
-                    ) : null}
-                    {photoDelta ? (
-                      <div className="photo-row-delta" aria-label="Photo readiness delta" data-tone={photoDelta.tone}>
-                        <span>{photoDelta.label}</span>
-                        <small>{photoDelta.detail}</small>
-                      </div>
-                    ) : null}
-                    {sourceReviewDelta ? (
-                      <div className="source-review-row-delta" aria-label="Source review generation delta" data-tone={sourceReviewDelta.tone}>
-                        <span>{sourceReviewDelta.label}</span>
-                        <small>{sourceReviewDelta.detail}</small>
-                      </div>
-                    ) : null}
-                    {ordinalLabel ? <small>{ordinalLabel}</small> : null}
-                    <time>{formatRelativeTime(task.updated_at)}</time>
+                    <small data-status={queueStatus.status}>{queueStatus.status}</small>
+                    <div className="task-row-status" aria-label="Readiness sentence" data-tone={queueStatus.tone}>
+                      {queueStatus.text}
+                    </div>
                   </button>
                 );
               })}
@@ -2605,11 +2606,11 @@ export default function Home() {
           </div>
 
           <footer className="queue-pagination">
-            <button type="button" aria-label="Previous page" {...tooltip("Planned: paginate longer task lists. Current queue is shown as one scrolling list.")}>
+            <button type="button" aria-label="Previous page" {...tooltip("Planned: paginate longer item lists. Current worklist is shown as one scrolling list.")}>
               ‹
             </button>
             <span>1 of {Math.max(1, Math.ceil(filteredTasks.length / 10))}</span>
-            <button type="button" aria-label="Next page" {...tooltip("Planned: paginate longer task lists. Current queue is shown as one scrolling list.")}>
+            <button type="button" aria-label="Next page" {...tooltip("Planned: paginate longer item lists. Current worklist is shown as one scrolling list.")}>
               ›
             </button>
           </footer>
@@ -2626,12 +2627,21 @@ export default function Home() {
           tabIndex={0}
           onPointerDown={(event) => startShellResize("queue", event)}
           onKeyDown={(event) => handleShellResizeKey("queue", event)}
-          {...tooltip("Built: drag or use arrow keys to resize the queue column.")}
+          {...tooltip("Built: drag or use arrow keys to resize the worklist column.")}
         />
 
         <section className="workbench-column" ref={workbenchColumnRef}>
           {selectedMode === "exports" ? (
-            <ExportDryRunPanel onOpenReviewTask={openPhotoReviewTask} />
+            <div className="exports-workbench-stack">
+              <ExportDryRunPanel onOpenReviewTask={openPhotoReviewTask} />
+              <details className="model-starter-export-drawer">
+                <summary>
+                  <span>Model starter package</span>
+                  <em>Generated summary and trainer handoff</em>
+                </summary>
+                <ModelStarterPanel />
+              </details>
+            </div>
           ) : selectedMode === "model_starter" ? (
             <ModelStarterPanel />
           ) : selectedMode === "chat" ? (

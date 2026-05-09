@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ExternalLink, FileText, GitPullRequestArrow, Loader2, PackageCheck, RefreshCw } from "lucide-react";
+import { CheckCircle2, ExternalLink, FileText, GitPullRequestArrow, Loader2, PackageCheck } from "lucide-react";
 import { getTrainingBoard } from "@/lib/api";
 import type { TrainingBoardColumn, TrainingBoardItem, TrainingBoardResponse } from "@/lib/types";
 
@@ -47,6 +47,19 @@ function itemSecondaryText(item: TrainingBoardItem): string {
   return item.artifactMode === "dpo" ? item.rejected || "" : item.rejected || "";
 }
 
+function itemStatusSentence(item: TrainingBoardItem): string {
+  if (item.blockers.length > 0) {
+    return `Needs edit: ${item.blockers[0].replaceAll("_", " ")}`;
+  }
+  if (item.column === "done" || item.column === "exported") {
+    return "Approved and ready for export.";
+  }
+  if (item.column === "doing") {
+    return "In review.";
+  }
+  return "Candidate row waiting for Adam.";
+}
+
 function artifactIds(item: TrainingBoardItem): string[] {
   return [
     item.taskHumanId ? `Task ${item.taskHumanId}` : "",
@@ -65,51 +78,49 @@ function BoardCard({ item, onOpenTask, onViewExports }: { item: TrainingBoardIte
     <>
       <div className="training-board-card-head">
         <span>{item.artifactMode.toUpperCase()}</span>
-        <em>{item.exportStatus}</em>
+        <em>{item.column === "done" || item.column === "exported" ? "Approved" : "Candidate"}</em>
       </div>
       <strong>{preview(item.title, 120) || "Untitled training item"}</strong>
-      {item.subtitle ? <p>{item.subtitle}</p> : null}
-      {item.labels?.length ? (
-        <div className="training-board-labels" aria-label="Training item provenance labels">
-          {item.labels.slice(0, 5).map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </div>
-      ) : null}
-      {primary ? (
-        <div className="training-board-card-text">
-          <span>{item.artifactMode === "dpo" ? "Chosen" : "Content"}</span>
-          <p>{preview(primary)}</p>
-        </div>
-      ) : null}
-      {secondary ? (
-        <div className="training-board-card-text">
-          <span>Rejected</span>
-          <p>{preview(secondary, 140)}</p>
-        </div>
-      ) : null}
-      {item.blockers.length > 0 ? (
-        <div className="training-board-blockers" aria-label="Training item blockers">
-          {item.blockers.slice(0, 3).map((blocker) => (
-            <span key={blocker}>{blocker.replaceAll("_", " ")}</span>
-          ))}
-        </div>
-      ) : null}
-      {artifactIds(item).length > 0 ? (
-        <div className="training-board-ids" aria-label="Training artifact identifiers">
-          {artifactIds(item).slice(0, 5).map((id) => (
-            <span key={id}>{id}</span>
-          ))}
-        </div>
+      <p>{itemStatusSentence(item)}</p>
+      {primary ? <p className="training-board-card-excerpt">{preview(primary, 150)}</p> : null}
+      {secondary || item.subtitle || item.labels?.length || artifactIds(item).length > 0 ? (
+        <details className="training-board-card-details">
+          <summary>Details</summary>
+          {item.subtitle ? <p>{item.subtitle}</p> : null}
+          {secondary ? (
+            <div className="training-board-card-text">
+              <span>Rejected</span>
+              <p>{preview(secondary, 140)}</p>
+            </div>
+          ) : null}
+          {item.labels?.length ? (
+            <div className="training-board-labels" aria-label="Training item provenance labels">
+              {item.labels.slice(0, 5).map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </div>
+          ) : null}
+          {artifactIds(item).length > 0 ? (
+            <div className="training-board-ids" aria-label="Training artifact identifiers">
+              {artifactIds(item).slice(0, 5).map((id) => (
+                <span key={id}>{id}</span>
+              ))}
+            </div>
+          ) : null}
+        </details>
       ) : null}
     </>
   );
 
   if (canOpenTask) {
     return (
-      <button type="button" className="training-board-card" onClick={() => item.taskId && onOpenTask(item.taskId)}>
+      <article className="training-board-card" tabIndex={0}>
         {cardBody}
-      </button>
+        <button type="button" className="training-board-inline-action" onClick={() => item.taskId && onOpenTask(item.taskId)}>
+          <FileText size={13} />
+          Edit
+        </button>
+      </article>
     );
   }
   return (
@@ -136,7 +147,9 @@ function BoardColumn({ column, onOpenTask, onViewExports }: { column: TrainingBo
         {column.items.length > 0 ? (
           column.items.map((item) => <BoardCard key={item.id} item={item} onOpenTask={onOpenTask} onViewExports={onViewExports} />)
         ) : (
-          <p className="training-board-empty">No items</p>
+          <p className="training-board-empty">
+            {column.id === "done" ? "No approved rows yet. Finish one review." : "No items need work here."}
+          </p>
         )}
       </div>
     </section>
@@ -154,7 +167,7 @@ export function TrainingBoard({ refreshKey, onOpenTask, onViewExports }: Trainin
     try {
       setBoard(await getTrainingBoard());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not load training board.");
+      setError(caught instanceof Error ? caught.message : "Could not load Training Set.");
     } finally {
       setLoading(false);
     }
@@ -169,14 +182,14 @@ export function TrainingBoard({ refreshKey, onOpenTask, onViewExports }: Trainin
   const approvedCount = (board?.counts.approved_sft ?? 0) + (board?.counts.approved_dpo ?? 0);
 
   return (
-    <section className="training-board" aria-label="Training kanban board">
+    <section className="training-board" aria-label="Training Set">
       <header className="training-board-header">
         <div>
           <span>
             <GitPullRequestArrow size={15} />
-            Training board
+            Training Set
           </span>
-          <h2>Approved pairs stay visible</h2>
+          <h2>Approved rows accumulate here</h2>
           <p>
             {compactCount(board?.counts.todo)} to do / {compactCount(board?.counts.doing)} doing / {compactCount(doneCount)} done or exported
           </p>
@@ -186,13 +199,9 @@ export function TrainingBoard({ refreshKey, onOpenTask, onViewExports }: Trainin
             <CheckCircle2 size={14} />
             {approvedCount} approved
           </span>
-          <button type="button" onClick={() => void loadBoard()} disabled={loading}>
-            {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-            Refresh
-          </button>
           <button type="button" onClick={onViewExports}>
             <PackageCheck size={14} />
-            Exports
+            Build training file
           </button>
         </div>
       </header>
@@ -203,7 +212,12 @@ export function TrainingBoard({ refreshKey, onOpenTask, onViewExports }: Trainin
         </div>
       ) : null}
       <div className="training-board-columns" aria-busy={loading ? "true" : "false"}>
-        {loading && columns.length === 0 ? <p className="training-board-empty">Loading training board...</p> : null}
+        {loading && columns.length === 0 ? (
+          <p className="training-board-empty">
+            <Loader2 size={14} className="spin" />
+            Loading Training Set...
+          </p>
+        ) : null}
         {columns.map((column) => (
           <BoardColumn key={column.id} column={column} onOpenTask={onOpenTask} onViewExports={onViewExports} />
         ))}

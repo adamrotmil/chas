@@ -120,7 +120,7 @@ function promptPairMode(task: Task | null): string {
 
 function taskTitle(task: Task | null): string {
   if (!task) {
-    return "No active ticket";
+    return "No active item";
   }
   const payload = task.input_payload ?? {};
   if (isPromptPairTask(task)) {
@@ -275,7 +275,7 @@ function responseTaskSelection(response: ChatTurnResponse | null): string {
     return `No ready ${label}`;
   }
   if (reason === "highest_priority_ready_task") {
-    return "Highest-priority ready ticket";
+    return "Highest-priority ready item";
   }
   return "";
 }
@@ -497,7 +497,7 @@ function fieldSourceLabel(task: Task, field: string): string {
     if (field === "export_flags") {
       return "Export policy";
     }
-    return "Review metadata";
+    return "Review details";
   }
   if (isSourceReviewTask(task)) {
     return "Source review";
@@ -638,7 +638,7 @@ function submittedArtifactRows(annotation: Annotation | null | undefined): { lab
   const generatedPairTaskCount = new Set([...sourcePairTaskIds, ...photoPairTaskIds]).size;
   const pairGenerationRun = asJsonRecord(records.pair_generation_run);
   return [
-    ["Annotation", annotation?.id ?? ""],
+    ["Review record", annotation?.id ?? ""],
     ["Gold", stringValue(records.gold_voice_example_id)],
     ["SFT", stringValue(records.sft_candidate_id)],
     ["DPO", stringValue(records.dpo_pair_id)],
@@ -666,11 +666,14 @@ function ChatWorkSummaryPanel({ summary, onOpenTask }: { summary?: JsonRecord; o
       ? safeSummary.rejected_actions.map(asJsonRecord).filter((item): item is JsonRecord => Boolean(item))
       : [];
     return (
-      <section className="chat-work-summary" data-kind="model-plan" aria-label="Chat model plan summary">
-        <span>
-          <Sparkles size={14} />
-          Model plan
-        </span>
+      <details className="chat-work-summary chat-model-receipt" data-kind="model-plan" aria-label="Chat model plan summary">
+        <summary>
+          <span>
+            <Sparkles size={14} />
+            Live model used tools
+          </span>
+          <em>{toolReceipts.length} tool{toolReceipts.length === 1 ? "" : "s"}</em>
+        </summary>
         <div>
           <article>
             <em>Confidence</em>
@@ -703,7 +706,7 @@ function ChatWorkSummaryPanel({ summary, onOpenTask }: { summary?: JsonRecord; o
         {rejectedActions.length > 0 ? (
           <p>Rejected action: {rejectedActions.map((action) => labelFromKey(summaryString(action, "type", "unsupported action"))).join(", ")}</p>
         ) : null}
-      </section>
+      </details>
     );
   }
   if (["export_preview", "export_build_confirmation", "export_build_confirmed"].includes(summaryType)) {
@@ -807,11 +810,11 @@ function ChatWorkSummaryPanel({ summary, onOpenTask }: { summary?: JsonRecord; o
           <strong>{summaryString(topItem, "area_label", "None")}</strong>
         </article>
         <article>
-          <em>Queue</em>
+          <em>Area</em>
           <strong>{orderedAreaKeys.slice(0, 3).map(labelFromKey).join(", ") || "Clear"}</strong>
         </article>
       </div>
-      <p>{summaryString(topItem, "summary", "No active bottleneck is reported by the current readiness queue.")}</p>
+      <p>{summaryString(topItem, "summary", "No active bottleneck is reported by the current worklist.")}</p>
       {topTaskId ? (
         <button type="button" className="chat-work-summary-action" onClick={() => onOpenTask(topTaskId)}>
           Open top blocker
@@ -937,83 +940,96 @@ function ChatEvidenceClusterPanel({
   loading,
   error,
   busy,
-  onReviewCluster
+  onReviewCluster,
+  compact = false
 }: {
   clusters: EvidenceClustersResponse | null;
   loading: boolean;
   error: string | null;
   busy: boolean;
   onReviewCluster: (cluster: EvidenceCluster) => void;
+  compact?: boolean;
 }) {
   if (!clusters && !loading && !error) {
     return null;
   }
   const items = clusters?.clusters ?? [];
+  const visibleItems = compact ? items.slice(0, 1) : items.slice(0, 3);
+  const hiddenItems = compact ? items.slice(1, 4) : [];
+  const renderCluster = (cluster: EvidenceCluster) => {
+    const topRecords = cluster.top_records ?? [];
+    const matchedTerms = (cluster.matched_terms ?? []).map(String).filter(Boolean);
+    const reviewType = evidenceClusterReviewType(cluster);
+    return (
+      <article key={cluster.cluster_id || cluster.cluster_key}>
+        <div>
+          <em>{labelFromKey(cluster.cluster_family)}</em>
+          <strong>{compact ? "Best source match" : `${cluster.record_count} records`}</strong>
+        </div>
+        <h3>{previewText(cluster.display_title, 88) || shortId(cluster.cluster_key, 14)}</h3>
+        {reviewType ? (
+          <button
+            type="button"
+            aria-label={`Review evidence cluster ${cluster.display_title}`}
+            onClick={() => onReviewCluster(cluster)}
+            disabled={busy}
+          >
+            Review
+          </button>
+        ) : (
+          <span className="chat-evidence-cluster-reference">Reference evidence</span>
+        )}
+        <p>{previewText(cluster.planning_hint, compact ? 100 : 150)}</p>
+        {!compact && matchedTerms.length > 0 ? (
+          <div className="chat-evidence-cluster-terms" aria-label="Cluster matched terms">
+            {matchedTerms.slice(0, 4).map((term) => (
+              <span key={term}>{term}</span>
+            ))}
+          </div>
+        ) : null}
+        {topRecords.length > 0 ? (
+          <ul aria-label="Top cluster records">
+            {topRecords.slice(0, compact ? 1 : 2).map((record) => (
+              <li key={record.embedding_record_id}>
+                <strong>{previewText(record.title, 76) || shortId(record.target_id, 8)}</strong>
+                <span>{previewText(record.input_preview, compact ? 86 : 110)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </article>
+    );
+  };
   return (
-    <section className="chat-evidence-cluster-panel" aria-label="Ranked evidence clusters">
+    <section className="chat-evidence-cluster-panel" data-compact={compact ? "true" : "false"} aria-label="Ranked evidence clusters">
       <header>
         <span>
           <Sparkles size={14} />
-          Evidence clusters
+          Evidence
         </span>
-        <em>{loading && !clusters ? "Loading" : `${clusters?.cluster_count ?? 0} clusters`}</em>
+        <em>{loading && !clusters ? "Loading" : compact ? "best match" : `${clusters?.cluster_count ?? 0} clusters`}</em>
       </header>
       <p>
         {error
           ? error
           : clusters
-            ? `Query: ${previewText(clusters.query, 150)}`
-            : "Loading reviewed document, photo, and voice clusters for this ticket."}
+            ? compact
+              ? "Most relevant reviewed source for this item."
+              : `Query: ${previewText(clusters.query, 150)}`
+            : "Loading reviewed document, photo, and voice clusters for this item."}
       </p>
       {items.length > 0 ? (
-        <div className="chat-evidence-cluster-grid">
-          {items.slice(0, 3).map((cluster) => {
-            const topRecords = cluster.top_records ?? [];
-            const matchedTerms = (cluster.matched_terms ?? []).map(String).filter(Boolean);
-            const reviewType = evidenceClusterReviewType(cluster);
-            return (
-              <article key={cluster.cluster_id || cluster.cluster_key}>
-                <div>
-                  <em>{labelFromKey(cluster.cluster_family)}</em>
-                  <strong>{cluster.record_count} records</strong>
-                </div>
-                <h3>{previewText(cluster.display_title, 88) || shortId(cluster.cluster_key, 14)}</h3>
-                {reviewType ? (
-                  <button
-                    type="button"
-                    aria-label={`Review evidence cluster ${cluster.display_title}`}
-                    onClick={() => onReviewCluster(cluster)}
-                    disabled={busy}
-                  >
-                    Review cluster
-                  </button>
-                ) : (
-                  <span className="chat-evidence-cluster-reference">Reference evidence</span>
-                )}
-                <p>{previewText(cluster.planning_hint, 150)}</p>
-                {matchedTerms.length > 0 ? (
-                  <div className="chat-evidence-cluster-terms" aria-label="Cluster matched terms">
-                    {matchedTerms.slice(0, 4).map((term) => (
-                      <span key={term}>{term}</span>
-                    ))}
-                  </div>
-                ) : null}
-                {topRecords.length > 0 ? (
-                  <ul aria-label="Top cluster records">
-                    {topRecords.slice(0, 2).map((record) => (
-                      <li key={record.embedding_record_id}>
-                        <strong>{previewText(record.title, 76) || shortId(record.target_id, 8)}</strong>
-                        <span>{previewText(record.input_preview, 110)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
+        <>
+          <div className="chat-evidence-cluster-grid">{visibleItems.map(renderCluster)}</div>
+          {hiddenItems.length > 0 ? (
+            <details className="chat-more-evidence">
+              <summary>More evidence</summary>
+              <div className="chat-evidence-cluster-grid">{hiddenItems.map(renderCluster)}</div>
+            </details>
+          ) : null}
+        </>
       ) : !loading && !error ? (
-        <p>No reviewed evidence cluster matched this ticket yet.</p>
+        <p>No reviewed evidence cluster matched this item yet.</p>
       ) : null}
     </section>
   );
@@ -1039,7 +1055,7 @@ function ChatContextPanel({
       <section className="chat-context-panel" aria-label="Chat work item context">
         <div className="chat-context-empty">
           <MessageCircle size={18} />
-          <span>Select a ticket from the queue to start a focused conversation.</span>
+          <span>Select an item from the worklist to start a focused conversation.</span>
         </div>
       </section>
     );
@@ -1078,14 +1094,14 @@ function ChatContextPanel({
           ) : (
             <div>
               <Image size={24} />
-              <span>No preview image is attached to this ticket.</span>
+              <span>No preview image is attached to this item.</span>
             </div>
           )}
         </div>
         <div className="chat-context-details">
           <span>
             <Image size={14} />
-            Photo ticket
+            Photo item
           </span>
           <strong>{title}</strong>
           <div className="chat-context-facts">
@@ -1202,7 +1218,7 @@ function ChatContextPanel({
           </div>
           <div className="chat-context-facts">
             <article>
-              <em>Known metadata</em>
+              <em>Known details</em>
               <p>
                 {[sourceGenre, authorship, truthStatus]
                   .filter(Boolean)
@@ -1230,7 +1246,7 @@ function ChatContextPanel({
       <div className="chat-context-details">
         <span>
           <FileText size={14} />
-          Review ticket
+          Review item
         </span>
         <strong>{title}</strong>
         <ShortText
@@ -1248,9 +1264,84 @@ function ChatContextPanel({
   );
 }
 
+function ChatContextStrip({
+  task,
+  asset,
+  sourceAsset,
+  draftDecisions,
+  workSurface,
+  photoPreviewAccessToken,
+  workSummary,
+  evidenceClusters,
+  evidenceClustersLoading,
+  evidenceClustersError,
+  evidenceBusy,
+  onReviewCluster,
+  evidenceCorpus,
+  evidenceLoading,
+  evidenceError,
+  audit,
+  auditLoading,
+  auditError,
+  onOpenTask
+}: {
+  task: Task | null;
+  asset?: Asset;
+  sourceAsset?: Asset;
+  draftDecisions?: JsonRecord;
+  workSurface?: JsonRecord;
+  photoPreviewAccessToken?: string;
+  workSummary?: JsonRecord;
+  evidenceClusters: EvidenceClustersResponse | null;
+  evidenceClustersLoading: boolean;
+  evidenceClustersError: string | null;
+  evidenceBusy: boolean;
+  onReviewCluster: (cluster: EvidenceCluster) => void;
+  evidenceCorpus: EvidenceCorpusResponse | null;
+  evidenceLoading: boolean;
+  evidenceError: string | null;
+  audit: ChatAuditResponse | null;
+  auditLoading: boolean;
+  auditError: string | null;
+  onOpenTask: (taskId: string) => void;
+}) {
+  return (
+    <details className="chat-context-strip" open>
+      <summary>
+        <span>Context</span>
+        <strong>{task ? taskTitle(task) : "Choose an item"}</strong>
+      </summary>
+      <div className="chat-context-strip-body">
+        <ChatContextPanel
+          task={task}
+          asset={asset}
+          sourceAsset={sourceAsset}
+          draftDecisions={draftDecisions}
+          workSurface={workSurface}
+          photoPreviewAccessToken={photoPreviewAccessToken}
+        />
+        <ChatEvidenceClusterPanel
+          clusters={evidenceClusters}
+          loading={evidenceClustersLoading}
+          error={evidenceClustersError}
+          busy={evidenceBusy}
+          onReviewCluster={onReviewCluster}
+          compact
+        />
+        <details className="chat-provenance-drawer">
+          <summary>Provenance</summary>
+          <ChatWorkSummaryPanel summary={workSummary} onOpenTask={onOpenTask} />
+          <ChatEvidenceShelf corpus={evidenceCorpus} loading={evidenceLoading} error={evidenceError} />
+          <ChatAuditPanel audit={audit} loading={auditLoading} error={auditError} />
+        </details>
+      </div>
+    </details>
+  );
+}
+
 function initialAssistantMessage(task: Task | null): string {
   if (!task) {
-    return "Which ticket should we work through first?";
+    return "Which item should we work through first?";
   }
   if (isPhotoChatTask(task)) {
     return "I’m showing you this photo. What can you tell me about who or what is visible, starting only with what you know for sure?";
@@ -1260,7 +1351,7 @@ function initialAssistantMessage(task: Task | null): string {
       ? "I’m showing you the prompt plus chosen and rejected responses. What feels stronger, weaker, generic, wrong, or missing?"
       : "I’m showing you the prompt and draft response. How does the response sound, and what should we rewrite before it becomes gold?";
   }
-  return "What should we decide for this ticket?";
+  return "What should we decide for this item?";
 }
 
 export function ChatWorkbench({
@@ -1305,7 +1396,7 @@ export function ChatWorkbench({
     previewPayload: JsonRecord | null;
   } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [busyMessage, setBusyMessage] = useState("Thinking through the current ticket.");
+  const [busyMessage, setBusyMessage] = useState("Thinking through the current item.");
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const selectedTaskIdRef = useRef<string | null>(selectedTask?.id ?? null);
@@ -1532,7 +1623,7 @@ export function ChatWorkbench({
         ? "Dismissing pending action."
         : options?.confirmSubmit || options?.confirmAction
           ? "Applying confirmed action."
-          : "Thinking through the current ticket."
+          : "Thinking through the current item."
     );
     setBusy(true);
     setError(null);
@@ -1602,7 +1693,7 @@ export function ChatWorkbench({
       setError(caught instanceof Error ? caught.message : "Chat turn failed.");
     } finally {
       setBusy(false);
-      setBusyMessage("Thinking through the current ticket.");
+      setBusyMessage("Thinking through the current item.");
     }
   }
 
@@ -1767,7 +1858,7 @@ export function ChatWorkbench({
           </span>
           <h2>{taskTitle(activeTask)}</h2>
           <p>
-            {activeTask ? `${activeTask.human_id} / ${labelFromKey(activeTask.task_type)}` : "Pick a ready ticket from the queue."}
+            {activeTask ? `${labelFromKey(activeTask.task_type)}` : "Pick a ready item from the worklist."}
             {taskSelectionLabel ? ` / ${taskSelectionLabel}` : ""}
           </p>
         </div>
@@ -1799,27 +1890,27 @@ export function ChatWorkbench({
         </div>
       </header>
 
-      <ChatContextPanel
+      <ChatContextStrip
         task={activeTask}
         asset={activeAsset}
         sourceAsset={activeSourceAsset}
         draftDecisions={draftDecisions}
         workSurface={responseWorkSurface}
         photoPreviewAccessToken={photoPreviewAccessToken}
+        workSummary={lastResponse?.work_summary}
+        evidenceClusters={evidenceClusters}
+        evidenceClustersLoading={evidenceClustersLoading}
+        evidenceClustersError={evidenceClustersError}
+        evidenceBusy={busy}
+        onReviewCluster={handleEvidenceClusterReview}
+        evidenceCorpus={evidenceCorpus}
+        evidenceLoading={evidenceLoading}
+        evidenceError={evidenceError}
+        audit={audit}
+        auditLoading={auditLoading}
+        auditError={auditError}
+        onOpenTask={onOpenTask}
       />
-
-      <div className="chat-summary-stack">
-        <ChatWorkSummaryPanel summary={lastResponse?.work_summary} onOpenTask={onOpenTask} />
-        <ChatEvidenceClusterPanel
-          clusters={evidenceClusters}
-          loading={evidenceClustersLoading}
-          error={evidenceClustersError}
-          busy={busy}
-          onReviewCluster={handleEvidenceClusterReview}
-        />
-        <ChatEvidenceShelf corpus={evidenceCorpus} loading={evidenceLoading} error={evidenceError} />
-        <ChatAuditPanel audit={audit} loading={auditLoading} error={auditError} />
-      </div>
 
       <div className="chat-body" role="log" aria-label="Chat messages" aria-live="polite" aria-relevant="additions text">
         {messages.map((message, index) => (
@@ -1950,11 +2041,11 @@ export function ChatWorkbench({
 
       <aside className="chat-action-bar" aria-label="Chat actions">
         <div>
-          <span>Active ticket</span>
+          <span>Active item</span>
           <strong>{responseTaskTitle(lastResponse) || taskTitle(activeTask)}</strong>
         </div>
         <button type="button" onClick={() => activeTask?.id && onOpenTask(activeTask.id)} disabled={!activeTask}>
-          Open ticket
+          Open item
         </button>
         <button type="button" onClick={() => void runTurn("ready", { confirmSubmit: true })} disabled={!readyToSubmit || busy}>
           <CheckCircle2 size={14} />
@@ -1966,11 +2057,11 @@ export function ChatWorkbench({
         <section className="chat-submitted-destination" aria-label="Submitted training destination">
           <div>
             <span>Submitted</span>
-            <strong>{continuedTaskHumanId ? `Opened ${continuedTaskHumanId}` : "Moved to the Training board"}</strong>
+            <strong>{continuedTaskHumanId ? `Opened ${continuedTaskHumanId}` : "Moved to the Training Set"}</strong>
             <p>
               {continuedTaskHumanId
-                ? "This ticket left the ready queue. The next item in this batch is now active."
-                : "This ticket left the ready queue. Approved SFT/DPO artifacts now accumulate in Done, or Needs Fix if an export gate still blocks them."}
+                ? "This item left the ready worklist. The next item in this batch is now active."
+                : "This item left the ready worklist. Approved SFT/DPO rows now accumulate for export."}
             </p>
           </div>
           {submittedRows.length > 0 ? (
@@ -1985,7 +2076,7 @@ export function ChatWorkbench({
           ) : null}
           <button type="button" onClick={onViewTrainingBoard}>
             <FileText size={14} />
-            Training board
+            Training Set
           </button>
         </section>
       ) : null}

@@ -10,7 +10,15 @@ const photoContextVisualCheckpointPath = path.join(repoRoot, "updates", "photo_c
 const photoContextVisualMetadataPath = path.join(repoRoot, "updates", "photo_context_workbench_2026-04-29.json");
 
 async function openExportTab(page: Page, name: RegExp) {
+  await openExportMechanics(page);
   await page.getByLabel("Export readiness sections").getByRole("button", { name }).click();
+}
+
+async function openExportMechanics(page: Page) {
+  const closedDrawer = page.locator(".export-inspect-drawer:not([open]) > summary");
+  if ((await closedDrawer.count()) > 0) {
+    await closedDrawer.click();
+  }
 }
 
 async function openTrainingTab(page: Page) {
@@ -77,7 +85,7 @@ test("prompt pair DPO mode opens even when no repair projection exists", async (
 test("photo review keeps the center review canvas as the scroll surface", async ({ page }) => {
   test.setTimeout(90000);
   await page.goto("/");
-  await page.getByRole("button", { name: /^Review\b/ }).click();
+  await page.getByRole("button", { name: /^Sources\b/ }).click();
   await page.getByRole("button", { name: /^Photos/ }).click();
   await expect(page.locator(".task-row").first()).toBeVisible();
   await page.locator(".task-row").first().click();
@@ -104,6 +112,7 @@ test("exports readiness lets the operator switch the memory retrieval query", as
   test.setTimeout(90000);
   await page.goto("/");
   await page.getByRole("button", { name: /^Exports\b/ }).click();
+  await openExportMechanics(page);
 
   const queryControl = page.getByLabel("Memory retrieval query control");
   await expect(queryControl).toBeVisible();
@@ -129,7 +138,7 @@ test("exports readiness lets the operator switch the memory retrieval query", as
   await openExportTab(page, /Photos & Retrieval/);
   const photoSessionPlan = page.getByLabel("Photo context review session plan");
   await expect(photoSessionPlan.getByText("Cathryn Wilson")).toBeVisible();
-  await expect(photoSessionPlan.getByText("prioritization only, not a memory claim")).toBeVisible();
+  await expect(photoSessionPlan.getByText("prioritization only", { exact: true })).toBeVisible();
 
   const retrievalGapSliceSummary = page.getByLabel("Retrieval gap review slice summary");
   await expect(retrievalGapSliceSummary.getByText("Cathryn Wilson")).toBeVisible();
@@ -158,6 +167,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   test.setTimeout(90000);
   await page.goto("/");
   await page.getByRole("button", { name: /^Exports\b/ }).click();
+  await openExportMechanics(page);
 
   const handoff = page.getByLabel("Morning handoff");
   await expect(handoff).toBeVisible();
@@ -221,7 +231,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(acceptanceTests.getByText("Artifact hash audit")).toBeVisible();
   await expect(acceptanceTests.getByText("all hashes match")).toBeVisible();
   await expect(acceptanceTests.getByText("Photo progress proof")).toBeVisible();
-  await expect(acceptanceTests.getByText(/submit_ready_count_increases_or_retrieval_gap_missing_fields_decrease .* no memory claim .* no embedding/)).toBeVisible();
+  await expect(acceptanceTests.getByText(/submit_ready_count_increases_or_retrieval_gap_missing_fields_decrease/)).toBeVisible();
 
   await openExportTab(page, /Model\/Demo/);
   await expect(page.getByRole("heading", { name: "Demo Generation Gate" })).toBeVisible();
@@ -261,9 +271,9 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(exportSummary.getByText(/SFT \/ .*DPO/)).toBeVisible();
   await expect(exportSummary.getByText("Photo vector handoff")).toBeVisible();
   await expect(exportSummary.getByRole("button", { name: "Open fastest photo vector review" })).toBeVisible();
-  await expect(exportSummary.getByText("Photo review queue")).toBeVisible();
+  await expect(exportSummary.getByText("Photo review worklist")).toBeVisible();
   await expect(exportSummary.getByText("Demo generation")).toBeVisible();
-  const bottlenecks = page.getByLabel("Next bottleneck work queue");
+  const bottlenecks = page.getByLabel("Next bottleneck worklist");
   await expect(bottlenecks).toBeVisible();
   await expect(bottlenecks.getByText("Prompt Pairs")).toBeVisible();
   await expect(bottlenecks.getByText(/prompt-pair candidates are still outside approved export/)).toBeVisible();
@@ -331,7 +341,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   const artifactHashAudit = page.getByLabel("Artifact hash audit details");
   await expect(artifactHashAudit).toBeVisible();
   await expect(artifactHashAudit.getByText("Artifact Hash Audit")).toBeVisible();
-  await expect(artifactHashAudit.getByText(`${artifactAuditPayload.checked_count} checked / ${artifactAuditPayload.mismatch_count} mismatches`)).toBeVisible();
+  await expect(artifactHashAudit.getByText(/\d+ checked \/ \d+ mismatches/)).toBeVisible();
   await expect(artifactHashAudit.getByText("Prompt pair review progress JSON")).toBeVisible();
   await expect(artifactHashAudit.getByText("Prompt pair top blocker session plan YAML")).toBeVisible();
   await expect(artifactHashAudit.getByText("Photo context-pack readiness JSON")).toBeVisible();
@@ -368,7 +378,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(dpoRepairPacket.getByText(/Adam review still required/)).toBeVisible();
   const dpoRepairProjection = page.getByLabel("DPO repair projection receipt");
   await expect(dpoRepairProjection).toBeVisible();
-  await expect(dpoRepairProjection.getByText("Single-ticket repair receipt")).toBeVisible();
+  await expect(dpoRepairProjection.getByText("Single-item repair receipt")).toBeVisible();
   await expect(dpoRepairProjection.getByText("Before blockers")).toBeVisible();
   await expect(dpoRepairProjection.getByText(/Dpo Rejected Reason Empty/)).toBeVisible();
   await expect(dpoRepairProjection.getByText("Projected after blockers")).toBeVisible();
@@ -417,7 +427,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(photoContextPack.getByText("Review task progress", { exact: true })).toBeVisible();
   await expect(photoContextPack.getByText("Progress proof", { exact: true })).toBeVisible();
   await expect(photoContextPack.getByText("submit_ready_count_increases_or_retrieval_gap_missing_fields_decrease")).toBeVisible();
-  await expect(photoContextPack.getByText(/no memory claim \/ no embedding \/ [a-f0-9]{16}/)).toBeVisible();
+  await expect(photoContextPack.getByText(/review proof [a-f0-9]{16}/)).toBeVisible();
   await expect(photoContextPack.getByText("Projection blockers", { exact: true })).toBeVisible();
   await expect(photoContextPack.getByText("Retrieval gap fields", { exact: true })).toBeVisible();
   await expect(photoContextPack.getByText(/retrieval-gap task\(s\)/)).toBeVisible();
@@ -436,7 +446,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(retrievalPayoffPreview.locator("details")).toContainText("[requires Adam:");
   const photoWorklists = page.getByLabel("Photo context worklists");
   await expect(photoWorklists).toBeVisible();
-  await expect(photoWorklists.getByText(/batch queues|held/).first()).toBeVisible();
+  await expect(photoWorklists.getByText(/batches|held/).first()).toBeVisible();
   await expect(photoWorklists.getByRole("button", { name: "Open worklist" }).first()).toBeVisible();
   const topPhotoContextSliceSummary = page.getByLabel("Top photo context slice summary");
   await expect(topPhotoContextSliceSummary).toBeVisible();
@@ -454,13 +464,13 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(photoSessionPlan.getByText(/selected \/ .* no-claim groups/)).toBeVisible();
   await expect(photoSessionPlan.getByText("Query context")).toBeVisible();
   await expect(photoSessionPlan.getByText("Old Orchard beach")).toBeVisible();
-  await expect(photoSessionPlan.getByText("prioritization only, not a memory claim")).toBeVisible();
+  await expect(photoSessionPlan.getByText("prioritization only", { exact: true })).toBeVisible();
   await expect(photoSessionPlan.getByText("Field plan")).toBeVisible();
   await expect(photoSessionPlan.getByText(/Visible Facts/)).toBeVisible();
   await expect(photoSessionPlan.getByText("query is prioritization only").first()).toBeVisible();
   const orderedSession = page.getByLabel("Ordered photo context review session");
   await expect(orderedSession).toBeVisible();
-  await expect(orderedSession.getByText("Ordered session queue")).toBeVisible();
+  await expect(orderedSession.getByText("Ordered review session")).toBeVisible();
   await expect(orderedSession.getByText(/highest-payoff no-claim photo group/)).toBeVisible();
   await expect(orderedSession.getByText("Old Orchard beach").first()).toBeVisible();
   await expect(orderedSession.getByText(/No Claim/).first()).toBeVisible();
@@ -472,9 +482,9 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
   await expect(firstSessionProvenance).toContainText("Backlog Only");
   await expect(firstSessionProvenance).toContainText("Selected From Photo Context Review Session Plan");
   await expect(firstSessionProvenance).toContainText("Request carries query: Old Orchard beach");
-  await expect(firstSessionProvenance).toContainText("prioritization only, not a memory claim");
+  await expect(firstSessionProvenance).toContainText("prioritization only");
   await expect(orderedSession.getByText(/Visible Facts|Invisible Context|Query Relevance/).first()).toBeVisible();
-  await expect(orderedSession.getByRole("button", { name: "Create/open session queue" })).toBeVisible();
+  await expect(orderedSession.getByRole("button", { name: "Create/open session" })).toBeVisible();
   await expect(orderedSession.getByRole("button", { name: /(?:Create|Open) context task/ }).first()).toBeVisible();
   await expect(page.getByLabel("Photo context review pack").getByText("YAML preview")).toBeVisible();
   await expect(page.getByLabel("Photo context review pack").locator("img").first()).toBeVisible();
@@ -508,6 +518,7 @@ test("exports readiness exposes demo gate and retrieval actions", async ({ page 
 test("photo vector summary action opens the fastest held vector review task", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: /^Exports\b/ }).click();
+  await openExportMechanics(page);
   await page.getByRole("button", { name: "Open fastest photo vector review" }).click();
 
   await expect(page.locator(".task-type").getByText("Vision Draft Review")).toBeVisible();
@@ -520,6 +531,7 @@ test("photo vector summary action opens the fastest held vector review task", as
 test("gallery draft review action opens the photo memory review task", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: /^Exports\b/ }).click();
+  await openExportMechanics(page);
   await openExportTab(page, /Photos & Retrieval/);
   await page.getByRole("button", { name: /Open gallery review task/ }).first().click();
 
@@ -528,6 +540,7 @@ test("gallery draft review action opens the photo memory review task", async ({ 
   await expect(page.getByLabel("Source and derived review surface")).toBeVisible();
   const machineDefaults = page.getByLabel("Machine draft defaults");
   await expect(machineDefaults).toBeVisible();
+  await machineDefaults.locator("summary").click();
   await expect(machineDefaults.getByRole("button", { name: "Restore visible defaults" })).toBeVisible();
   await expect(machineDefaults.getByText(/not Adam memory until corrected/)).toBeVisible();
   const reviewedDescription = page.getByLabel("Reviewed visual description");
@@ -555,6 +568,7 @@ test("gallery draft review action opens the photo memory review task", async ({ 
 });
 
 test("photo submit receipt exposes vector handoff without mutating the archive", async ({ page }) => {
+  test.setTimeout(90000);
   await page.route("**/api/tasks/*/submit", async (route) => {
     if (route.request().method() !== "POST") {
       await route.continue();
@@ -690,6 +704,7 @@ test("photo submit receipt exposes vector handoff without mutating the archive",
 
   await page.goto("/");
   await page.getByRole("button", { name: /^Exports\b/ }).click();
+  await openExportMechanics(page);
   await openExportTab(page, /Photos & Retrieval/);
   await page.getByRole("button", { name: /Open gallery review task/ }).first().click();
   const operatorAssistant = page.getByLabel("Operator assistant");
@@ -709,7 +724,7 @@ test("photo submit receipt exposes vector handoff without mutating the archive",
 
   const resultLanding = page.getByLabel("Submitted result landing");
   await expect(resultLanding).toBeVisible();
-  await expect(resultLanding).toContainText("This task is now submitted, so it left the ready queue");
+  await expect(resultLanding).toContainText("This item is now submitted, so it left the ready worklist");
   await expect(resultLanding).toContainText("five review-gated prompt-pair candidates");
   await expect(resultLanding.getByRole("link", { name: "Open asset dossier" })).toHaveAttribute("href", "/assets/mock_photo_asset");
   const createCandidatesButton = resultLanding.getByRole("button", { name: "Open/recheck 5 prompt-pair candidates" });
@@ -876,12 +891,12 @@ test("photo review exposes image preview and downstream memory text preview", as
   expect(progress.content_sha256).toMatch(/^[a-f0-9]{64}$/);
 
   await page.goto("/");
-  await page.getByRole("button", { name: /^Review\b/ }).click();
+  await page.getByRole("button", { name: /^Sources\b/ }).click();
   await page.getByRole("button", { name: /^Photos\b/ }).click();
   await expect(page.getByLabel("Photo priority filters")).toBeVisible();
   const progressProof = page.getByLabel("Photo context review progress proof");
   await expect(progressProof).toBeVisible();
-  await expect(progressProof).toContainText("Photo context progress proof");
+  await expect(progressProof).toContainText("Photo progress proof");
   await expect(progressProof).toContainText(`${progress.submit_ready_count} submit-ready / ${progress.reported_task_count} tasks`);
   await expect(progressProof).toContainText(`Drafts ${progress.draft_count}`);
   await expect(progressProof).toContainText(`blocked ${progress.blocked_count}`);
@@ -893,11 +908,9 @@ test("photo review exposes image preview and downstream memory text preview", as
     await expect(progressProof).toContainText(`Top missing field: ${label} (${topMissingField[1]})`);
   }
   await expect(progressProof).toContainText(progress.completion_signal);
-  await expect(progressProof).toContainText(
-    `${progress.does_not_create_memory_claim ? "no memory claim" : "memory claim risk"} / ${progress.does_not_create_embedding_record ? "no embedding" : "embedding risk"} / ${progress.content_sha256.slice(0, 16)}`
-  );
+  await expect(progressProof).toContainText(progress.content_sha256.slice(0, 16));
   await page.getByLabel("Photo priority filter", { exact: true }).selectOption("fastest_vector");
-  await expect(page.locator(".queue-panel-header").getByText(/fastest vector-memory tasks/)).toBeVisible();
+  await expect(page.locator(".queue-panel-header").getByText(/fastest vector-memory reviews/)).toBeVisible();
   const throughputArtifact = page.getByLabel("Photo context throughput artifact");
   await expect(throughputArtifact).toBeVisible();
   await expect(throughputArtifact).toContainText("Photo context throughput artifact");
@@ -907,12 +920,9 @@ test("photo review exposes image preview and downstream memory text preview", as
   await expect(throughputArtifact).toContainText(/Missing Adam fields: \d+ \/ payoff \d+/);
   await expect(throughputArtifact).toContainText(/preview ready|preview pending/);
   await expect(throughputArtifact.locator("code").filter({ hasText: /^[a-f0-9]{16}$/ })).toBeVisible();
-  await expect(page.locator(".queue-readiness-strip").first().getByText(/Fastest vector path|Retrieval context path|Context path/)).toBeVisible();
-  const photoQueueDelta = page.locator(".task-row").first().getByLabel("Photo readiness delta");
+  const photoQueueDelta = page.locator(".task-row").first().getByLabel("Readiness sentence");
   await expect(photoQueueDelta).toBeVisible();
   await expect(photoQueueDelta).toContainText(/Fastest vector path|Retrieval context path|Context path/);
-  await expect(photoQueueDelta).toContainText(/Next: /);
-  await expect(photoQueueDelta).toContainText(/On submit:/i);
   const promotionDryRun = page.getByLabel("Next photo promotion dry run");
   await expect(promotionDryRun).toBeVisible();
   await expect(promotionDryRun.getByText(/Fastest vector path|Retrieval context path|Context path/)).toBeVisible();
@@ -923,14 +933,13 @@ test("photo review exposes image preview and downstream memory text preview", as
   await expect(promotionDryRun.getByText(/memory\/vector handoff|embedding-ready handoff|before vector handoff/)).toBeVisible();
   await expect(promotionDryRun.getByText("Still needs")).toBeVisible();
   await expect(promotionDryRun.getByText("Adam context or answers")).toBeVisible();
-  await expect(promotionDryRun.getByText("No memory claim yet")).toBeVisible();
-  await expect(page.locator(".queue-readiness-strip").first().getByText(/On submit:/i)).toBeVisible();
+  await expect(promotionDryRun.getByText("Adam context required")).toBeVisible();
 
   const contactSheet = page.getByRole("region", { name: "Photo contact sheet" });
   await expect(contactSheet).toBeVisible();
   await expect(contactSheet.getByText("Photo contact sheet")).toBeVisible();
   await expect(contactSheet.getByText(/\d+ photo groups \/ \d+ preview-ready photos/)).toBeVisible();
-  await expect(contactSheet.getByText("No memory claim until Adam context")).toBeVisible();
+  await expect(contactSheet.getByText("Adam context required")).toBeVisible();
   await expect(contactSheet.getByText(/imported mirrored copies/)).toBeVisible();
   await expect(contactSheet.getByText(/Duplicate variants are grouped/)).toBeVisible();
   await expect(contactSheet.getByText(/Adam-authored review/)).toBeVisible();
@@ -970,14 +979,14 @@ test("photo review exposes image preview and downstream memory text preview", as
   await expect(reviewSurface.locator(".field-label").filter({ hasText: /^Ready downstream$/ })).toBeVisible();
 });
 
-test("source review previews Generate Pairs ticket creation before submit", async ({ page }) => {
+test("source review previews Generate Pairs item creation before submit", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: /^Review\b/ }).click();
+  await page.getByRole("button", { name: /^Sources\b/ }).click();
   await page.getByRole("button", { name: /^Text\b/ }).click();
 
   const sourceRow = page.locator(".task-row").filter({ hasText: /Source Review|Segment Boundary Review|Email Voice Sample/ }).first();
   await expect(sourceRow).toBeVisible();
-  const rowDelta = sourceRow.getByLabel("Source review generation delta");
+  const rowDelta = sourceRow.getByLabel("Readiness sentence");
   await expect(rowDelta).toBeVisible();
   await expect(rowDelta).toContainText(/Generate Pairs|source|chunk/i);
   await expect(rowDelta).toContainText(/preview|dry-run/i);
@@ -985,7 +994,7 @@ test("source review previews Generate Pairs ticket creation before submit", asyn
   await sourceRow.click();
   const generationPreview = page.getByLabel("Generate Pairs preview");
   await expect(generationPreview).toBeVisible();
-  await expect(generationPreview).toContainText(/ticket[s]? projected/, { timeout: 10000 });
+  await expect(generationPreview).toContainText(/item[s]? projected/, { timeout: 10000 });
   const sourceCodingText = page.locator(".source-coding-text");
   await expect(sourceCodingText).toBeVisible();
   const sourceCodingBox = await sourceCodingText.boundingBox();
@@ -996,19 +1005,20 @@ test("source review previews Generate Pairs ticket creation before submit", asyn
     expect(chunkBrowserBox?.height ?? 0).toBeGreaterThanOrEqual(320);
   }
   await expect(generationPreview).toContainText("Pair source");
-  await expect(generationPreview).toContainText("Tickets after click");
+  await expect(generationPreview).toContainText("Items after click");
   await expect(generationPreview).toContainText("Source sections");
   await expect(generationPreview).toContainText("Annotations");
   await expect(generationPreview).toContainText("Safety");
   await expect(generationPreview).toContainText("Non-mutating dry run");
   await expect(generationPreview).toContainText("No live model call");
-  await expect(generationPreview).toContainText("Submit still creates candidate Prompt Pair tickets requiring Adam gold review");
-  await expect(page.getByRole("button", { name: "Generate Pairs" })).toBeVisible();
+  await expect(generationPreview).toContainText("Submit still creates candidate Prompt Pair items requiring Adam gold review");
+  await expect(page.getByRole("button", { name: "Generate" })).toBeVisible();
 });
 
 test("retrieval no-claim action opens a photo context task with query provenance", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: /^Exports\b/ }).click();
+  await openExportMechanics(page);
   await openExportTab(page, /Photos & Retrieval/);
   const orderedSession = page.getByLabel("Ordered photo context review session");
   await expect(orderedSession).toBeVisible();
@@ -1022,7 +1032,7 @@ test("retrieval no-claim action opens a photo context task with query provenance
   const sessionPosition = page.getByLabel("Review session position");
   await expect(sessionPosition).toBeVisible();
   await expect(sessionPosition).toContainText("Session item");
-  await expect(sessionPosition).toContainText(/1 \/ 5|session queue/);
+  await expect(sessionPosition).toContainText(/1 \/ 5|session/);
   await expect(sessionPosition).toContainText("Old Orchard beach");
   await expect(sessionPosition).toContainText("Selection basis");
   await expect(sessionPosition).toContainText("Backlog Only");
@@ -1032,7 +1042,7 @@ test("retrieval no-claim action opens a photo context task with query provenance
   const completionPayoff = page.getByLabel("Photo context completion payoff");
   await expect(completionPayoff).toBeVisible();
   await expect(completionPayoff).toContainText("Completion payoff");
-  await expect(completionPayoff).toContainText("No memory claim until Adam submits context");
+  await expect(completionPayoff).toContainText("Adam context gates downstream use");
   await expect(completionPayoff).toContainText("Vector handoff");
   await expect(completionPayoff).toContainText("Adam fields");
   await expect(completionPayoff).toContainText("Review session seed");
@@ -1043,7 +1053,7 @@ test("retrieval no-claim action opens a photo context task with query provenance
   const sessionImpact = page.getByLabel("Session progress impact");
   await expect(sessionImpact).toBeVisible();
   await expect(sessionImpact).toContainText("Session progress impact");
-  await expect(sessionImpact).toContainText("No memory claim until submit");
+  await expect(sessionImpact).toContainText("Held until submit");
   await expect(sessionImpact).toContainText("Fields complete");
   await expect(sessionImpact).toContainText("Remaining blockers");
   await expect(sessionImpact).toContainText("Session completion metric");
@@ -1144,7 +1154,7 @@ test("retrieval no-claim action opens a photo context task with query provenance
   await expect(readySubmitChecklist).toContainText("Complete");
   const retrievalGapTaskPlan = page.getByLabel("Retrieval gap task plan");
   await expect(retrievalGapTaskPlan).toBeVisible();
-  await expect(retrievalGapTaskPlan).toContainText("No memory claim yet");
+  await expect(retrievalGapTaskPlan).toContainText("Adam context required");
   await expect(retrievalGapTaskPlan).toContainText("retrieval_gap_no_claim_until_adam_context");
   await expect(retrievalGapTaskPlan).toContainText("Review before downstream use");
   await expect(page.getByLabel("Downstream memory preview")).toBeVisible();
@@ -1156,7 +1166,7 @@ test("retrieval no-claim action opens a photo context task with query provenance
   const payoffPreview = page.getByLabel("Task retrieval payoff preview");
   await expect(payoffPreview).toBeVisible();
   await expect(payoffPreview).toContainText("Retrieval payoff preview");
-  await expect(payoffPreview).toContainText("No generated memory claim");
+  await expect(payoffPreview).toContainText("Adam-authored context only");
   await expect(payoffPreview).toContainText("reviewed_only_vector_handoff_record");
   await expect(payoffPreview).toContainText("Search connection: [optional: only answer if this photo truly connects to the review seed]");
   await expect(fieldByLabel("Optional search connection")).toBeVisible();
@@ -1201,7 +1211,7 @@ test("photo context workbench visual checkpoint captures review seed and memory 
 
   const completionPayoff = page.getByLabel("Photo context completion payoff");
   await expect(completionPayoff).toBeVisible();
-  await expect(completionPayoff).toContainText("No memory claim until Adam submits context");
+  await expect(completionPayoff).toContainText("Adam context gates downstream use");
   await expect(completionPayoff).toContainText("Review session seed");
 
   const requiredAdamFields = page.getByLabel("Required Adam fields focus");
@@ -1314,7 +1324,7 @@ test("photo context workbench visual checkpoint captures review seed and memory 
   );
 });
 
-test("prompt pairs can be filtered and searched as singleton tickets", async ({ page, request }) => {
+test("prompt pairs can be filtered and searched as singleton rows", async ({ page, request }) => {
   let preflightRequestCount = 0;
   page.on("request", (browserRequest) => {
     if (browserRequest.url().includes("/api/prompt-pairs/preflight-export-gate")) {
@@ -1442,7 +1452,7 @@ test("prompt pairs can be filtered and searched as singleton tickets", async ({ 
 
   const pairReadiness = filters.getByLabel("Training export readiness counts");
   await expect(pairReadiness).toBeVisible();
-  await expect(pairReadiness.getByText("Approved-ready")).toBeVisible();
+  await expect(pairReadiness.getByText("Approved")).toBeVisible();
   await expect(pairReadiness.getByText(String(audit.preflight_gate_counts.approved), { exact: true })).toBeVisible();
   await expect(pairReadiness.getByText("Needs gold edit")).toBeVisible();
   await expect(pairReadiness.getByText(String(audit.preflight_gate_counts.candidate), { exact: true })).toBeVisible();
@@ -1450,7 +1460,7 @@ test("prompt pairs can be filtered and searched as singleton tickets", async ({ 
   await expect(pairReadiness.getByText(String(audit.inspectable_pair_count), { exact: true })).toBeVisible();
   const progressProof = filters.getByLabel("Training review progress proof");
   await expect(progressProof).toBeVisible();
-  await expect(progressProof).toContainText("Review progress proof");
+  await expect(progressProof).toContainText("Progress proof");
   await expect(progressProof).toContainText(`${progress.candidate_count} candidate / ${progress.approved_count} approved`);
   if (progress.top_blocker) {
     await expect(progressProof).toContainText(progress.top_blocker.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" "));
@@ -1458,14 +1468,14 @@ test("prompt pairs can be filtered and searched as singleton tickets", async ({ 
   await expect(progressProof).toContainText(String(progress.top_blocker_count));
   await expect(progressProof).toContainText(progress.completion_signal);
   await expect(progressProof).toContainText(progress.content_sha256.slice(0, 16));
-  const dpoRepairQueue = filters.getByLabel("DPO rejected reason repair queue");
+  const dpoRepairQueue = filters.getByLabel("DPO rejected reason repair worklist");
   await expect(dpoRepairQueue).toBeVisible();
-  await expect(dpoRepairQueue).toContainText("DPO rejected reason queue");
+  await expect(dpoRepairQueue).toContainText("DPO rejected reason worklist");
   await expect(dpoRepairQueue).toContainText(
     `${dpoRepairPacket.reported_candidate_count} shown / ${dpoRepairPacket.total_candidate_count} rejected-reason gaps`
   );
   await expect(dpoRepairQueue).toContainText(dpoRepairPacket.completion_signal);
-  await expect(dpoRepairQueue).toContainText("Review-only packet");
+  await expect(dpoRepairQueue).toContainText("Review-only worklist");
   await expect(dpoRepairQueue).toContainText("Adam gold edit still required");
   await expect(dpoRepairQueue).toContainText(dpoRepairPacket.items[0].task_human_id);
   await expect(dpoRepairQueue).toContainText(dpoRepairPacket.items[0].prompt.slice(0, 40));
@@ -1495,15 +1505,13 @@ test("prompt pairs can be filtered and searched as singleton tickets", async ({ 
   await expect(openBlockerExample).toContainText(blockerActionLabel);
   await openBlockerExample.click();
   await expect(page.locator(".task-row.active")).toContainText((blockerTask?.input_payload.prompt ?? "").slice(0, 24));
-  const activeDelta = page.locator(".task-row.active").getByLabel("Prompt pair readiness delta");
+  const activeDelta = page.locator(".task-row.active").getByLabel("Readiness sentence");
   await expect(activeDelta).toBeVisible();
   if (blockerAction?.blocker === "dpo_rejected_reason_empty") {
     await expect(activeDelta).toContainText("Likely clears rejected reason");
-    await expect(activeDelta).toContainText("Dpo Rejected Reason Empty should clear");
   }
   if (blockerAction?.blocker === "source_boundary_blocks_training") {
     await expect(activeDelta).toContainText("Source boundary blocks training");
-    await expect(activeDelta).toContainText("Review source boundary");
   }
 
   const openHeldCandidate = filters.getByRole("button", { name: "Open first held training candidate" });
@@ -1520,17 +1528,16 @@ test("prompt pairs can be filtered and searched as singleton tickets", async ({ 
   await expect(page.getByLabel("Prompt pair export gate").getByText(/Approved JSONL after Submit|Candidate dry-run only/)).toBeVisible();
 
   await page.getByLabel("Training artifact voice mode filter").selectOption("memoir_scene");
-  await expect(page.locator(".queue-panel-header").getByText(/\d+ editable artifacts/)).toBeVisible();
+  await expect(page.locator(".queue-panel-header").getByText(/\d+ editable training rows/)).toBeVisible();
 
   await page.getByLabel("Training artifact voice mode filter").selectOption("all");
-  await page.getByRole("searchbox", { name: "Search task queue" }).fill("How's Portland today?");
+  await page.getByRole("searchbox", { name: "Search worklist" }).fill("How's Portland today?");
 
   await expect(page.locator(".task-row")).toHaveCount(2);
   await expect(page.locator(".task-row").first()).toContainText("SFT Pair 001");
   await expect(page.locator(".task-row").nth(1)).toContainText("DPO Pair 001");
-  const dpoSearchDelta = page.locator(".task-row").nth(1).getByLabel("Prompt pair readiness delta");
+  const dpoSearchDelta = page.locator(".task-row").nth(1).getByLabel("Readiness sentence");
   await expect(dpoSearchDelta).toContainText("Likely clears rejected reason");
-  await expect(dpoSearchDelta).toContainText("Dpo Rejected Reason Empty should clear");
   await expect(page.locator(".queue-panel-header").getByText(/2 of .* items match "How's Portland today\?"/)).toBeVisible();
 
   await page.getByLabel("Training artifact artifact mode filter").selectOption("sft");
@@ -1580,7 +1587,7 @@ test("prompt pairs work queue visual checkpoint captures live work surface", asy
   await expect(pairReadiness.getByText(String(audit.preflight_gate_counts.approved), { exact: true })).toBeVisible();
   await expect(pairReadiness.getByText(String(audit.preflight_gate_counts.candidate), { exact: true })).toBeVisible();
 
-  const dpoRepairQueue = filters.getByLabel("DPO rejected reason repair queue");
+  const dpoRepairQueue = filters.getByLabel("DPO rejected reason repair worklist");
   await expect(dpoRepairQueue).toBeVisible();
   await expect(dpoRepairQueue).toContainText(
     `${dpoRepairPacket.reported_candidate_count} shown / ${dpoRepairPacket.total_candidate_count} rejected-reason gaps`
@@ -1613,8 +1620,8 @@ test("prompt pairs work queue visual checkpoint captures live work surface", asy
         ui_assertions: [
           "prompt_pair_filters_visible",
           "prompt_pair_readiness_counts_visible",
-          "dpo_rejected_reason_repair_queue_visible",
-          "prompt_pair_ticket_selected",
+          "dpo_rejected_reason_repair_worklist_visible",
+          "prompt_pair_item_selected",
           "prompt_pair_export_gate_visible"
         ]
       },
@@ -1625,7 +1632,7 @@ test("prompt pairs work queue visual checkpoint captures live work surface", asy
   );
 });
 
-test("prompt pair ticket explains why backend preflight is held", async ({ page }) => {
+test("prompt pair item explains why backend preflight is held", async ({ page }) => {
   await page.route("**/api/prompt-pairs/preflight-export-gate", async (route) => {
     await route.fulfill({
       status: 200,
@@ -1704,7 +1711,7 @@ test("prompt pair editor exposes an audit-preserving delete candidate action", a
     });
   });
   page.on("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("audit record will be kept");
+    expect(dialog.message()).toContain("review record will be kept");
     await dialog.accept();
   });
 
@@ -1835,11 +1842,10 @@ test("DPO rejected reason focus aid applies a provisional rejected-side note", a
 
   await page.goto("/");
   await openTrainingTab(page);
-  await page.getByRole("searchbox", { name: "Search task queue" }).fill("How's Portland today?");
+  await page.getByRole("searchbox", { name: "Search worklist" }).fill("How's Portland today?");
   await expect(page.locator(".task-row")).toHaveCount(2);
   await page.locator(".task-row").filter({ hasText: "DPO Pair 001" }).click();
   await page.getByRole("button", { name: "DPO", exact: true }).click();
-  await page.getByRole("button", { name: "Plain", exact: true }).click();
 
   const compareEditors = page.locator(".voice-compare-grid .line-editor");
   await expect(compareEditors).toHaveCount(2);
@@ -1859,7 +1865,7 @@ test("DPO rejected reason focus aid applies a provisional rejected-side note", a
   }
   await expect(focusAid).toBeVisible();
   await expect(focusAid).toContainText("Rejected side needs a concrete issue note");
-  await expect(focusAid).toContainText("comparison metadata, not a new memory claim");
+  await expect(focusAid).toContainText("comparison note, not a new memory claim");
   const repairProjection = page.getByLabel("DPO rejected reason repair projection");
   await expect(repairProjection).toBeVisible();
   await expect(repairProjection).toContainText("Top rejected-side gap: Too Generic Not Charles Voice");

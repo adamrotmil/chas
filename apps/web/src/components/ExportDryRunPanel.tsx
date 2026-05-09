@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, Download, FileJson, RefreshCw, ShieldAlert } from "lucide-react";
+import { CheckCircle2, Download, FileJson, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { buildDatasetExport, getDatasetExportDryRun, getDatasetJsonlUrl, getStoredDatasetJsonlUrl } from "@/lib/api";
 import type { DatasetDryRunRow, DatasetExport, DatasetExportDryRun, EvidenceCorpusSnapshot } from "@/lib/types";
@@ -184,20 +184,12 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
         <div>
           <span>
             <FileJson size={15} />
-            Export Review
+            Build training file
           </span>
-          <h2>Boundary-aware JSONL dry-run</h2>
-          <p>Preview what SFT or DPO artifacts would export before building files. Boundary, privacy, status, and rubric blocks are visible here.</p>
+          <h2>Approved rows become the training file</h2>
+          <p>Review what is included, what is excluded, and why before building the file.</p>
         </div>
         <div className="utility-actions">
-          <button type="button" onClick={() => void loadDryRun()} disabled={loading} title="Built: refresh dry-run counts from the API.">
-            <RefreshCw size={14} />
-            {loading ? "Refreshing" : "Refresh"}
-          </button>
-          <a href={getDatasetJsonlUrl(exportType)} target="_blank" rel="noreferrer" title="Built: open the current approved-only JSONL endpoint.">
-            <Download size={14} />
-            JSONL
-          </a>
           <button
             type="button"
             onClick={() => void handleBuildExport()}
@@ -209,14 +201,14 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
             }
           >
             <CheckCircle2 size={14} />
-            {building ? "Building" : "Build approved export"}
+            {building ? "Building" : "Build training file"}
           </button>
         </div>
       </header>
 
       <div className="utility-controls">
         <label>
-          <span>Export type</span>
+          <span>Rows</span>
           <select value={exportType} onChange={(event) => setExportType(event.target.value as ExportType)}>
             <option value="sft">SFT</option>
             <option value="dpo">DPO</option>
@@ -228,7 +220,7 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
             checked={includeCandidates}
             onChange={(event) => setIncludeCandidates(event.target.checked)}
           />
-          <span>Include candidate-status artifacts in dry-run</span>
+          <span>Preview candidate rows too</span>
         </label>
       </div>
 
@@ -245,17 +237,15 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
           <span>
             Built {builtExport.human_id} with {String(builtExport.manifest.item_count ?? 0)} item(s).{" "}
             <a href={getStoredDatasetJsonlUrl(builtExport.id)} target="_blank" rel="noreferrer">
-              Open stored JSONL
+              Inspect file
             </a>
           </span>
         </div>
       ) : null}
 
-      <DownstreamReadinessPanel onOpenReviewTask={onOpenReviewTask} />
-
       <div className="dry-run-metrics">
         <article>
-          <span>Total artifacts</span>
+          <span>Total rows</span>
           <strong>{total}</strong>
         </article>
         <article>
@@ -263,16 +253,29 @@ export function ExportDryRunPanel({ onOpenReviewTask }: ExportDryRunPanelProps) 
           <strong>{dryRun?.included_count ?? 0}</strong>
         </article>
         <article>
-          <span>Blocked / held</span>
+          <span>Excluded</span>
           <strong>{dryRun?.excluded_count ?? 0}</strong>
         </article>
         <article>
-          <span>Mode</span>
+          <span>Why</span>
           <strong>{dryRun?.mode ?? "approved_only"}</strong>
         </article>
       </div>
 
-      <EvidenceCorpusSnapshotPanel snapshot={dryRun?.evidence_corpus_snapshot} />
+      <details className="export-inspect-drawer">
+        <summary>Inspect file mechanics</summary>
+        <div className="utility-actions export-debug-actions">
+          <button type="button" onClick={() => void loadDryRun()} disabled={loading} title="Refresh counts from the API.">
+            {loading ? "Refreshing" : "Refresh"}
+          </button>
+          <a href={getDatasetJsonlUrl(exportType)} target="_blank" rel="noreferrer" title="Open the current approved-only JSONL endpoint.">
+            <Download size={14} />
+            JSONL
+          </a>
+        </div>
+        <EvidenceCorpusSnapshotPanel snapshot={dryRun?.evidence_corpus_snapshot} />
+        <DownstreamReadinessPanel onOpenReviewTask={onOpenReviewTask} />
+      </details>
 
       <div className="dry-run-columns">
         <section>

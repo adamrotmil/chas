@@ -1,6 +1,6 @@
 {
   "checkpoint_type": "prompt_pairs_work_queue_visual_checkpoint",
-  "captured_at": "2026-05-09T05:43:38.408Z",
+  "captured_at": "2026-05-09T15:22:07.487Z",
   "screenshot_path": "updates/prompt_pairs_work_queue_2026-04-29.png",
   "total_pairs": 439,
   "inspectable_pair_count": 439,
@@ -21,8 +21,8 @@
   "ui_assertions": [
     "prompt_pair_filters_visible",
     "prompt_pair_readiness_counts_visible",
-    "dpo_rejected_reason_repair_queue_visible",
-    "prompt_pair_ticket_selected",
+    "dpo_rejected_reason_repair_worklist_visible",
+    "prompt_pair_item_selected",
     "prompt_pair_export_gate_visible"
   ]
 }
